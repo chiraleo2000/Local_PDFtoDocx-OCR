@@ -1,0 +1,38 @@
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual envs
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# Env secrets (not the template)
+.env
+.env.local
+
+# Tests
+tests/
+
+# Models (large, download at runtime)
+models/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+build/
+dist/
+*.tmp
+*.bak
+*.log

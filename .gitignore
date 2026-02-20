@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env
+
+# Models cache
+models/
+*.pt
+*.pth
+*.onnx
+*.bin
+
+# Temp files
+*.tmp
+*.bak
+temp/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test outputs
+*.docx
+*.html
+!README.md
