@@ -10,10 +10,12 @@ import hashlib
 import secrets
 import tempfile
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Any, Optional
 
 logger = logging.getLogger(__name__)
+
+_INFO_JSON = "info.json"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -54,7 +56,7 @@ class AuthManager:
         if not stored or not self._verify(password, stored):
             return {"success": False, "error": "Invalid credentials"}
         token = secrets.token_hex(32)
-        expires = datetime.utcnow() + timedelta(hours=24)
+        expires = datetime.now(timezone.utc) + timedelta(hours=24)
         self._sessions[token] = {"username": username, "expires_at": expires}
         return {"success": True, "token": token, "username": username}
 
@@ -62,7 +64,7 @@ class AuthManager:
         if not token:
             return None
         sess = self._sessions.get(token)
-        if sess and sess["expires_at"] > datetime.utcnow():
+        if sess and sess["expires_at"] > datetime.now(timezone.utc):
             return sess["username"]
         if sess:
             del self._sessions[token]
@@ -91,7 +93,7 @@ class HistoryManager:
     def save_result(self, username: str, original_filename: str,
                     output_paths: Dict[str, Optional[str]],
                     metadata: Optional[Dict[str, Any]] = None) -> str:
-        entry_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        entry_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         entry_dir = self.user_dir(username) / entry_id
         entry_dir.mkdir(parents=True, exist_ok=True)
 
@@ -106,11 +108,11 @@ class HistoryManager:
         info = {
             "entry_id": entry_id,
             "original_filename": original_filename,
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "files": saved_files,
             "metadata": metadata or {},
         }
-        with open(entry_dir / "info.json", "w", encoding="utf-8") as f:
+        with open(entry_dir / _INFO_JSON, "w", encoding="utf-8") as f:
             json.dump(info, f, indent=2, ensure_ascii=False)
         return entry_id
 
@@ -119,7 +121,7 @@ class HistoryManager:
         entries = []
         for child in sorted(udir.iterdir(), reverse=True):
             if child.is_dir():
-                info_file = child / "info.json"
+                info_file = child / _INFO_JSON
                 if info_file.exists():
                     try:
                         with open(info_file, "r", encoding="utf-8") as f:
@@ -131,7 +133,7 @@ class HistoryManager:
     def get_file_path(self, username: str, entry_id: str,
                       fmt: str = "docx") -> Optional[str]:
         entry_dir = self.user_dir(username) / entry_id
-        info_file = entry_dir / "info.json"
+        info_file = entry_dir / _INFO_JSON
         if not info_file.exists():
             return None
         try:
@@ -145,7 +147,7 @@ class HistoryManager:
         return None
 
     def cleanup_old_entries(self, username: Optional[str] = None):
-        cutoff = datetime.utcnow() - timedelta(days=self.retention_days)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=self.retention_days)
         dirs = []
         if username:
             dirs.append(self.user_dir(username))
@@ -157,12 +159,14 @@ class HistoryManager:
             for entry in udir.iterdir():
                 if not entry.is_dir():
                     continue
-                info_file = entry / "info.json"
+                info_file = entry / _INFO_JSON
                 if info_file.exists():
                     try:
                         with open(info_file, "r", encoding="utf-8") as f:
                             info = json.load(f)
                         created = datetime.fromisoformat(info["created_at"])
+                        if created.tzinfo is None:
+                            created = created.replace(tzinfo=timezone.utc)
                         if created < cutoff:
                             shutil.rmtree(entry, ignore_errors=True)
                     except Exception:

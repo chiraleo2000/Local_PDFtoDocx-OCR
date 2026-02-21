@@ -31,6 +31,12 @@ try:
 except ImportError:
     BS4_AVAILABLE = False
 
+import re as _re
+
+_BOLD_ITALIC_RE = _re.compile(r'\*\*\*(.+?)\*\*\*')
+_BOLD_RE = _re.compile(r'\*\*(.+?)\*\*')
+_ITALIC_RE = _re.compile(r'\*(.+?)\*')
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Image / Figure Extraction
@@ -113,6 +119,20 @@ class DocumentExporter:
             f.write(content)
         return path
 
+    # ── HTML line helper ──────────────────────────────────────────────────────
+    @staticmethod
+    def _line_to_html(stripped: str) -> str:
+        """Convert a single stripped text line to an HTML element string."""
+        if not stripped:
+            return "<br>"
+        if stripped.startswith("###"):
+            return f"<h3>{stripped.lstrip('# ')}</h3>"
+        if stripped.startswith("##"):
+            return f"<h2>{stripped.lstrip('# ')}</h2>"
+        if stripped.startswith("#"):
+            return f"<h1>{stripped.lstrip('# ')}</h1>"
+        return f"<p>{stripped}</p>"
+
     # ── HTML ──────────────────────────────────────────────────────────────────
     @staticmethod
     def create_html(text: str, tables_html: Optional[List[str]] = None,
@@ -135,17 +155,7 @@ class DocumentExporter:
                          f"border-bottom:1px solid #e2e8f0;padding-bottom:1rem;"
                          f"margin-bottom:2rem'>{metadata}</div>")
         for line in text.split("\n"):
-            stripped = line.strip()
-            if not stripped:
-                parts.append("<br>")
-            elif stripped.startswith("###"):
-                parts.append(f"<h3>{stripped.lstrip('# ')}</h3>")
-            elif stripped.startswith("##"):
-                parts.append(f"<h2>{stripped.lstrip('# ')}</h2>")
-            elif stripped.startswith("#"):
-                parts.append(f"<h1>{stripped.lstrip('# ')}</h1>")
-            else:
-                parts.append(f"<p>{stripped}</p>")
+            parts.append(DocumentExporter._line_to_html(line.strip()))
         if tables_html:
             for th in tables_html:
                 parts.append(th)
@@ -162,6 +172,58 @@ class DocumentExporter:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write("\n".join(parts))
         return path
+
+    # ── DOCX inline formatting ────────────────────────────────────────────────
+    def _add_inline_runs(self, paragraph, text: str):
+        """Add runs to a paragraph, applying bold/italic for markdown markers."""
+        # Split text by bold-italic, bold, and italic markers
+        pattern = _re.compile(r'(\*\*\*.+?\*\*\*|\*\*.+?\*\*|\*.+?\*)')
+        pos = 0
+        for match in pattern.finditer(text):
+            if match.start() > pos:
+                paragraph.add_run(text[pos:match.start()])
+            token = match.group()
+            if token.startswith('***'):
+                run = paragraph.add_run(token[3:-3])
+                run.bold = True
+                run.italic = True
+            elif token.startswith('**'):
+                run = paragraph.add_run(token[2:-2])
+                run.bold = True
+            else:
+                run = paragraph.add_run(token[1:-1])
+                run.italic = True
+            run.font.name = self.FONT_NAME
+            run.font.size = Pt(self.FONT_SIZE_NORMAL)
+            pos = match.end()
+        if pos < len(text):
+            paragraph.add_run(text[pos:])
+        for run in paragraph.runs:
+            if not run.font.name:
+                run.font.name = self.FONT_NAME
+            if not run.font.size:
+                run.font.size = Pt(self.FONT_SIZE_NORMAL)
+
+    def _add_heading_line(self, doc, stripped: str):
+        """Add a heading paragraph from a markdown-prefixed line."""
+        if stripped.startswith("###"):
+            level, text = 3, stripped.lstrip("# ")
+        elif stripped.startswith("##"):
+            level, text = 2, stripped.lstrip("# ")
+        else:
+            level, text = 1, stripped.lstrip("# ")
+        h = doc.add_heading(text, level=level)
+        for run in h.runs:
+            run.font.name = self.FONT_NAME
+
+    def _add_text_line(self, doc, stripped: str):
+        """Add a normal or bullet paragraph for a line of text."""
+        if stripped.startswith(("\u2022 ", "- ", "* ")):
+            p = doc.add_paragraph(style="List Bullet")
+            self._add_inline_runs(p, stripped[2:])
+        else:
+            p = doc.add_paragraph()
+            self._add_inline_runs(p, stripped)
 
     # ── DOCX ──────────────────────────────────────────────────────────────────
     def create_docx(self, text: str,
@@ -190,31 +252,10 @@ class DocumentExporter:
             if not stripped:
                 doc.add_paragraph("")
                 continue
-            if stripped.startswith("###"):
-                h = doc.add_heading(stripped.lstrip("# "), level=3)
-                for run in h.runs:
-                    run.font.name = self.FONT_NAME
-                continue
-            if stripped.startswith("##"):
-                h = doc.add_heading(stripped.lstrip("# "), level=2)
-                for run in h.runs:
-                    run.font.name = self.FONT_NAME
-                continue
-            if stripped.startswith("#"):
-                h = doc.add_heading(stripped.lstrip("# "), level=1)
-                for run in h.runs:
-                    run.font.name = self.FONT_NAME
-                continue
-            if stripped.startswith(("\u2022 ", "- ", "* ")):
-                p = doc.add_paragraph(stripped[2:], style="List Bullet")
-                for run in p.runs:
-                    run.font.name = self.FONT_NAME
-                    run.font.size = Pt(self.FONT_SIZE_NORMAL)
-                continue
-            p = doc.add_paragraph(stripped)
-            for run in p.runs:
-                run.font.name = self.FONT_NAME
-                run.font.size = Pt(self.FONT_SIZE_NORMAL)
+            if stripped.startswith(("###", "##", "#")):
+                self._add_heading_line(doc, stripped)
+            else:
+                self._add_text_line(doc, stripped)
 
         if tables_html and BS4_AVAILABLE:
             for th in tables_html:

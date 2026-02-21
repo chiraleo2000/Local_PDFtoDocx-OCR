@@ -246,8 +246,7 @@ class OCRPipeline:
                         crop = preprocessed[y0:y1, x0:x1]
                         if crop.size == 0:
                             continue
-                        ocr_result = self.ocr.ocr_image(
-                            crop, region_type=region.get("class", "plain text"))
+                        ocr_result = self.ocr.ocr_image(crop)
                         raw_text = ocr_result.get("text", "")
                         conf = ocr_result.get("confidence", 0)
                         original_crop = img[y0:y1, x0:x1]

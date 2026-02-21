@@ -31,10 +31,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY src/ ./src/
 COPY app.py ./
 COPY .env.example ./.env.example
-RUN cp .env.example .env
-
 # Runtime directories
-RUN mkdir -p /app/models /tmp/pdf_ocr_history /tmp/pdf_ocr_images \
+RUN cp .env.example .env \
+    && mkdir -p /app/models /tmp/pdf_ocr_history /tmp/pdf_ocr_images \
     && chmod -R 777 /tmp/pdf_ocr_history /tmp/pdf_ocr_images /app/models
 
 EXPOSE 7870
