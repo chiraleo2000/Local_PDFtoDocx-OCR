@@ -48,6 +48,8 @@ QUALITY_OPTIONS = {
     "Best (Accurate)": "accurate",
 }
 
+PAGE_ZERO_LABEL = "Page 0 / 0"
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PDF Preview
@@ -120,18 +122,18 @@ def handle_logout(session_token):
 # ══════════════════════════════════════════════════════════════════════════════
 def load_pdf_preview(pdf_file, quality, header_pct, footer_pct):
     if pdf_file is None:
-        return None, "Page 0 / 0", 0, 0, gr.update(visible=False)
-    pdf_path = pdf_file if isinstance(pdf_file, str) else pdf_file
+        return None, PAGE_ZERO_LABEL, 0, 0, gr.update(visible=False)
+    pdf_path = pdf_file
     img, total = render_page_preview(pdf_path, 0, 1.5, header_pct, footer_pct)
     if img is not None:
         return img, f"Page 1 / {total}", 1, total, gr.update(visible=True)
-    return None, "Page 0 / 0", 0, 0, gr.update(visible=False)
+    return None, PAGE_ZERO_LABEL, 0, 0, gr.update(visible=False)
 
 
 def change_page(pdf_file, direction, current, total, header_pct, footer_pct):
     if pdf_file is None or total == 0:
         return None, f"Page {current} / {total}", current
-    pdf_path = pdf_file if isinstance(pdf_file, str) else pdf_file
+    pdf_path = pdf_file
     new_page = max(1, min(current + direction, total))
     img, _ = render_page_preview(pdf_path, new_page - 1, 1.5, header_pct, footer_pct)
     return img, f"Page {new_page} / {total}", new_page
@@ -143,7 +145,7 @@ def process_document(pdf_file, quality_label, header_pct, footer_pct,
         return ("", "Please upload a PDF file first.",
                 None, None, gr.update(visible=False), gr.update())
 
-    pdf_path = pdf_file if isinstance(pdf_file, str) else pdf_file
+    pdf_path = pdf_file
     quality = QUALITY_OPTIONS.get(quality_label, "balanced")
 
     result = pipeline.process_pdf(
@@ -331,7 +333,7 @@ def create_interface():
                             with gr.Row(visible=False) as page_controls:
                                 prev_btn = gr.Button("Prev", size="sm")
                                 page_label = gr.Textbox(
-                                    value="Page 0 / 0", interactive=False,
+                                    value=PAGE_ZERO_LABEL, interactive=False,
                                     show_label=False, container=False,
                                 )
                                 next_btn = gr.Button("Next", size="sm")

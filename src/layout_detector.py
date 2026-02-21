@@ -13,6 +13,8 @@ import cv2
 
 logger = logging.getLogger(__name__)
 
+PLAIN_TEXT_CLASS = "plain text"
+
 # ── Optional heavy imports ────────────────────────────────────────────────────
 YOLO_AVAILABLE = False
 try:
@@ -45,13 +47,13 @@ class LayoutDetector:
     """Document layout detector: YOLO-based with OpenCV fallback."""
 
     LAYOUT_CLASSES = {
-        0: "title", 1: "plain text", 2: "abandon", 3: "figure",
+        0: "title", 1: PLAIN_TEXT_CLASS, 2: "abandon", 3: "figure",
         4: "figure_caption", 5: "table", 6: "table_caption",
         7: "table_footnote", 8: "isolate_formula", 9: "formula_caption",
     }
     FIGURE_CLASSES = {"figure"}
     TABLE_CLASSES = {"table"}
-    TEXT_CLASSES = {"title", "plain text"}
+    TEXT_CLASSES = {"title", PLAIN_TEXT_CLASS}
 
     def __init__(self, model_path: Optional[str] = None,
                  confidence_threshold: float = 0.25,
@@ -168,10 +170,7 @@ class LayoutDetector:
             bbox = [x, y, x + cw, y + ch]
             aspect = cw / max(ch, 1)
 
-            if aspect > 1.5 and ch < h * 0.05:
-                text_regions.append({"bbox": bbox, "confidence": 0.6,
-                                     "class": "plain text", "class_id": 1})
-            elif 0.7 < aspect < 1.5 and area > w * h * 0.05:
+            if 0.7 < aspect < 1.5 and area > w * h * 0.05:
                 roi = thresh[y:y + ch, x:x + cw]
                 hk = cv2.getStructuringElement(cv2.MORPH_RECT,
                                                (max(40, cw // 4), 1))
@@ -188,7 +187,7 @@ class LayoutDetector:
                                     "class": "figure", "class_id": 3})
             else:
                 text_regions.append({"bbox": bbox, "confidence": 0.6,
-                                     "class": "plain text", "class_id": 1})
+                                     "class": PLAIN_TEXT_CLASS, "class_id": 1})
 
         text_regions.sort(key=lambda r: r["bbox"][1])
         return {

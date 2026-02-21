@@ -171,6 +171,10 @@ class OCRPipeline:
         "accurate": {"dpi_scale": 2.5, "quality": "accurate"},
     }
 
+    # Minimum word count from native PDF text extraction to prefer it over OCR.
+    # Pages with fewer words are treated as scanned images and processed with OCR.
+    MIN_NATIVE_TEXT_WORDS = 20
+
     def __init__(self):
         quality = os.getenv("QUALITY_PRESET", "balanced")
         self.languages = os.getenv("LANGUAGES", "eng")
@@ -182,6 +186,44 @@ class OCRPipeline:
         self.llm = LLMCorrector()
         self.exporter = DocumentExporter()
         logger.info("OCR Pipeline initialised")
+
+    @staticmethod
+    def _extract_formatted_text(page) -> str:
+        """Extract text with bold/italic formatting from a PDF page using PyMuPDF.
+
+        Returns markdown-annotated text (``**bold**``, ``*italic*``) or an
+        empty string when the page contains no selectable text (scanned image).
+        """
+        try:
+            text_dict = page.get_text("dict")
+            parts: List[str] = []
+            for block in text_dict.get("blocks", []):
+                if block.get("type") != 0:
+                    continue
+                for line in block.get("lines", []):
+                    line_parts: List[str] = []
+                    for span in line.get("spans", []):
+                        word = span.get("text", "")
+                        if not word.strip():
+                            line_parts.append(word)
+                            continue
+                        flags = span.get("flags", 0)
+                        font = span.get("font", "")
+                        is_bold = bool(flags & 16) or "Bold" in font or "bold" in font
+                        is_italic = bool(flags & 2) or "Italic" in font or "italic" in font or "Oblique" in font
+                        if is_bold and is_italic:
+                            line_parts.append(f"***{word}***")
+                        elif is_bold:
+                            line_parts.append(f"**{word}**")
+                        elif is_italic:
+                            line_parts.append(f"*{word}*")
+                        else:
+                            line_parts.append(word)
+                    parts.append("".join(line_parts))
+            return "\n".join(parts)
+        except Exception as exc:
+            logger.debug(f"PyMuPDF text extraction failed: {exc}")
+            return ""
 
     def process_pdf(self, pdf_path: str, quality: str = "balanced",
                     header_trim: float = 0, footer_trim: float = 0) -> Dict[str, Any]:
@@ -224,18 +266,25 @@ class OCRPipeline:
                     img = img[top_cut:h - max(bot_cut, 0), :]
                 h, w = img.shape[:2]
 
-                # 2. OpenCV pre-processing
+                # 2. Try direct text extraction for text-based PDFs (preserves formatting)
+                native_text = self._extract_formatted_text(page)
+                native_word_count = len(native_text.split()) if native_text else 0
+
+                # 3. OpenCV pre-processing (always needed for table/figure detection)
                 preprocessed = self.preprocessor.preprocess(img, quality=q)
 
-                # 3. Layout detection (on original colour image)
+                # 4. Layout detection (on original colour image)
                 layout_result = self.layout.detect_layout(img, page_num)
                 detections = layout_result.get("detections", {})
 
-                # 4. OCR per detected text region
+                # 5. OCR per detected text region (skip if native text is sufficient)
                 text_regions = detections.get("text_regions", [])
                 page_text_parts: List[str] = []
 
-                if text_regions:
+                if native_word_count >= self.MIN_NATIVE_TEXT_WORDS:
+                    # Text-based PDF page — use formatted native text
+                    page_text_parts.append(native_text)
+                elif text_regions:
                     text_regions.sort(key=lambda r: r["bbox"][1])
                     for region in text_regions:
                         x0, y0, x1, y1 = [int(v) for v in region["bbox"]]
@@ -246,8 +295,7 @@ class OCRPipeline:
                         crop = preprocessed[y0:y1, x0:x1]
                         if crop.size == 0:
                             continue
-                        ocr_result = self.ocr.ocr_image(
-                            crop, region_type=region.get("class", "plain text"))
+                        ocr_result = self.ocr.ocr_image(crop)
                         raw_text = ocr_result.get("text", "")
                         conf = ocr_result.get("confidence", 0)
                         original_crop = img[y0:y1, x0:x1]
@@ -270,7 +318,7 @@ class OCRPipeline:
                 if page_text.strip():
                     all_text_parts.append(page_text)
 
-                # 5. Table extraction
+                # 6. Table extraction
                 table_dets = detections.get("tables", [])
                 if table_dets:
                     tables = self.table_extractor.extract_tables(img, table_dets)
@@ -281,7 +329,7 @@ class OCRPipeline:
                             all_text_parts.append(f"\n[Table]\n{t['text']}\n")
                     total_tables += len(table_dets)
 
-                # 6. Figure extraction
+                # 7. Figure extraction
                 figure_dets = detections.get("figures", [])
                 if figure_dets:
                     figures = self.image_extractor.extract_figures(

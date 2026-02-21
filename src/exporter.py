@@ -3,6 +3,7 @@ Document Exporter + Image Extractor
 Export OCR results to DOCX, TXT, HTML with embedded figures and tables.
 """
 import os
+import re
 import logging
 import base64
 import tempfile
@@ -30,6 +31,15 @@ try:
     BS4_AVAILABLE = True
 except ImportError:
     BS4_AVAILABLE = False
+
+# Pre-compiled regex for markdown-style inline formatting
+_FORMAT_RE = re.compile(
+    r'\*\*\*(?P<bi>.+?)\*\*\*'   # ***bold-italic***
+    r'|\*\*(?P<b>.+?)\*\*'       # **bold**
+    r'|\*(?P<i>.+?)\*'           # *italic*
+    r'|(?P<plain>[^*]+|\*)',      # plain text or a lone unmatched asterisk
+    re.DOTALL,
+)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -164,6 +174,27 @@ class DocumentExporter:
         return path
 
     # ── DOCX ──────────────────────────────────────────────────────────────────
+    @staticmethod
+    def _add_runs_with_formatting(paragraph, text: str,
+                                  font_name: Optional[str] = None,
+                                  font_size=None):
+        """Add runs to *paragraph* with markdown-style bold/italic formatting."""
+        for m in _FORMAT_RE.finditer(text):
+            run = paragraph.add_run(
+                m.group("bi") or m.group("b") or m.group("i") or m.group("plain") or ""
+            )
+            if m.group("bi"):
+                run.bold = True
+                run.italic = True
+            elif m.group("b"):
+                run.bold = True
+            elif m.group("i"):
+                run.italic = True
+            if font_name:
+                run.font.name = font_name
+            if font_size:
+                run.font.size = font_size
+
     def create_docx(self, text: str,
                     tables_html: Optional[List[str]] = None,
                     figures: Optional[List[Dict[str, Any]]] = None,
@@ -211,10 +242,9 @@ class DocumentExporter:
                     run.font.name = self.FONT_NAME
                     run.font.size = Pt(self.FONT_SIZE_NORMAL)
                 continue
-            p = doc.add_paragraph(stripped)
-            for run in p.runs:
-                run.font.name = self.FONT_NAME
-                run.font.size = Pt(self.FONT_SIZE_NORMAL)
+            p = doc.add_paragraph()
+            self._add_runs_with_formatting(
+                p, stripped, self.FONT_NAME, Pt(self.FONT_SIZE_NORMAL))
 
         if tables_html and BS4_AVAILABLE:
             for th in tables_html:
