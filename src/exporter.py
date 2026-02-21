@@ -36,6 +36,7 @@ import re as _re
 _BOLD_ITALIC_RE = _re.compile(r'\*\*\*(.+?)\*\*\*')
 _BOLD_RE = _re.compile(r'\*\*(.+?)\*\*')
 _ITALIC_RE = _re.compile(r'\*(.+?)\*')
+_INLINE_FORMAT_RE = _re.compile(r'(\*\*\*.+?\*\*\*|\*\*.+?\*\*|\*.+?\*)')
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -176,22 +177,23 @@ class DocumentExporter:
     # ── DOCX inline formatting ────────────────────────────────────────────────
     def _add_inline_runs(self, paragraph, text: str):
         """Add runs to a paragraph, applying bold/italic for markdown markers."""
-        # Split text by bold-italic, bold, and italic markers
-        pattern = _re.compile(r'(\*\*\*.+?\*\*\*|\*\*.+?\*\*|\*.+?\*)')
         pos = 0
-        for match in pattern.finditer(text):
+        for match in _INLINE_FORMAT_RE.finditer(text):
             if match.start() > pos:
                 paragraph.add_run(text[pos:match.start()])
             token = match.group()
-            if token.startswith('***'):
-                run = paragraph.add_run(token[3:-3])
+            if _BOLD_ITALIC_RE.fullmatch(token):
+                inner = _BOLD_ITALIC_RE.fullmatch(token).group(1)
+                run = paragraph.add_run(inner)
                 run.bold = True
                 run.italic = True
-            elif token.startswith('**'):
-                run = paragraph.add_run(token[2:-2])
+            elif _BOLD_RE.fullmatch(token):
+                inner = _BOLD_RE.fullmatch(token).group(1)
+                run = paragraph.add_run(inner)
                 run.bold = True
             else:
-                run = paragraph.add_run(token[1:-1])
+                inner = _ITALIC_RE.fullmatch(token).group(1)
+                run = paragraph.add_run(inner)
                 run.italic = True
             run.font.name = self.FONT_NAME
             run.font.size = Pt(self.FONT_SIZE_NORMAL)
