@@ -187,11 +187,11 @@ def process_document(pdf_file, quality_label, header_pct, footer_pct,
                 None, None, gr.update(visible=False), gr.update())
 
 
-def download_from_history(username_state, session_token, entry_id_input):
+def download_from_history(username_state, session_token, entry_id_input, fmt="docx"):
     username = auth.validate_session(session_token) or username_state or "anonymous"
     if not entry_id_input:
         return None
-    return history.get_file_path(username, entry_id_input.strip(), "docx")
+    return history.get_file_path(username, entry_id_input.strip(), fmt)
 
 
 def refresh_history(username_state, session_token):
@@ -361,8 +361,11 @@ def create_interface():
                     with gr.Row():
                         entry_id_input = gr.Textbox(label="Entry ID",
                                                     placeholder="Paste entry ID...")
-                        dl_history_btn = gr.Button("Download DOCX", variant="primary")
-                    dl_history_file = gr.File(label="Downloaded file", interactive=False)
+                        dl_history_docx_btn = gr.Button("Download DOCX", variant="primary")
+                        dl_history_txt_btn = gr.Button("Download TXT", variant="secondary")
+                    with gr.Row():
+                        dl_history_docx_file = gr.File(label="Word (.docx)", interactive=False)
+                        dl_history_txt_file = gr.File(label="Text (.txt)", interactive=False)
 
                 # ── TAB: System ──────────────────────────────────────
                 with gr.Tab("System Status"):
@@ -433,10 +436,15 @@ def create_interface():
             inputs=[username_state, session_token],
             outputs=[history_table],
         )
-        dl_history_btn.click(
-            fn=download_from_history,
+        dl_history_docx_btn.click(
+            fn=lambda u, t, eid: download_from_history(u, t, eid, "docx"),
             inputs=[username_state, session_token, entry_id_input],
-            outputs=[dl_history_file],
+            outputs=[dl_history_docx_file],
+        )
+        dl_history_txt_btn.click(
+            fn=lambda u, t, eid: download_from_history(u, t, eid, "txt"),
+            inputs=[username_state, session_token, entry_id_input],
+            outputs=[dl_history_txt_file],
         )
 
     return app
