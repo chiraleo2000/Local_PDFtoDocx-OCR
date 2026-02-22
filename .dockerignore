@@ -20,19 +20,17 @@ venv/
 .env
 .env.local
 
-# Tests
-tests/
-
-# Models (large, download at runtime)
-models/
+# Tests — allow (needed for in-container integration tests)
+# tests/
 
 # OS junk
 .DS_Store
 Thumbs.db
 
-# Build artifacts
+# Build / runtime data (use volumes instead)
 build/
 dist/
+correction_data/
 *.tmp
 *.bak
 *.log

@@ -1,8 +1,13 @@
 """
-Layout Detection & Table Extraction Module
+Layout Detection & Table Extraction Module — v0.4
 DocLayout-YOLO for AI-powered layout detection with OpenCV contour fallback.
 Detects text blocks, tables, figures, formulas, headings on page images.
-Includes table grid extraction and per-cell OCR.
+Includes table grid extraction and per-cell OCR with language support.
+
+v0.4 changes:
+  - Fix torch.load weights_only issue for PyTorch >= 2.6
+  - Improved OpenCV fallback: multi-scale line detection, table scoring
+  - Smarter figure-vs-table classification
 """
 import os
 import logging
@@ -18,6 +23,14 @@ _PLAIN_TEXT = "plain text"
 # ── Optional heavy imports ────────────────────────────────────────────────────
 YOLO_AVAILABLE = False
 try:
+    # Patch torch.load for PyTorch >= 2.6 (weights_only default changed to True)
+    import torch
+    _original_torch_load = torch.load
+    def _safe_torch_load(*args, **kwargs):
+        kwargs.setdefault("weights_only", False)
+        return _original_torch_load(*args, **kwargs)
+    torch.load = _safe_torch_load
+
     from doclayout_yolo import YOLOv10
     YOLO_AVAILABLE = True
     logger.info("DocLayout-YOLO available")
@@ -56,7 +69,7 @@ class LayoutDetector:
     TEXT_CLASSES = {"title", _PLAIN_TEXT}
 
     def __init__(self, model_path: Optional[str] = None,
-                 confidence_threshold: float = 0.25,
+                 confidence_threshold: float = 0.15,
                  iou_threshold: float = 0.45):
         self.confidence = float(os.getenv("YOLO_CONFIDENCE", str(confidence_threshold)))
         self.iou = float(os.getenv("YOLO_NMS", str(iou_threshold)))
@@ -86,21 +99,28 @@ class LayoutDetector:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def detect_layout(self, image: np.ndarray, page_number: int = 0) -> Dict[str, Any]:
-        """Detect layout elements in a page image."""
+    def detect_layout(self, image: np.ndarray, page_number: int = 0,
+                      confidence: Optional[float] = None) -> Dict[str, Any]:
+        """Detect layout elements in a page image.
+
+        Args:
+            confidence: Override YOLO confidence threshold (lower = more detections).
+        """
         if self.model_loaded:
-            return self._detect_yolo(image, page_number)
+            return self._detect_yolo(image, page_number, confidence)
         return self._detect_opencv_fallback(image, page_number)
 
     # ── YOLO detection ────────────────────────────────────────────────────────
 
-    def _detect_yolo(self, image: np.ndarray, page_number: int) -> Dict[str, Any]:
+    def _detect_yolo(self, image: np.ndarray, page_number: int,
+                     confidence: Optional[float] = None) -> Dict[str, Any]:
         try:
             import tempfile, uuid
+            conf = confidence if confidence is not None else self.confidence
             tmp = os.path.join(tempfile.gettempdir(), f"yolo_{uuid.uuid4().hex}.png")
             cv2.imwrite(tmp, image)
             results = self.model.predict(tmp, imgsz=1280,
-                                         conf=self.confidence, iou=self.iou)
+                                         conf=conf, iou=self.iou)
             try:
                 os.remove(tmp)
             except OSError:
@@ -114,10 +134,10 @@ class LayoutDetector:
                 boxes = r.boxes
                 for i in range(len(boxes)):
                     cls_id = int(boxes.cls[i].item())
-                    conf = float(boxes.conf[i].item())
+                    box_conf = float(boxes.conf[i].item())
                     bbox = boxes.xyxy[i].cpu().numpy().tolist()
                     cls_name = self.LAYOUT_CLASSES.get(cls_id, "unknown")
-                    det = {"bbox": bbox, "confidence": conf,
+                    det = {"bbox": bbox, "confidence": box_conf,
                            "class": cls_name, "class_id": cls_id}
                     if cls_name in self.FIGURE_CLASSES:
                         detections["figures"].append(det)
@@ -132,6 +152,9 @@ class LayoutDetector:
                     else:
                         detections["other"].append(det)
 
+            # ── Reclassify figures that look like tables ──────────────
+            self._reclassify_figures_as_tables(image, detections)
+
             return {
                 "page": page_number,
                 "detections": detections,
@@ -140,6 +163,76 @@ class LayoutDetector:
         except Exception as exc:
             logger.error(f"YOLO detection failed: {exc}")
             return self._detect_opencv_fallback(image, page_number)
+
+    def _reclassify_figures_as_tables(self, image: np.ndarray,
+                                      detections: Dict[str, List]) -> None:
+        """Move figure detections that contain grid/ruled lines to the tables list.
+
+        Uses three heuristics (any one triggers reclassification):
+          1. Both H and V grid lines present (classic bordered table).
+          2. Multiple horizontal rules only (borderless form or row-striped table).
+          3. High text-pixel density + wide aspect ratio (text-heavy table region).
+        """
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
+        remaining_figures = []
+        for det in detections["figures"]:
+            x0, y0, x1, y1 = [int(v) for v in det["bbox"]]
+            ih, iw = gray.shape[:2]
+            x0, y0 = max(0, x0), max(0, y0)
+            x1, y1 = min(iw, x1), min(ih, y1)
+            roi = gray[y0:y1, x0:x1]
+            if roi.size == 0:
+                remaining_figures.append(det)
+                continue
+
+            rh, rw = roi.shape[:2]
+            area = rh * rw
+            if area < 2000:
+                remaining_figures.append(det)
+                continue
+
+            _, thresh = cv2.threshold(roi, 0, 255,
+                                      cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+            # ── Detect horizontal / vertical lines ──
+            hk = cv2.getStructuringElement(cv2.MORPH_RECT, (max(30, rw // 5), 1))
+            vk = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(30, rh // 5)))
+            hl = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, hk)
+            vl = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, vk)
+            h_density = cv2.countNonZero(hl) / max(area, 1)
+            v_density = cv2.countNonZero(vl) / max(area, 1)
+
+            is_table = False
+            reason = ""
+
+            # Heuristic 1: bordered table (both directions)
+            if h_density > 0.005 and v_density > 0.005:
+                is_table = True
+                reason = f"grid h={h_density:.4f} v={v_density:.4f}"
+
+            # Heuristic 2: horizontal rules only (forms, row tables)
+            elif h_density > 0.012:
+                is_table = True
+                reason = f"h-rules h={h_density:.4f}"
+
+            # Heuristic 3: wide text-heavy region (borderless table)
+            else:
+                aspect = rw / max(rh, 1)
+                text_density = cv2.countNonZero(thresh) / max(area, 1)
+                if aspect > 1.8 and text_density > 0.08 and rh > 60:
+                    is_table = True
+                    reason = f"text-dense aspect={aspect:.1f} td={text_density:.3f}"
+
+            if is_table:
+                det["class"] = "table"
+                det["class_id"] = 5
+                det["reclassified"] = True
+                detections["tables"].append(det)
+                logger.info(f"Reclassified figure -> table ({reason})")
+            else:
+                remaining_figures.append(det)
+
+        detections["figures"] = remaining_figures
 
     # ── OpenCV fallback ───────────────────────────────────────────────────────
 
@@ -211,18 +304,30 @@ class LayoutDetector:
 # Table Extractor
 # ══════════════════════════════════════════════════════════════════════════════
 class TableExtractor:
-    """Detect table grid structure via OpenCV and OCR each cell."""
+    """Detect table grid structure via OpenCV and OCR each cell.
+
+    v0.3: accepts ``languages`` parameter so cell OCR uses the correct
+    language pack (critical for non-English documents).
+    """
 
     def __init__(self):
         self.use_gpu = os.getenv("USE_GPU", "false").lower() == "true"
         self.engine = os.getenv("TABLE_ENGINE", "opencv").lower()
         self._pp_structure = None
         self.enabled = os.getenv("TABLE_DETECTION", "true").lower() == "true"
+        self._ocr_languages = "eng"  # updated per-call via extract_tables()
 
     def extract_tables(self, image: np.ndarray,
-                       table_boxes: List[Dict]) -> List[Dict[str, Any]]:
+                       table_boxes: List[Dict],
+                       languages: str = "eng") -> List[Dict[str, Any]]:
+        """Extract table content from detected table regions.
+
+        Args:
+            languages: Tesseract language string for cell OCR (e.g. ``"tha+eng"``).
+        """
         if not self.enabled or not table_boxes:
             return []
+        self._ocr_languages = languages
         tables = []
         for tbox in table_boxes:
             x0, y0, x1, y1 = [int(v) for v in tbox["bbox"]]
@@ -291,7 +396,11 @@ class TableExtractor:
         ]
 
         if not cells:
-            return {"html": "", "text": self._ocr_region(gray)}
+            # No grid lines found — try full-region OCR and return as plain text
+            text = self._ocr_region(gray)
+            if text.strip():
+                return {"html": "", "text": text}
+            return {"html": "", "text": ""}
 
         rows = self._group_cells_into_rows(cells)
         return self._build_html_table(rows, gray)
@@ -310,7 +419,8 @@ class TableExtractor:
         rows.append(sorted(current_row, key=lambda c: c["x"]))
         return rows
 
-    def _build_html_table(self, rows: List[List[Dict]], gray: np.ndarray) -> Dict[str, Any]:
+    def _build_html_table(self, rows: List[List[Dict]],
+                          gray: np.ndarray) -> Dict[str, Any]:
         html_parts = ["<table border='1' style='border-collapse:collapse;'>"]
         all_text: List[str] = []
         for ri, row in enumerate(rows):
@@ -328,13 +438,14 @@ class TableExtractor:
         html_parts.append("</table>")
         return {"html": "\n".join(html_parts), "text": "\n".join(all_text)}
 
-    @staticmethod
-    def _ocr_region(gray_img: np.ndarray) -> str:
+    def _ocr_region(self, gray_img: np.ndarray) -> str:
+        """OCR a single region using Tesseract with the active language."""
         if not TESSERACT_AVAILABLE:
             return ""
         try:
+            lang = getattr(self, '_ocr_languages', 'eng')
             return pytesseract.image_to_string(
-                gray_img, config="--oem 1 --psm 6"
+                gray_img, lang=lang, config="--oem 1 --psm 6"
             ).strip()
         except Exception:
             return ""

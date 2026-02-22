@@ -1,12 +1,14 @@
 """
-Backend unit / integration tests for the OCR pipeline.
-Tests the pipeline, services, preprocessor, OCR engine, and exporter.
+Backend unit / integration tests for the OCR pipeline — v0.5.
+Tests the pipeline, services, preprocessor, OCR engine, exporter,
+and the new CorrectionStore + manual-region APIs.
 """
 import os
 import shutil
 import tempfile
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -90,6 +92,153 @@ class TestOCRPipeline:
         status = pipeline.get_status()
         assert "ocr_engines" in status
         assert "tesseract" in status["ocr_engines"]
+
+    def test_get_status_has_corrections(self, pipeline):
+        """get_status should include correction stats (v0.5)."""
+        status = pipeline.get_status()
+        assert "corrections" in status
+        c = status["corrections"]
+        assert "total_manual_corrections" in c
+        assert "next_retrain_at" in c
+        assert "retrain_interval" in c
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CorrectionStore tests (v0.5)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestCorrectionStore:
+    @pytest.fixture()
+    def store(self, tmp_path):
+        from src.correction_store import CorrectionStore
+        return CorrectionStore(data_dir=str(tmp_path / "corr"), retrain_interval=5)
+
+    def test_init_creates_dirs(self, store):
+        assert store.images_dir.exists()
+        assert store.labels_dir.exists()
+
+    def test_log_correction_returns_dict(self, store):
+        img = np.ones((200, 300, 3), dtype=np.uint8) * 128
+        result = store.log_correction(
+            page_image=img, bbox=[10, 20, 100, 80],
+            region_class="table", page_number=0, pdf_name="test.pdf",
+        )
+        assert "correction_id" in result
+        assert "total_corrections" in result
+        assert result["total_corrections"] == 1
+
+    def test_log_correction_saves_image(self, store):
+        img = np.ones((200, 300, 3), dtype=np.uint8) * 128
+        store.log_correction(img, [10, 20, 100, 80], "figure", 0, "t.pdf")
+        pngs = list(store.images_dir.glob("*.png"))
+        assert len(pngs) >= 1
+
+    def test_log_correction_saves_label(self, store):
+        img = np.ones((200, 300, 3), dtype=np.uint8) * 128
+        store.log_correction(img, [10, 20, 100, 80], "table", 0, "t.pdf")
+        txts = list(store.labels_dir.glob("*.txt"))
+        assert len(txts) >= 1
+        content = txts[0].read_text()
+        # YOLO format: class cx cy w h
+        parts = content.strip().split()
+        assert len(parts) == 5
+        assert parts[0] == "5"  # table class ID
+
+    def test_corrections_jsonl_appended(self, store):
+        img = np.ones((200, 300, 3), dtype=np.uint8) * 128
+        store.log_correction(img, [10, 20, 100, 80], "figure", 0)
+        store.log_correction(img, [30, 40, 150, 120], "table", 1)
+        assert store.corrections_file.exists()
+        lines = store.corrections_file.read_text().strip().split("\n")
+        assert len(lines) == 2
+
+    def test_get_stats(self, store):
+        img = np.ones((200, 300, 3), dtype=np.uint8) * 128
+        store.log_correction(img, [10, 20, 100, 80], "table", 0)
+        stats = store.get_stats()
+        assert stats["total_manual_corrections"] == 1
+        assert stats["retrain_interval"] == 5
+        assert stats["images_count"] >= 1
+
+    def test_retrain_triggers_at_interval(self, store):
+        """Retrain should trigger when correction count hits interval."""
+        img = np.ones((200, 300, 3), dtype=np.uint8) * 128
+        for i in range(4):
+            r = store.log_correction(img, [10, 20, 100, 80], "table", i)
+            assert r["retrain_triggered"] is False
+        # 5th correction should trigger retrain (interval=5)
+        r = store.log_correction(img, [10, 20, 100, 80], "table", 4)
+        assert r["retrain_triggered"] is True
+
+    def test_auto_source_not_counted(self, store):
+        """Auto-detected regions should not count towards retrain trigger."""
+        img = np.ones((200, 300, 3), dtype=np.uint8) * 128
+        store.log_correction(img, [10, 20, 100, 80], "table", 0,
+                             source="auto")
+        assert store._correction_count == 0
+
+    def test_get_corrections_log(self, store):
+        img = np.ones((200, 300, 3), dtype=np.uint8) * 128
+        store.log_correction(img, [10, 20, 100, 80], "table", 0, "a.pdf")
+        log = store.get_corrections_log(limit=10)
+        assert len(log) >= 1
+        assert log[0]["class"] == "table"
+
+    def test_log_page_detections(self, store):
+        img = np.ones((200, 300, 3), dtype=np.uint8) * 128
+        dets = {
+            "tables": [{"bbox": [10, 20, 100, 80], "class": "table", "confidence": 0.9}],
+            "figures": [{"bbox": [50, 60, 200, 180], "class": "figure", "confidence": 0.8}],
+        }
+        store.log_page_detections(img, dets, 0, "bulk.pdf")
+        txts = [f for f in store.labels_dir.glob("*.txt") if "auto_" in f.name]
+        assert len(txts) >= 1
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Pipeline manual correction API tests (v0.5)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestPipelineCorrections:
+    def test_detect_page_regions(self, pipeline):
+        """detect_page_regions should return detections for a valid PDF page."""
+        assert TEST_PDF.exists()
+        result = pipeline.detect_page_regions(str(TEST_PDF), 0)
+        assert result["success"] is True
+        assert "page_image" in result
+        assert "detections" in result
+        assert isinstance(result["detections"], dict)
+
+    def test_detect_page_regions_invalid_page(self, pipeline):
+        result = pipeline.detect_page_regions(str(TEST_PDF), 9999)
+        assert result["success"] is False
+
+    def test_add_manual_region(self, pipeline):
+        """add_manual_region should log a correction and return stats."""
+        img = np.ones((200, 300, 3), dtype=np.uint8) * 128
+        result = pipeline.add_manual_region(
+            page_image=img, bbox=[10, 20, 100, 80],
+            region_class="table", page_number=0, pdf_name="test.pdf",
+        )
+        assert "correction_id" in result
+        assert "total_corrections" in result
+
+    def test_process_pdf_with_corrections(self, pipeline):
+        """process_pdf_with_corrections should accept manual_regions."""
+        assert TEST_PDF.exists()
+        manual = {0: [{"bbox": [50, 50, 200, 200], "class": "table"}]}
+        result = pipeline.process_pdf_with_corrections(
+            str(TEST_PDF), manual_regions=manual, quality="fast",
+        )
+        assert result["success"] is True
+        assert result["metadata"]["manual_corrections"] == 1
+
+    def test_process_pdf_with_corrections_no_manual(self, pipeline):
+        """Should work fine with no manual regions."""
+        result = pipeline.process_pdf_with_corrections(
+            str(TEST_PDF), quality="fast")
+        assert result["success"] is True
+        assert result["metadata"]["manual_corrections"] == 0
 
 
 # ══════════════════════════════════════════════════════════════════════════════

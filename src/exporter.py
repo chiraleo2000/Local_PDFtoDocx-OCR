@@ -1,6 +1,8 @@
 """
-Document Exporter + Image Extractor
-Export OCR results to DOCX, TXT, HTML with embedded figures and tables.
+Document Exporter + Image Extractor — v0.4
+HTML-first export: Build positioned HTML → convert to DOCX & TXT.
+Images embedded as base64 in HTML, properly transferred to DOCX via htmldocx.
+Figure numbering: 1-based.
 """
 import os
 import logging
@@ -8,14 +10,18 @@ import base64
 import tempfile
 from io import BytesIO
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, TYPE_CHECKING
 
 import cv2
 import numpy as np
 from PIL import Image
 
+if TYPE_CHECKING:
+    from .pipeline import ContentBlock
+
 logger = logging.getLogger(__name__)
 
+# ── Optional imports ──────────────────────────────────────────────────────────
 try:
     from docx import Document
     from docx.shared import Inches, Pt, RGBColor
@@ -31,18 +37,25 @@ try:
 except ImportError:
     BS4_AVAILABLE = False
 
+HTMLDOCX_AVAILABLE = False
+try:
+    from htmldocx import HtmlToDocx
+    HTMLDOCX_AVAILABLE = True
+except ImportError:
+    logger.info("htmldocx not installed — will use fallback DOCX builder")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Image / Figure Extraction
+# Image / Figure Extraction  (1-based numbering)
 # ══════════════════════════════════════════════════════════════════════════════
 class ImageExtractor:
     """Crop detected figure regions, save to disk, and encode to base64."""
 
     def __init__(self, min_width: int = 80, min_height: int = 80,
-                 min_area: int = 10000):
+                 min_area: int = 5000):
         self.min_width = min_width
         self.min_height = min_height
-        self.min_area = min_area
+        self.min_area = int(os.getenv("IMAGE_MIN_AREA", str(min_area)))
         self.enabled = os.getenv("IMAGE_EXTRACTION", "true").lower() == "true"
         self.temp_dir = Path(tempfile.gettempdir()) / "pdf_ocr_images"
         self.temp_dir.mkdir(parents=True, exist_ok=True)
@@ -53,7 +66,7 @@ class ImageExtractor:
         if not self.enabled or not figure_detections:
             return []
 
-        figures = []
+        figures: List[Dict[str, Any]] = []
         img_h, img_w = page_image.shape[:2]
 
         for idx, det in enumerate(figure_detections):
@@ -69,30 +82,41 @@ class ImageExtractor:
             if w < self.min_width or h < self.min_height or w * h < self.min_area:
                 continue
 
-            fname = f"page{page_number}_fig{idx}.png"
+            fig_num = idx + 1                               # 1-based
+            fname = f"page{page_number + 1}_fig{fig_num}.png"
             fpath = self.temp_dir / fname
             cv2.imwrite(str(fpath), crop)
 
             pil_img = Image.fromarray(
-                cv2.cvtColor(crop, cv2.COLOR_BGR2RGB) if len(crop.shape) == 3 else crop
+                cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+                if len(crop.shape) == 3 else crop
             )
             buf = BytesIO()
             pil_img.save(buf, format="PNG")
             b64 = base64.b64encode(buf.getvalue()).decode()
 
             figures.append({
-                "page": page_number, "index": idx,
-                "path": str(fpath), "base64": b64,
-                "width": w, "height": h,
+                "page": page_number,
+                "index": fig_num,                           # 1-based
+                "path": str(fpath),
+                "base64": b64,
+                "width": w,
+                "height": h,
             })
         return figures
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Document Export (DOCX / TXT / HTML)
+# Document Export — HTML-first  (DOCX / TXT / HTML)
 # ══════════════════════════════════════════════════════════════════════════════
 class DocumentExporter:
-    """Export pipeline results to DOCX / TXT / HTML."""
+    """HTML-first exporter (v0.4).
+
+    Build a styled HTML document from ContentBlocks, then:
+      - save the HTML directly
+      - convert HTML -> DOCX via htmldocx (with manual fallback)
+      - derive plain-text from blocks
+    """
 
     FONT_NAME = "Tahoma"
     FONT_SIZE_NORMAL = 11
@@ -101,7 +125,292 @@ class DocumentExporter:
     def __init__(self):
         pass
 
-    # ── TXT ───────────────────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
+    # Primary API (v0.4 — block-based, HTML-first)
+    # ══════════════════════════════════════════════════════════════════════════
+    def create_all_from_blocks(self, blocks: list,
+                               metadata: str = "") -> Dict[str, Optional[str]]:
+        """Create TXT + HTML + DOCX.  HTML is the single source of truth."""
+        html_content = self._build_html(blocks, metadata)
+        return {
+            "txt":  self._blocks_to_txt(blocks, metadata),
+            "html": self._save_html(html_content),
+            "docx": self._html_to_docx(html_content),
+        }
+
+    # ── HTML builder ──────────────────────────────────────────────────────────
+    def _build_html(self, blocks: list, metadata: str = "") -> str:
+        parts: List[str] = [
+            "<!DOCTYPE html>",
+            "<html lang='en'>",
+            "<head>",
+            "<meta charset='utf-8'>",
+            "<title>OCR Result</title>",
+            "<style>",
+            "body { font-family: Tahoma, 'Segoe UI', Arial, sans-serif; "
+            "max-width: 900px; margin: 0 auto; padding: 2rem; "
+            "line-height: 1.8; color: #1e293b; }",
+            "h1, h2, h3 { color: #0f172a; margin-top: 1.5em; margin-bottom: 0.5em; }",
+            "p { margin: 0.4em 0; text-align: justify; }",
+            "table { border-collapse: collapse; width: 100%; margin: 1rem 0; }",
+            "th, td { border: 1px solid #cbd5e1; padding: 8px 12px; "
+            "text-align: left; vertical-align: top; }",
+            "th { background: #f1f5f9; font-weight: bold; }",
+            "figure { margin: 1rem 0; text-align: center; }",
+            "figure img { max-width: 100%; height: auto; border-radius: 4px; "
+            "box-shadow: 0 2px 8px rgba(0,0,0,0.1); }",
+            "figcaption { color: #64748b; font-size: 0.85rem; margin-top: 0.5rem; }",
+            ".page-break { page-break-before: always; border-top: 2px solid #e2e8f0; "
+            "margin-top: 2rem; padding-top: 1rem; color: #94a3b8; "
+            "font-size: 0.85rem; }",
+            ".meta-info { color: #64748b; font-size: 0.85rem; "
+            "border-bottom: 1px solid #e2e8f0; padding-bottom: 1rem; "
+            "margin-bottom: 2rem; white-space: pre-line; }",
+            "</style>",
+            "</head>",
+            "<body>",
+        ]
+
+        if metadata:
+            meta_html = metadata.replace("\n", "<br>")
+            parts.append(f"<div class='meta-info'>{meta_html}</div>")
+
+        current_page = -1
+        for b in blocks:
+            # page divider
+            if b.page != current_page:
+                if current_page < 0:
+                    parts.append(
+                        f"<div class='page-break' style='border:none;margin-top:0;"
+                        f"padding-top:0'>Page {b.page + 1}</div>")
+                else:
+                    parts.append(
+                        f"<div class='page-break'>Page {b.page + 1}</div>")
+                current_page = b.page
+
+            if b.block_type in ("text", "caption"):
+                for line in b.text.split("\n"):
+                    stripped = line.strip()
+                    if stripped:
+                        parts.append(self._text_to_html(stripped))
+
+            elif b.block_type == "table":
+                if b.table_html:
+                    parts.append(b.table_html)
+                elif b.text.strip():
+                    parts.append(f"<pre>{b.text}</pre>")
+
+            elif b.block_type == "figure":
+                b64 = b.figure.get("base64", "")
+                fig_idx = b.figure.get("index", "?")
+                fig_page = b.figure.get("page", "?")
+                page_disp = (fig_page + 1) if isinstance(fig_page, int) else fig_page
+                if b64:
+                    parts.append(
+                        f"<figure>"
+                        f"<img src='data:image/png;base64,{b64}' "
+                        f"alt='Figure {fig_idx}' />"
+                        f"<figcaption>Figure {fig_idx} — "
+                        f"Page {page_disp}</figcaption>"
+                        f"</figure>")
+
+        parts += ["</body>", "</html>"]
+        return "\n".join(parts)
+
+    # ── Save HTML ─────────────────────────────────────────────────────────────
+    @staticmethod
+    def _save_html(html_content: str) -> str:
+        fd, path = tempfile.mkstemp(suffix=".html", prefix="ocr_")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(html_content)
+        return path
+
+    # ── HTML -> DOCX ─────────────────────────────────────────────────────────
+    def _html_to_docx(self, html_content: str) -> Optional[str]:
+        if not DOCX_AVAILABLE:
+            logger.error("python-docx not installed")
+            return None
+
+        # Try htmldocx first — handles images, tables, alignment
+        if HTMLDOCX_AVAILABLE:
+            try:
+                parser = HtmlToDocx()
+                doc = parser.parse_html_string(html_content)
+                fd, path = tempfile.mkstemp(suffix=".docx", prefix="ocr_")
+                os.close(fd)
+                doc.save(path)
+                logger.info("DOCX created via htmldocx")
+                return path
+            except Exception as exc:
+                logger.warning("htmldocx failed (%s) — using fallback", exc)
+
+        # Fallback: manual DOCX from parsed HTML
+        return self._fallback_docx(html_content)
+
+    def _fallback_docx(self, html_content: str) -> Optional[str]:
+        """Create DOCX by parsing HTML with BeautifulSoup."""
+        if not BS4_AVAILABLE:
+            return None
+
+        doc = Document()
+        style = doc.styles["Normal"]
+        style.font.name = self.FONT_NAME
+        style.font.size = Pt(self.FONT_SIZE_NORMAL)
+
+        soup = BeautifulSoup(html_content, "html.parser")
+        body = soup.find("body")
+        if not body:
+            return None
+
+        for el in body.children:
+            if not hasattr(el, "name") or el.name is None:
+                continue
+            self._el_to_docx(doc, el)
+
+        fd, path = tempfile.mkstemp(suffix=".docx", prefix="ocr_")
+        os.close(fd)
+        doc.save(path)
+        return path
+
+    def _el_to_docx(self, doc, el) -> None:
+        tag = el.name
+        if tag in ("h1", "h2", "h3"):
+            h = doc.add_heading(el.get_text(strip=True), level=int(tag[1]))
+            for run in h.runs:
+                run.font.name = self.FONT_NAME
+
+        elif tag == "p":
+            text = el.get_text(strip=True)
+            if text:
+                p = doc.add_paragraph(text)
+                for run in p.runs:
+                    run.font.name = self.FONT_NAME
+                    run.font.size = Pt(self.FONT_SIZE_NORMAL)
+
+        elif tag == "pre":
+            text = el.get_text()
+            if text.strip():
+                p = doc.add_paragraph(text)
+                for run in p.runs:
+                    run.font.name = "Consolas"
+                    run.font.size = Pt(self.FONT_SIZE_TABLE)
+
+        elif tag == "table":
+            self._table_el_to_docx(doc, el)
+
+        elif tag == "figure":
+            self._figure_el_to_docx(doc, el)
+
+        elif tag == "div":
+            for child in el.children:
+                if hasattr(child, "name") and child.name:
+                    self._el_to_docx(doc, child)
+
+    def _table_el_to_docx(self, doc, table_el) -> None:
+        rows_el = table_el.find_all("tr")
+        if not rows_el:
+            return
+        max_cols = max(len(r.find_all(["td", "th"])) for r in rows_el)
+        if max_cols == 0:
+            return
+        tbl = doc.add_table(rows=len(rows_el), cols=max_cols)
+        tbl.style = "Table Grid"
+        for ri, row_el in enumerate(rows_el):
+            cells = row_el.find_all(["td", "th"])
+            for ci, cell_el in enumerate(cells):
+                if ci < max_cols:
+                    cell = tbl.cell(ri, ci)
+                    cell.text = cell_el.get_text(strip=True)
+                    for p in cell.paragraphs:
+                        for run in p.runs:
+                            run.font.name = self.FONT_NAME
+                            run.font.size = Pt(self.FONT_SIZE_TABLE)
+                            if cell_el.name == "th":
+                                run.bold = True
+
+    def _figure_el_to_docx(self, doc, figure_el) -> None:
+        img_el = figure_el.find("img")
+        caption_el = figure_el.find("figcaption")
+        caption_text = caption_el.get_text(strip=True) if caption_el else ""
+        if not img_el:
+            return
+        src = img_el.get("src", "")
+        try:
+            if src.startswith("data:image"):
+                b64_data = src.split(",", 1)[1] if "," in src else ""
+                if b64_data:
+                    img_bytes = base64.b64decode(b64_data)
+                    doc.add_picture(BytesIO(img_bytes), width=Inches(5.5))
+            if caption_text:
+                p = doc.add_paragraph(caption_text)
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                for run in p.runs:
+                    run.font.size = Pt(9)
+                    run.font.color.rgb = RGBColor(100, 116, 139)
+        except Exception as exc:
+            logger.warning("Failed to embed figure in DOCX: %s", exc)
+
+    # ── TXT from blocks ──────────────────────────────────────────────────────
+    def _blocks_to_txt(self, blocks: list, metadata: str = "") -> str:
+        parts: List[str] = []
+        if metadata:
+            parts.append(f"--- Document Info ---\n{metadata}\n---\n")
+
+        current_page = -1
+        for b in blocks:
+            if b.page != current_page:
+                if current_page >= 0:
+                    parts.append(f"\n{'─' * 60}")
+                parts.append(f"  Page {b.page + 1}")
+                parts.append(f"{'─' * 60}\n")
+                current_page = b.page
+
+            if b.block_type in ("text", "caption"):
+                if b.text.strip():
+                    parts.append(b.text)
+            elif b.block_type == "table":
+                if b.text.strip():
+                    parts.append(f"[Table]\n{b.text}")
+            elif b.block_type == "figure":
+                fig_idx = b.figure.get("index", "?")
+                pg = b.figure.get("page", "?")
+                page_disp = (pg + 1) if isinstance(pg, int) else pg
+                parts.append(f"[Figure {fig_idx} — Page {page_disp}]")
+
+        content = "\n\n".join(parts)
+        fd, path = tempfile.mkstemp(suffix=".txt", prefix="ocr_")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        return path
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    @staticmethod
+    def _text_to_html(stripped: str) -> str:
+        if not stripped:
+            return ""
+        if stripped.startswith("###"):
+            return f"<h3>{stripped.lstrip('# ')}</h3>"
+        if stripped.startswith("##"):
+            return f"<h2>{stripped.lstrip('# ')}</h2>"
+        if stripped.startswith("#"):
+            return f"<h1>{stripped.lstrip('# ')}</h1>"
+        return f"<p>{stripped}</p>"
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # LEGACY API  (backward-compatible with tests)
+    # ══════════════════════════════════════════════════════════════════════════
+    @staticmethod
+    def _line_to_html_element(stripped: str) -> str:
+        if not stripped:
+            return "<br>"
+        if stripped.startswith("###"):
+            return f"<h3>{stripped.lstrip('# ')}</h3>"
+        if stripped.startswith("##"):
+            return f"<h2>{stripped.lstrip('# ')}</h2>"
+        if stripped.startswith("#"):
+            return f"<h1>{stripped.lstrip('# ')}</h1>"
+        return f"<p>{stripped}</p>"
+
     @staticmethod
     def create_txt(text: str, metadata: str = "") -> str:
         content = ""
@@ -112,19 +421,7 @@ class DocumentExporter:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(content)
         return path
-    @staticmethod
-    def _line_to_html_element(stripped: str) -> str:
-        """Convert one stripped text line to an HTML element string."""
-        if not stripped:
-            return "<br>"
-        if stripped.startswith("###"):
-            return f"<h3>{stripped.lstrip('# ')}</h3>"
-        if stripped.startswith("##"):
-            return f"<h2>{stripped.lstrip('# ')}</h2>"
-        if stripped.startswith("#"):
-            return f"<h1>{stripped.lstrip('# ')}</h1>"
-        return f"<p>{stripped}</p>"
-    # ── HTML ──────────────────────────────────────────────────────────────────
+
     @staticmethod
     def create_html(text: str, tables_html: Optional[List[str]] = None,
                     figures: Optional[List[Dict[str, Any]]] = None,
@@ -146,7 +443,17 @@ class DocumentExporter:
                          f"border-bottom:1px solid #e2e8f0;padding-bottom:1rem;"
                          f"margin-bottom:2rem'>{metadata}</div>")
         for line in text.split("\n"):
-            parts.append(DocumentExporter._line_to_html_element(line.strip()))
+            stripped = line.strip()
+            if not stripped:
+                parts.append("<br>")
+            elif stripped.startswith("###"):
+                parts.append(f"<h3>{stripped.lstrip('# ')}</h3>")
+            elif stripped.startswith("##"):
+                parts.append(f"<h2>{stripped.lstrip('# ')}</h2>")
+            elif stripped.startswith("#"):
+                parts.append(f"<h1>{stripped.lstrip('# ')}</h1>")
+            else:
+                parts.append(f"<p>{stripped}</p>")
         if tables_html:
             for th in tables_html:
                 parts.append(th)
@@ -156,125 +463,26 @@ class DocumentExporter:
                 if b64:
                     parts.append(
                         f"<figure><img src='data:image/png;base64,{b64}' "
-                        f"alt='Figure'/></figure>"
-                    )
+                        f"alt='Figure'/></figure>")
         parts.append("</body></html>")
         fd, path = tempfile.mkstemp(suffix=".html", prefix="ocr_")
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write("\n".join(parts))
         return path
 
-    # ── DOCX ──────────────────────────────────────────────────────────────────
     def create_docx(self, text: str,
                     tables_html: Optional[List[str]] = None,
                     figures: Optional[List[Dict[str, Any]]] = None,
                     metadata: str = "") -> Optional[str]:
+        """Legacy API — builds HTML first, then converts to DOCX."""
         if not DOCX_AVAILABLE:
             logger.error("python-docx not installed")
             return None
+        html_path = self.create_html(text, tables_html, figures, metadata)
+        with open(html_path, "r", encoding="utf-8") as f:
+            html_content = f.read()
+        return self._html_to_docx(html_content)
 
-        doc = Document()
-        style = doc.styles["Normal"]
-        font = style.font
-        font.name = self.FONT_NAME
-        font.size = Pt(self.FONT_SIZE_NORMAL)
-
-        if metadata:
-            p = doc.add_paragraph()
-            run = p.add_run(metadata)
-            run.font.size = Pt(9)
-            run.font.color.rgb = RGBColor(100, 116, 139)
-            doc.add_paragraph("")
-
-        for line in text.split("\n"):
-            stripped = line.strip()
-            if not stripped:
-                doc.add_paragraph("")
-                continue
-            self._add_docx_paragraph(doc, stripped)
-
-        if tables_html and BS4_AVAILABLE:
-            for th in tables_html:
-                self._add_html_table(doc, th)
-        if figures:
-            for fig in figures:
-                self._add_figure(doc, fig)
-
-        fd, path = tempfile.mkstemp(suffix=".docx", prefix="ocr_")
-        os.close(fd)
-        doc.save(path)
-        return path
-
-    def _add_docx_paragraph(self, doc, stripped: str) -> None:
-        """Add a single line as the appropriate DOCX block element."""
-        heading_level = (
-            3 if stripped.startswith("###") else
-            2 if stripped.startswith("##") else
-            1 if stripped.startswith("#") else
-            0
-        )
-        if heading_level:
-            h = doc.add_heading(stripped.lstrip("# "), level=heading_level)
-            for run in h.runs:
-                run.font.name = self.FONT_NAME
-            return
-        if stripped.startswith(("\u2022 ", "- ", "* ")):
-            p = doc.add_paragraph(stripped[2:], style="List Bullet")
-        else:
-            p = doc.add_paragraph(stripped)
-        for run in p.runs:
-            run.font.name = self.FONT_NAME
-            run.font.size = Pt(self.FONT_SIZE_NORMAL)
-
-    def _add_html_table(self, doc, html: str):
-        soup = BeautifulSoup(html, "html.parser")
-        table_el = soup.find("table")
-        if not table_el:
-            return
-        rows_el = table_el.find_all("tr")
-        if not rows_el:
-            return
-        max_cols = max(len(row.find_all(["td", "th"])) for row in rows_el)
-        if max_cols == 0:
-            return
-        tbl = doc.add_table(rows=len(rows_el), cols=max_cols)
-        tbl.style = "Table Grid"
-        for ri, row_el in enumerate(rows_el):
-            cells = row_el.find_all(["td", "th"])
-            for ci, cell_el in enumerate(cells):
-                if ci < max_cols:
-                    self._style_table_cell(tbl.cell(ri, ci), cell_el)
-
-    def _style_table_cell(self, cell, cell_el) -> None:
-        """Apply OCR text and font style to a DOCX table cell."""
-        cell.text = cell_el.get_text(strip=True)
-        for p in cell.paragraphs:
-            for run in p.runs:
-                run.font.name = self.FONT_NAME
-                run.font.size = Pt(self.FONT_SIZE_TABLE)
-                if cell_el.name == "th":
-                    run.bold = True
-
-    def _add_figure(self, doc, fig: Dict[str, Any]):
-        b64 = fig.get("base64", "")
-        path = fig.get("path", "")
-        try:
-            if path and os.path.exists(path):
-                doc.add_picture(path, width=Inches(5.5))
-            elif b64:
-                img_bytes = base64.b64decode(b64)
-                doc.add_picture(BytesIO(img_bytes), width=Inches(5.5))
-            page = fig.get("page", "?")
-            idx = fig.get("index", "?")
-            p = doc.add_paragraph(f"Figure {idx} — Page {page}")
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            for run in p.runs:
-                run.font.size = Pt(9)
-                run.font.color.rgb = RGBColor(100, 116, 139)
-        except Exception as exc:
-            logger.warning(f"Failed to embed figure: {exc}")
-
-    # ── Convenience ───────────────────────────────────────────────────────────
     def create_all(self, text: str,
                    tables_html: Optional[List[str]] = None,
                    figures: Optional[List[Dict[str, Any]]] = None,

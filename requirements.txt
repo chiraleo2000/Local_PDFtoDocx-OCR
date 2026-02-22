@@ -1,6 +1,6 @@
 # ============================================
 # PDF-to-DOCX OCR Pipeline — Dependencies
-# v0.1.0-dev
+# v0.4.0  |  HTML-first, YOLO layout detection
 # ============================================
 
 # Core
@@ -23,8 +23,12 @@ PyMuPDF>=1.23.0
 python-docx>=0.8.11
 beautifulsoup4>=4.12.0
 lxml>=4.9.0
+htmldocx>=0.0.6
 
-# Network (for LLM Ollama backend)
+# Layout Detection (YOLO)
+doclayout-yolo>=0.0.2
+
+# Network
 requests>=2.31.0
 
 # ============================================
@@ -32,9 +36,7 @@ requests>=2.31.0
 # ============================================
 # paddleocr>=2.7.0        # Better multilingual OCR
 # easyocr>=1.7.0          # Fallback OCR for distorted text
-# doclayout-yolo>=0.0.2   # AI layout detection
-# torch>=2.0.0            # Required for YOLO / EasyOCR / LLM
-# torchvision>=0.15.0     # Required for EasyOCR
-# transformers>=4.37.0    # Qwen2.5-VL LLM correction
-# accelerate>=0.25.0      # LLM quantisation
-# bitsandbytes>=0.43.0    # 4-bit quant (Linux only)
+
+# NOTE: torch is auto-installed by doclayout-yolo.
+# For CPU-only (smaller image), install from:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
