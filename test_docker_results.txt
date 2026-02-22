@@ -1,0 +1,13 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.0.2, pluggy-1.6.0 -- C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1
+plugins: anyio-4.12.1
+collecting ... collected 4 items
+
+tests/test_ui.py::TestDockerDeployment::test_http_root_returns_200 PASSED [ 25%]
+tests/test_ui.py::TestDockerDeployment::test_container_pipeline_processes_pdf PASSED [ 50%]
+tests/test_ui.py::TestDockerDeployment::test_container_pipeline_with_language PASSED [ 75%]
+tests/test_ui.py::TestDockerDeployment::test_container_gradio_interface_builds PASSED [100%]
+
+======================== 4 passed in 195.19s (0:03:15) ========================
