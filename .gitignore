@@ -39,3 +39,5 @@ Thumbs.db
 *.docx
 *.html
 !README.md
+test_*_results.txt
+results_nodock.txt
