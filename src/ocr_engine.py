@@ -82,7 +82,6 @@ class OCREngine:
     # ── Public API ──
 
     def ocr_image(self, image: np.ndarray,
-                  region_type: str = "plain text",
                   engine_override: Optional[str] = None) -> Dict[str, Any]:
         """
         Run OCR on an image crop.
@@ -104,7 +103,7 @@ class OCREngine:
 
     def ocr_full_page(self, image: np.ndarray) -> Dict[str, Any]:
         """Run OCR on a full page image."""
-        return self.ocr_image(image, region_type="plain text")
+        return self.ocr_image(image)
 
     # ── Engine runners ──
 

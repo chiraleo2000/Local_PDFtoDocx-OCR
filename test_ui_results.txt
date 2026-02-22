@@ -1,0 +1,310 @@
+b:\Python312\Lib\site-packages\pytest_asyncio\plugin.py:208: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-8.3.5, pluggy-1.6.0 -- B:\Python312\python.exe
+cachedir: .pytest_cache
+metadata: {'Python': '3.12.10', 'Platform': 'Windows-11-10.0.26200-SP0', 'Packages': {'pytest': '8.3.5', 'pluggy': '1.6.0'}, 'Plugins': {'anyio': '4.9.0', 'Faker': '37.6.0', 'langsmith': '0.3.45', 'asyncio': '1.0.0', 'base-url': '2.1.0', 'cov': '7.0.0', 'docker': '3.1.2', 'html': '4.2.0', 'metadata': '3.1.1', 'mock': '3.14.1', 'order': '1.3.0', 'playwright': '0.7.2', 'typeguard': '4.4.4'}, 'JAVA_HOME': 'C:\\Program Files\\Eclipse Adoptium\\jre-17.0.18.8-hotspot\\', 'Base URL': ''}
+rootdir: C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1
+plugins: anyio-4.9.0, Faker-37.6.0, langsmith-0.3.45, asyncio-1.0.0, base-url-2.1.0, cov-7.0.0, docker-3.1.2, html-4.2.0, metadata-3.1.1, mock-3.14.1, order-1.3.0, playwright-0.7.2, typeguard-4.4.4
+asyncio: mode=Mode.STRICT, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 34 items / 2 deselected / 32 selected
+
+Windows fatal exception: code 0xc0000139
+
+Current thread 0x00006d5c (most recent call first):
+  File "B:\Python312\Lib\ctypes\__init__.py", line 379 in __init__
+  File "B:\Python312\Lib\site-packages\torch\_ops.py", line 1392 in load_library
+  File "B:\Python312\Lib\site-packages\torchvision\extension.py", line 34 in <module>
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 999 in exec_module
+  File "<frozen importlib._bootstrap>", line 935 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1331 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1360 in _find_and_load
+  File "B:\Python312\Lib\site-packages\torchvision\__init__.py", line 9 in <module>
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 999 in exec_module
+  File "<frozen importlib._bootstrap>", line 935 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1331 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1360 in _find_and_load
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap>", line 1310 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1360 in _find_and_load
+  File "B:\Python312\Lib\site-packages\easyocr\recognition.py", line 6 in <module>
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 999 in exec_module
+  File "<frozen importlib._bootstrap>", line 935 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1331 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1360 in _find_and_load
+  File "B:\Python312\Lib\site-packages\easyocr\easyocr.py", line 3 in <module>
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 999 in exec_module
+  File "<frozen importlib._bootstrap>", line 935 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1331 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1360 in _find_and_load
+  File "B:\Python312\Lib\site-packages\easyocr\__init__.py", line 1 in <module>
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 999 in exec_module
+  File "<frozen importlib._bootstrap>", line 935 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1331 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1360 in _find_and_load
+  File "C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\src\ocr_engine.py", line 35 in <module>
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 999 in exec_module
+  File "<frozen importlib._bootstrap>", line 935 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1331 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1360 in _find_and_load
+  File "C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\src\pipeline.py", line 20 in <module>
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 999 in exec_module
+  File "<frozen importlib._bootstrap>", line 935 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1331 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1360 in _find_and_load
+  File "C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\tests\test_ui.py", line 38 in app_module
+  File "B:\Python312\Lib\site-packages\_pytest\fixtures.py", line 898 in call_fixture_func
+  File "B:\Python312\Lib\site-packages\_pytest\fixtures.py", line 1140 in pytest_fixture_setup
+  File "B:\Python312\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "B:\Python312\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "B:\Python312\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "B:\Python312\Lib\site-packages\_pytest\fixtures.py", line 1091 in execute
+  File "B:\Python312\Lib\site-packages\_pytest\fixtures.py", line 617 in _get_active_fixturedef
+  File "B:\Python312\Lib\site-packages\_pytest\fixtures.py", line 1047 in execute
+  File "B:\Python312\Lib\site-packages\_pytest\fixtures.py", line 617 in _get_active_fixturedef
+  File "B:\Python312\Lib\site-packages\_pytest\fixtures.py", line 532 in getfixturevalue
+  File "B:\Python312\Lib\site-packages\_pytest\fixtures.py", line 697 in _fillfixtures
+  File "B:\Python312\Lib\site-packages\_pytest\python.py", line 1630 in setup
+  File "B:\Python312\Lib\site-packages\_pytest\runner.py", line 514 in setup
+  File "B:\Python312\Lib\site-packages\_pytest\runner.py", line 160 in pytest_runtest_setup
+  File "B:\Python312\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "B:\Python312\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "B:\Python312\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "B:\Python312\Lib\site-packages\_pytest\runner.py", line 242 in <lambda>
+  File "B:\Python312\Lib\site-packages\_pytest\runner.py", line 341 in from_call
+  File "B:\Python312\Lib\site-packages\_pytest\runner.py", line 241 in call_and_report
+  File "B:\Python312\Lib\site-packages\_pytest\runner.py", line 126 in runtestprotocol
+  File "B:\Python312\Lib\site-packages\_pytest\runner.py", line 113 in pytest_runtest_protocol
+  File "B:\Python312\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "B:\Python312\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "B:\Python312\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "B:\Python312\Lib\site-packages\_pytest\main.py", line 362 in pytest_runtestloop
+  File "B:\Python312\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "B:\Python312\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "B:\Python312\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "B:\Python312\Lib\site-packages\_pytest\main.py", line 337 in _main
+  File "B:\Python312\Lib\site-packages\_pytest\main.py", line 283 in wrap_session
+  File "B:\Python312\Lib\site-packages\_pytest\main.py", line 330 in pytest_cmdline_main
+  File "B:\Python312\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "B:\Python312\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "B:\Python312\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "B:\Python312\Lib\site-packages\_pytest\config\__init__.py", line 175 in main
+  File "B:\Python312\Lib\site-packages\_pytest\config\__init__.py", line 201 in console_main
+  File "B:\Python312\Lib\site-packages\pytest\__main__.py", line 9 in <module>
+  File "<frozen runpy>", line 88 in _run_code
+  File "<frozen runpy>", line 198 in _run_module_as_main
+tests/test_ui.py::TestAuthenticationActions::test_guest_login_succeeds PASSED [  3%]
+tests/test_ui.py::TestAuthenticationActions::test_login_returns_session_token PASSED [  6%]
+tests/test_ui.py::TestAuthenticationActions::test_invalid_password_rejected PASSED [  9%]
+tests/test_ui.py::TestAuthenticationActions::test_unknown_user_rejected PASSED [ 12%]
+tests/test_ui.py::TestAuthenticationActions::test_register_new_user PASSED [ 15%]
+tests/test_ui.py::TestAuthenticationActions::test_register_duplicate_user_fails PASSED [ 18%]
+tests/test_ui.py::TestAuthenticationActions::test_session_token_is_valid PASSED [ 21%]
+tests/test_ui.py::TestAuthenticationActions::test_logout_invalidates_session PASSED [ 25%]
+tests/test_ui.py::TestPDFConversionActions::test_conversion_succeeds PASSED [ 28%]
+tests/test_ui.py::TestPDFConversionActions::test_conversion_extracts_text PASSED [ 31%]
+tests/test_ui.py::TestPDFConversionActions::test_conversion_produces_docx PASSED [ 34%]
+tests/test_ui.py::TestPDFConversionActions::test_conversion_produces_txt PASSED [ 37%]
+tests/test_ui.py::TestPDFConversionActions::test_txt_file_contains_text PASSED [ 40%]
+tests/test_ui.py::TestPDFConversionActions::test_docx_file_is_valid_word PASSED [ 43%]
+tests/test_ui.py::TestPDFConversionActions::test_metadata_has_page_count PASSED [ 46%]
+tests/test_ui.py::TestPDFConversionActions::test_no_pdf_returns_error PASSED [ 50%]
+tests/test_ui.py::TestPDFConversionActions::test_header_footer_trim PASSED [ 53%]
+tests/test_ui.py::TestDownloadActionsOCRPage::test_download_docx_file_exists PASSED [ 56%]
+tests/test_ui.py::TestDownloadActionsOCRPage::test_download_txt_file_exists PASSED [ 59%]
+tests/test_ui.py::TestDownloadActionsOCRPage::test_download_docx_not_empty PASSED [ 62%]
+tests/test_ui.py::TestDownloadActionsOCRPage::test_download_txt_not_empty PASSED [ 65%]
+tests/test_ui.py::TestHistoryPageActions::test_history_lists_entries PASSED [ 68%]
+tests/test_ui.py::TestHistoryPageActions::test_history_entry_has_filename PASSED [ 71%]
+tests/test_ui.py::TestHistoryPageActions::test_history_entry_has_entry_id PASSED [ 75%]
+tests/test_ui.py::TestHistoryPageActions::test_history_download_docx_button PASSED [ 78%]
+tests/test_ui.py::TestHistoryPageActions::test_history_download_txt_button PASSED [ 81%]
+tests/test_ui.py::TestHistoryPageActions::test_history_download_docx_is_valid_word PASSED [ 84%]
+tests/test_ui.py::TestHistoryPageActions::test_history_download_invalid_entry_returns_none PASSED [ 87%]
+tests/test_ui.py::TestHistoryPageActions::test_history_download_empty_entry_id_returns_none PASSED [ 90%]
+tests/test_ui.py::TestGradioInterfaceConstruction::test_create_interface_no_error PASSED [ 93%]
+tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_convert_tab PASSED [ 96%]
+tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_history_tab PASSED [100%]
+
+============================== warnings summary ===============================
+tests/test_ui.py::TestAuthenticationActions::test_guest_login_succeeds
+tests/test_ui.py::TestAuthenticationActions::test_guest_login_succeeds
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+tests/test_ui.py::TestAuthenticationActions::test_guest_login_succeeds
+tests/test_ui.py::TestAuthenticationActions::test_guest_login_succeeds
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+tests/test_ui.py::TestAuthenticationActions::test_guest_login_succeeds
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+
+tests/test_ui.py::TestGradioInterfaceConstruction::test_create_interface_no_error
+  B:\Python312\Lib\site-packages\gradio\routes.py:63: PendingDeprecationWarning: Please use `import python_multipart` instead.
+    from multipart.multipart import parse_options_header
+
+tests/test_ui.py::TestGradioInterfaceConstruction::test_create_interface_no_error
+  B:\Python312\Lib\site-packages\gradio\utils.py:98: DeprecationWarning: There is no current event loop
+    asyncio.get_event_loop()
+
+tests/test_ui.py::TestGradioInterfaceConstruction::test_create_interface_no_error
+tests/test_ui.py::TestGradioInterfaceConstruction::test_create_interface_no_error
+tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_convert_tab
+tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_convert_tab
+tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_history_tab
+tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_history_tab
+  B:\Python312\Lib\site-packages\gradio\routes.py:1215: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    @app.on_event("startup")
+
+tests/test_ui.py::TestGradioInterfaceConstruction::test_create_interface_no_error
+tests/test_ui.py::TestGradioInterfaceConstruction::test_create_interface_no_error
+tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_convert_tab
+tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_convert_tab
+tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_history_tab
+tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_history_tab
+  B:\Python312\Lib\site-packages\fastapi\applications.py:4576: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    return self.router.on_event(event_type)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+========== 32 passed, 2 deselected, 19 warnings in 141.75s (0:02:21) ==========
+--- Logging error ---
+Traceback (most recent call last):
+  File "B:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "B:\Python312\Lib\threading.py", line 1032, in _bootstrap
+    self._bootstrap_inner()
+  File "B:\Python312\Lib\threading.py", line 1075, in _bootstrap_inner
+    self.run()
+  File "B:\Python312\Lib\threading.py", line 1012, in run
+    self._target(*self._args, **self._kwargs)
+  File "B:\Python312\Lib\site-packages\gradio\analytics.py", line 70, in _do_normal_analytics_request
+    data["ip_address"] = get_local_ip_address()
+  File "B:\Python312\Lib\site-packages\gradio\analytics.py", line 131, in get_local_ip_address
+    ip_address = httpx.get(
+  File "B:\Python312\Lib\site-packages\httpx\_api.py", line 195, in get
+    return request(
+  File "B:\Python312\Lib\site-packages\httpx\_api.py", line 109, in request
+    return client.request(
+  File "B:\Python312\Lib\site-packages\httpx\_client.py", line 825, in request
+    return self.send(request, auth=auth, follow_redirects=follow_redirects)
+  File "B:\Python312\Lib\site-packages\httpx\_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "B:\Python312\Lib\site-packages\httpx\_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "B:\Python312\Lib\site-packages\httpx\_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "B:\Python312\Lib\site-packages\httpx\_client.py", line 1025, in _send_single_request
+    logger.info(
+Message: 'HTTP Request: %s %s "%s %d %s"'
+Arguments: ('GET', URL('https://checkip.amazonaws.com/'), 'HTTP/1.1', 200, '')
+--- Logging error ---
+Traceback (most recent call last):
+  File "B:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "B:\Python312\Lib\threading.py", line 1032, in _bootstrap
+    self._bootstrap_inner()
+  File "B:\Python312\Lib\threading.py", line 1075, in _bootstrap_inner
+    self.run()
+  File "B:\Python312\Lib\threading.py", line 1012, in run
+    self._target(*self._args, **self._kwargs)
+  File "B:\Python312\Lib\site-packages\gradio\analytics.py", line 104, in version_check
+    latest_pkg_version = httpx.get(url=PKG_VERSION_URL, timeout=3).json()["version"]
+  File "B:\Python312\Lib\site-packages\httpx\_api.py", line 195, in get
+    return request(
+  File "B:\Python312\Lib\site-packages\httpx\_api.py", line 109, in request
+    return client.request(
+  File "B:\Python312\Lib\site-packages\httpx\_client.py", line 825, in request
+    return self.send(request, auth=auth, follow_redirects=follow_redirects)
+  File "B:\Python312\Lib\site-packages\httpx\_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "B:\Python312\Lib\site-packages\httpx\_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "B:\Python312\Lib\site-packages\httpx\_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "B:\Python312\Lib\site-packages\httpx\_client.py", line 1025, in _send_single_request
+    logger.info(
+Message: 'HTTP Request: %s %s "%s %d %s"'
+Arguments: ('GET', URL('https://api.gradio.app/pkg-version'), 'HTTP/1.1', 200, 'OK')
+--- Logging error ---
+Traceback (most recent call last):
+  File "B:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "B:\Python312\Lib\threading.py", line 1032, in _bootstrap
+    self._bootstrap_inner()
+  File "B:\Python312\Lib\threading.py", line 1075, in _bootstrap_inner
+    self.run()
+  File "B:\Python312\Lib\threading.py", line 1012, in run
+    self._target(*self._args, **self._kwargs)
+  File "B:\Python312\Lib\site-packages\gradio\analytics.py", line 104, in version_check
+    latest_pkg_version = httpx.get(url=PKG_VERSION_URL, timeout=3).json()["version"]
+  File "B:\Python312\Lib\site-packages\httpx\_api.py", line 195, in get
+    return request(
+  File "B:\Python312\Lib\site-packages\httpx\_api.py", line 109, in request
+    return client.request(
+  File "B:\Python312\Lib\site-packages\httpx\_client.py", line 825, in request
+    return self.send(request, auth=auth, follow_redirects=follow_redirects)
+  File "B:\Python312\Lib\site-packages\httpx\_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "B:\Python312\Lib\site-packages\httpx\_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "B:\Python312\Lib\site-packages\httpx\_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "B:\Python312\Lib\site-packages\httpx\_client.py", line 1025, in _send_single_request
+    logger.info(
+Message: 'HTTP Request: %s %s "%s %d %s"'
+Arguments: ('GET', URL('https://api.gradio.app/pkg-version'), 'HTTP/1.1', 200, 'OK')
+--- Logging error ---
+Traceback (most recent call last):
+  File "B:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "B:\Python312\Lib\threading.py", line 1032, in _bootstrap
+    self._bootstrap_inner()
+  File "B:\Python312\Lib\threading.py", line 1075, in _bootstrap_inner
+    self.run()
+  File "B:\Python312\Lib\threading.py", line 1012, in run
+    self._target(*self._args, **self._kwargs)
+  File "B:\Python312\Lib\site-packages\gradio\analytics.py", line 104, in version_check
+    latest_pkg_version = httpx.get(url=PKG_VERSION_URL, timeout=3).json()["version"]
+  File "B:\Python312\Lib\site-packages\httpx\_api.py", line 195, in get
+    return request(
+  File "B:\Python312\Lib\site-packages\httpx\_api.py", line 109, in request
+    return client.request(
+  File "B:\Python312\Lib\site-packages\httpx\_client.py", line 825, in request
+    return self.send(request, auth=auth, follow_redirects=follow_redirects)
+  File "B:\Python312\Lib\site-packages\httpx\_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "B:\Python312\Lib\site-packages\httpx\_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "B:\Python312\Lib\site-packages\httpx\_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "B:\Python312\Lib\site-packages\httpx\_client.py", line 1025, in _send_single_request
+    logger.info(
+Message: 'HTTP Request: %s %s "%s %d %s"'
+Arguments: ('GET', URL('https://api.gradio.app/pkg-version'), 'HTTP/1.1', 200, 'OK')
+sys:1: DeprecationWarning: builtin type swigvarlink has no __module__ attribute

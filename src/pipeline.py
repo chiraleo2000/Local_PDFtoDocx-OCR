@@ -32,9 +32,7 @@ except ImportError:
     pass
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 # Text Processing Helpers
-# ══════════════════════════════════════════════════════════════════════════════
 _THAI_CHAR_RE = re.compile(r"[\u0E00-\u0E7F]")
 _THAI_SPACE_RE = re.compile(r"([\u0E00-\u0E7F])\s+([\u0E00-\u0E7F])")
 
@@ -65,9 +63,7 @@ def clean_text(text: str, languages: str = "eng") -> str:
     return "\n".join(lines).strip()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 # LLM Post-Correction (optional — disabled by default)
-# ══════════════════════════════════════════════════════════════════════════════
 class LLMCorrector:
     """Correct OCR text using a vision-language model (optional).
     Supports Ollama and Qwen2.5-VL backends.  Pass-through when disabled."""
@@ -159,9 +155,7 @@ class LLMCorrector:
         return False
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 # Pipeline
-# ══════════════════════════════════════════════════════════════════════════════
 class OCRPipeline:
     """Full PDF -> DOCX/TXT/HTML pipeline."""
 
@@ -194,7 +188,6 @@ class OCRPipeline:
 
             doc = fitz.open(pdf_path)
             page_count = len(doc)
-
             all_text_parts: List[str] = []
             all_tables_html: List[str] = []
             all_figures: List[Dict[str, Any]] = []
@@ -203,97 +196,25 @@ class OCRPipeline:
 
             for page_num in range(page_count):
                 logger.info(f"Processing page {page_num + 1}/{page_count}")
-                page = doc[page_num]
-
-                # 1. Render page to high-res image
-                mat = fitz.Matrix(scale, scale)
-                pix = page.get_pixmap(matrix=mat)
-                img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
-                    pix.h, pix.w, pix.n)
-                if img.shape[2] == 4:
-                    img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
-                elif img.shape[2] == 3:
-                    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-
+                img = self._render_page_image(doc[page_num], scale, header_trim, footer_trim)
                 h, w = img.shape[:2]
-
-                # Apply header/footer trim
-                top_cut = int((header_trim / 100) * h) if header_trim > 0 else 0
-                bot_cut = int((footer_trim / 100) * h) if footer_trim > 0 else 0
-                if top_cut > 0 or bot_cut > 0:
-                    img = img[top_cut:h - max(bot_cut, 0), :]
-                h, w = img.shape[:2]
-
-                # 2. OpenCV pre-processing
                 preprocessed = self.preprocessor.preprocess(img, quality=q)
-
-                # 3. Layout detection (on original colour image)
                 layout_result = self.layout.detect_layout(img, page_num)
                 detections = layout_result.get("detections", {})
 
-                # 4. OCR per detected text region
-                text_regions = detections.get("text_regions", [])
-                page_text_parts: List[str] = []
-
-                if text_regions:
-                    text_regions.sort(key=lambda r: r["bbox"][1])
-                    for region in text_regions:
-                        x0, y0, x1, y1 = [int(v) for v in region["bbox"]]
-                        x0, y0 = max(0, x0), max(0, y0)
-                        x1, y1 = min(w, x1), min(h, y1)
-                        if x1 <= x0 or y1 <= y0:
-                            continue
-                        crop = preprocessed[y0:y1, x0:x1]
-                        if crop.size == 0:
-                            continue
-                        ocr_result = self.ocr.ocr_image(
-                            crop, region_type=region.get("class", "plain text"))
-                        raw_text = ocr_result.get("text", "")
-                        conf = ocr_result.get("confidence", 0)
-                        original_crop = img[y0:y1, x0:x1]
-                        corrected = self.llm.correct_text(raw_text, original_crop, conf)
-                        text = corrected["corrected_text"]
-                        if text.strip():
-                            page_text_parts.append(text)
-                else:
-                    # No layout regions — OCR the full page
-                    ocr_result = self.ocr.ocr_full_page(preprocessed)
-                    raw_text = ocr_result.get("text", "")
-                    conf = ocr_result.get("confidence", 0)
-                    corrected = self.llm.correct_text(raw_text, img, conf)
-                    text = corrected["corrected_text"]
-                    if text.strip():
-                        page_text_parts.append(text)
-
-                page_text = "\n".join(page_text_parts)
-                page_text = clean_text(page_text, self.languages)
+                page_text_parts = self._ocr_text_regions(
+                    detections.get("text_regions", []), preprocessed, img, h, w)
+                page_text = clean_text("\n".join(page_text_parts), self.languages)
                 if page_text.strip():
                     all_text_parts.append(page_text)
 
-                # 5. Table extraction
-                table_dets = detections.get("tables", [])
-                if table_dets:
-                    tables = self.table_extractor.extract_tables(img, table_dets)
-                    for t in tables:
-                        if t.get("html"):
-                            all_tables_html.append(t["html"])
-                        if t.get("text"):
-                            all_text_parts.append(f"\n[Table]\n{t['text']}\n")
-                    total_tables += len(table_dets)
-
-                # 6. Figure extraction
-                figure_dets = detections.get("figures", [])
-                if figure_dets:
-                    figures = self.image_extractor.extract_figures(
-                        img, figure_dets, page_num)
-                    all_figures.extend(figures)
-                    total_figures += len(figure_dets)
+                total_tables += self._process_table_detections(
+                    img, detections.get("tables", []), all_text_parts, all_tables_html)
+                total_figures += self._process_figure_detections(
+                    img, detections.get("figures", []), page_num, all_figures)
 
             doc.close()
-
             full_text = "\n\n".join(all_text_parts)
-
-            # Build metadata
             engines = self.ocr.get_available_engines()
             active_engines = [k for k, v in engines.items() if v]
             meta_str = (
@@ -304,10 +225,7 @@ class OCRPipeline:
                 f"Figures: {total_figures}\n"
                 f"LLM correction: {'enabled' if self.llm.enabled else 'disabled'}"
             )
-
-            files = self.exporter.create_all(
-                full_text, all_tables_html, all_figures, meta_str)
-
+            files = self.exporter.create_all(full_text, all_tables_html, all_figures, meta_str)
             return {
                 "success": True,
                 "text": full_text,
@@ -329,6 +247,75 @@ class OCRPipeline:
                 "success": False, "text": "", "files": {},
                 "metadata": {}, "error": str(exc),
             }
+
+    @staticmethod
+    def _render_page_image(page, scale: float,
+                           header_trim: float, footer_trim: float) -> np.ndarray:
+        """Render one PDF page to a BGR numpy image and apply header/footer trim."""
+        mat = fitz.Matrix(scale, scale)
+        pix = page.get_pixmap(matrix=mat)
+        img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
+        if img.shape[2] == 4:
+            img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+        elif img.shape[2] == 3:
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        h = img.shape[0]
+        top_cut = int((header_trim / 100) * h) if header_trim > 0 else 0
+        bot_cut = int((footer_trim / 100) * h) if footer_trim > 0 else 0
+        if top_cut > 0 or bot_cut > 0:
+            img = img[top_cut:h - max(bot_cut, 0), :]
+        return img
+
+    def _ocr_text_regions(self, text_regions: List[Dict],
+                          preprocessed: np.ndarray, img: np.ndarray,
+                          h: int, w: int) -> List[str]:
+        """OCR each detected text region and return extracted text parts."""
+        if not text_regions:
+            ocr_result = self.ocr.ocr_full_page(preprocessed)
+            raw = ocr_result.get("text", "")
+            conf = ocr_result.get("confidence", 0)
+            corrected = self.llm.correct_text(raw, img, conf)
+            return [corrected["corrected_text"]] if corrected["corrected_text"].strip() else []
+
+        text_regions.sort(key=lambda r: r["bbox"][1])
+        parts: List[str] = []
+        for region in text_regions:
+            x0, y0, x1, y1 = [int(v) for v in region["bbox"]]
+            x0, y0 = max(0, x0), max(0, y0)
+            x1, y1 = min(w, x1), min(h, y1)
+            if x1 <= x0 or y1 <= y0:
+                continue
+            crop = preprocessed[y0:y1, x0:x1]
+            if crop.size == 0:
+                continue
+            ocr_result = self.ocr.ocr_image(crop)
+            raw = ocr_result.get("text", "")
+            conf = ocr_result.get("confidence", 0)
+            corrected = self.llm.correct_text(raw, img[y0:y1, x0:x1], conf)
+            if corrected["corrected_text"].strip():
+                parts.append(corrected["corrected_text"])
+        return parts
+
+    def _process_table_detections(self, img: np.ndarray, table_dets: List[Dict],
+                                  all_text_parts: List[str],
+                                  all_tables_html: List[str]) -> int:
+        """Extract tables, appending HTML and text; return count."""
+        if not table_dets:
+            return 0
+        for t in self.table_extractor.extract_tables(img, table_dets):
+            if t.get("html"):
+                all_tables_html.append(t["html"])
+            if t.get("text"):
+                all_text_parts.append(f"\n[Table]\n{t['text']}\n")
+        return len(table_dets)
+
+    def _process_figure_detections(self, img: np.ndarray, figure_dets: List[Dict],
+                                   page_num: int, all_figures: List[Dict]) -> int:
+        """Extract figures, extending the global list; return count."""
+        if not figure_dets:
+            return 0
+        all_figures.extend(self.image_extractor.extract_figures(img, figure_dets, page_num))
+        return len(figure_dets)
 
     def get_status(self) -> Dict[str, Any]:
         return {

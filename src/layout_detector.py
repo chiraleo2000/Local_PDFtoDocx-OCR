@@ -13,6 +13,8 @@ import cv2
 
 logger = logging.getLogger(__name__)
 
+_PLAIN_TEXT = "plain text"
+
 # ── Optional heavy imports ────────────────────────────────────────────────────
 YOLO_AVAILABLE = False
 try:
@@ -45,13 +47,13 @@ class LayoutDetector:
     """Document layout detector: YOLO-based with OpenCV fallback."""
 
     LAYOUT_CLASSES = {
-        0: "title", 1: "plain text", 2: "abandon", 3: "figure",
+        0: "title", 1: _PLAIN_TEXT, 2: "abandon", 3: "figure",
         4: "figure_caption", 5: "table", 6: "table_caption",
         7: "table_footnote", 8: "isolate_formula", 9: "formula_caption",
     }
     FIGURE_CLASSES = {"figure"}
     TABLE_CLASSES = {"table"}
-    TEXT_CLASSES = {"title", "plain text"}
+    TEXT_CLASSES = {"title", _PLAIN_TEXT}
 
     def __init__(self, model_path: Optional[str] = None,
                  confidence_threshold: float = 0.25,
@@ -168,27 +170,15 @@ class LayoutDetector:
             bbox = [x, y, x + cw, y + ch]
             aspect = cw / max(ch, 1)
 
-            if aspect > 1.5 and ch < h * 0.05:
+            if aspect > 1.5 and ch < h * 0.05 or not (0.7 < aspect < 1.5 and area > w * h * 0.05):
                 text_regions.append({"bbox": bbox, "confidence": 0.6,
-                                     "class": "plain text", "class_id": 1})
-            elif 0.7 < aspect < 1.5 and area > w * h * 0.05:
-                roi = thresh[y:y + ch, x:x + cw]
-                hk = cv2.getStructuringElement(cv2.MORPH_RECT,
-                                               (max(40, cw // 4), 1))
-                vk = cv2.getStructuringElement(cv2.MORPH_RECT,
-                                               (1, max(40, ch // 4)))
-                hl = cv2.morphologyEx(roi, cv2.MORPH_OPEN, hk)
-                vl = cv2.morphologyEx(roi, cv2.MORPH_OPEN, vk)
-                if (cv2.countNonZero(hl) > area * 0.01
-                        and cv2.countNonZero(vl) > area * 0.01):
-                    tables.append({"bbox": bbox, "confidence": 0.5,
-                                   "class": "table", "class_id": 5})
-                else:
-                    figures.append({"bbox": bbox, "confidence": 0.4,
-                                    "class": "figure", "class_id": 3})
+                                     "class": _PLAIN_TEXT, "class_id": 1})
             else:
-                text_regions.append({"bbox": bbox, "confidence": 0.6,
-                                     "class": "plain text", "class_id": 1})
+                det = self._classify_mixed_region(thresh, bbox, x, y, cw, ch, area)
+                if det["class"] == "table":
+                    tables.append(det)
+                else:
+                    figures.append(det)
 
         text_regions.sort(key=lambda r: r["bbox"][1])
         return {
@@ -200,6 +190,21 @@ class LayoutDetector:
             },
             "total": len(text_regions) + len(tables) + len(figures),
         }
+
+    @staticmethod
+    def _classify_mixed_region(
+        thresh: np.ndarray, bbox: List, x: int, y: int,
+        cw: int, ch: int, area: int,
+    ) -> Dict[str, Any]:
+        """Classify a contour as table or figure based on grid-line density."""
+        roi = thresh[y:y + ch, x:x + cw]
+        hk = cv2.getStructuringElement(cv2.MORPH_RECT, (max(40, cw // 4), 1))
+        vk = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(40, ch // 4)))
+        hl = cv2.morphologyEx(roi, cv2.MORPH_OPEN, hk)
+        vl = cv2.morphologyEx(roi, cv2.MORPH_OPEN, vk)
+        if cv2.countNonZero(hl) > area * 0.01 and cv2.countNonZero(vl) > area * 0.01:
+            return {"bbox": bbox, "confidence": 0.5, "class": "table", "class_id": 5}
+        return {"bbox": bbox, "confidence": 0.4, "class": "figure", "class_id": 3}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -278,19 +283,24 @@ class TableExtractor:
         grid = cv2.add(h_lines, v_lines)
         contours, _ = cv2.findContours(grid, cv2.RETR_TREE,
                                        cv2.CHAIN_APPROX_SIMPLE)
-        cells = []
-        for cnt in contours:
-            x, y, cw, ch = cv2.boundingRect(cnt)
-            if 15 < cw < w * 0.95 and 10 < ch < h * 0.95:
-                cells.append({"x": x, "y": y, "w": cw, "h": ch})
+        cells = [
+            {"x": x, "y": y, "w": cw, "h": ch}
+            for cnt in contours
+            for x, y, cw, ch in [cv2.boundingRect(cnt)]
+            if 15 < cw < w * 0.95 and 10 < ch < h * 0.95
+        ]
 
         if not cells:
-            text = self._ocr_region(gray)
-            return {"html": "", "text": text}
+            return {"html": "", "text": self._ocr_region(gray)}
 
+        rows = self._group_cells_into_rows(cells)
+        return self._build_html_table(rows, gray)
+
+    @staticmethod
+    def _group_cells_into_rows(cells: List[Dict]) -> List[List[Dict]]:
         cells.sort(key=lambda c: (c["y"], c["x"]))
         rows: List[List[Dict]] = []
-        current_row = [cells[0]]
+        current_row: List[Dict] = [cells[0]]
         for cell in cells[1:]:
             if abs(cell["y"] - current_row[0]["y"]) < 15:
                 current_row.append(cell)
@@ -298,12 +308,14 @@ class TableExtractor:
                 rows.append(sorted(current_row, key=lambda c: c["x"]))
                 current_row = [cell]
         rows.append(sorted(current_row, key=lambda c: c["x"]))
+        return rows
 
+    def _build_html_table(self, rows: List[List[Dict]], gray: np.ndarray) -> Dict[str, Any]:
         html_parts = ["<table border='1' style='border-collapse:collapse;'>"]
         all_text: List[str] = []
         for ri, row in enumerate(rows):
             html_parts.append("<tr>")
-            row_texts = []
+            row_texts: List[str] = []
             for cell in row:
                 cx, cy, cw, ch = cell["x"], cell["y"], cell["w"], cell["h"]
                 cell_img = gray[cy:cy + ch, cx:cx + cw]

@@ -11,7 +11,7 @@
 ## Features
 
 | Feature | Description |
-|---|---|
+| --- | --- |
 | **Multi-Engine OCR** | Tesseract 5 (primary) with optional PaddleOCR and EasyOCR fallback |
 | **OpenCV Pre-processing** | Deskew, denoise, binarise, CLAHE contrast enhancement |
 | **Layout Detection** | DocLayout-YOLO (AI) or OpenCV contour-based fallback — detects text blocks, tables, figures |
@@ -28,7 +28,7 @@
 
 ## Architecture
 
-```
+```text
 PDF Input
     │
     ▼
@@ -54,7 +54,7 @@ PDF Input
 
 ## Project Structure
 
-```
+```text
 ├── app.py                 # Gradio web application
 ├── Dockerfile             # Docker deployment
 ├── requirements.txt       # Python dependencies
@@ -97,7 +97,7 @@ cp .env.example .env
 python app.py
 ```
 
-Open **http://127.0.0.1:7870** in your browser.
+Open <http://127.0.0.1:7870> in your browser.
 
 Default login: `guest` / `guest123`
 
@@ -120,7 +120,7 @@ docker run -d --name pdf-ocr -p 7870:7870 pdf-ocr-pipeline:0.1.0-dev
 Copy `.env.example` to `.env` and adjust:
 
 | Variable | Default | Description |
-|---|---|---|
+| --- | --- | --- |
 | `SERVER_PORT` | `7870` | Web server port |
 | `OCR_ENGINE` | `tesseract` | Primary OCR engine (`tesseract`, `paddleocr`, `easyocr`) |
 | `LANGUAGES` | `eng` | OCR languages (e.g. `tha+eng`, `chi_sim+eng`) |
@@ -161,6 +161,7 @@ pip install torch>=2.0.0 transformers>=4.37.0 accelerate>=0.25.0
 5. **Download** the Word file, or view extracted text
 
 The pipeline processes each page:
+
 - Renders to high-resolution image
 - Applies OpenCV preprocessing
 - Detects layout regions (text, tables, figures)
@@ -185,7 +186,7 @@ python -c "from src.ocr_engine import OCREngine; e = OCREngine(); print(e.get_av
 
 This project is licensed under the **Apache License 2.0** — see the [LICENSE](LICENSE) file for details.
 
-```
+```text
 Copyright 2026 BeTime
 
 Licensed under the Apache License, Version 2.0 (the "License");

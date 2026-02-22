@@ -19,19 +19,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ── Fix Gradio boolean-schema crash (safe, version-agnostic) ─────────────────
+try:
+    import gradio_client.utils as _gc_utils
+    if hasattr(_gc_utils, "_json_schema_to_python_type"):
+        _orig_json_schema_fn = _gc_utils._json_schema_to_python_type
+
+        def _patched(schema, defs=None):
+            if isinstance(schema, bool):
+                return "Any" if schema else "None"
+            return _orig_json_schema_fn(schema, defs)
+
+        _gc_utils._json_schema_to_python_type = _patched
+except Exception:
+    pass
+# ─────────────────────────────────────────────────────────────────────────────
+
 import gradio as gr
-
-# ── Fix Gradio 4.44.x bug: boolean JSON schemas crash API info parser ─────────
-import gradio_client.utils as _gc_utils
-_orig_json_schema_fn = _gc_utils._json_schema_to_python_type
-
-def _patched_json_schema_to_python_type(schema, defs=None):
-    if isinstance(schema, bool):
-        return "Any" if schema else "None"
-    return _orig_json_schema_fn(schema, defs)
-
-_gc_utils._json_schema_to_python_type = _patched_json_schema_to_python_type
-# ───────────────────────────────────────────────────────────────────────────────
 
 from src.pipeline import OCRPipeline
 from src.services import AuthManager, HistoryManager
@@ -47,6 +51,8 @@ QUALITY_OPTIONS = {
     "Balanced (Recommended)": "balanced",
     "Best (Accurate)": "accurate",
 }
+
+_PAGE_ZERO = "Page 0 / 0"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -120,18 +126,18 @@ def handle_logout(session_token):
 # ══════════════════════════════════════════════════════════════════════════════
 def load_pdf_preview(pdf_file, quality, header_pct, footer_pct):
     if pdf_file is None:
-        return None, "Page 0 / 0", 0, 0, gr.update(visible=False)
-    pdf_path = pdf_file if isinstance(pdf_file, str) else pdf_file
+        return None, _PAGE_ZERO, 0, 0, gr.update(visible=False)
+    pdf_path = str(pdf_file)
     img, total = render_page_preview(pdf_path, 0, 1.5, header_pct, footer_pct)
     if img is not None:
         return img, f"Page 1 / {total}", 1, total, gr.update(visible=True)
-    return None, "Page 0 / 0", 0, 0, gr.update(visible=False)
+    return None, _PAGE_ZERO, 0, 0, gr.update(visible=False)
 
 
 def change_page(pdf_file, direction, current, total, header_pct, footer_pct):
     if pdf_file is None or total == 0:
         return None, f"Page {current} / {total}", current
-    pdf_path = pdf_file if isinstance(pdf_file, str) else pdf_file
+    pdf_path = str(pdf_file)
     new_page = max(1, min(current + direction, total))
     img, _ = render_page_preview(pdf_path, new_page - 1, 1.5, header_pct, footer_pct)
     return img, f"Page {new_page} / {total}", new_page
@@ -143,7 +149,7 @@ def process_document(pdf_file, quality_label, header_pct, footer_pct,
         return ("", "Please upload a PDF file first.",
                 None, None, gr.update(visible=False), gr.update())
 
-    pdf_path = pdf_file if isinstance(pdf_file, str) else pdf_file
+    pdf_path = str(pdf_file)
     quality = QUALITY_OPTIONS.get(quality_label, "balanced")
 
     result = pipeline.process_pdf(
@@ -187,11 +193,18 @@ def process_document(pdf_file, quality_label, header_pct, footer_pct,
                 None, None, gr.update(visible=False), gr.update())
 
 
-def download_from_history(username_state, session_token, entry_id_input):
+def download_docx_from_history(username_state, session_token, entry_id_input):
     username = auth.validate_session(session_token) or username_state or "anonymous"
-    if not entry_id_input:
+    if not entry_id_input or not entry_id_input.strip():
         return None
     return history.get_file_path(username, entry_id_input.strip(), "docx")
+
+
+def download_txt_from_history(username_state, session_token, entry_id_input):
+    username = auth.validate_session(session_token) or username_state or "anonymous"
+    if not entry_id_input or not entry_id_input.strip():
+        return None
+    return history.get_file_path(username, entry_id_input.strip(), "txt")
 
 
 def refresh_history(username_state, session_token):
@@ -331,7 +344,7 @@ def create_interface():
                             with gr.Row(visible=False) as page_controls:
                                 prev_btn = gr.Button("Prev", size="sm")
                                 page_label = gr.Textbox(
-                                    value="Page 0 / 0", interactive=False,
+                                    value=_PAGE_ZERO, interactive=False,
                                     show_label=False, container=False,
                                 )
                                 next_btn = gr.Button("Next", size="sm")
@@ -358,11 +371,25 @@ def create_interface():
                         datatype=["str", "str", "str"],
                         interactive=False,
                     )
+                    gr.HTML("<p style='color:#64748b;font-size:0.9rem;'>"
+                            "Paste an Entry ID from the table above, then click a "
+                            "download button to retrieve your saved files.</p>")
                     with gr.Row():
-                        entry_id_input = gr.Textbox(label="Entry ID",
-                                                    placeholder="Paste entry ID...")
-                        dl_history_btn = gr.Button("Download DOCX", variant="primary")
-                    dl_history_file = gr.File(label="Downloaded file", interactive=False)
+                        entry_id_input = gr.Textbox(
+                            label="Entry ID",
+                            placeholder="Paste entry ID from table above...",
+                            scale=3,
+                        )
+                    with gr.Row():
+                        dl_history_docx_btn = gr.Button("⬇ Download DOCX",
+                                                        variant="primary", scale=1)
+                        dl_history_txt_btn  = gr.Button("⬇ Download TXT",
+                                                        variant="secondary", scale=1)
+                    with gr.Row():
+                        dl_history_docx_file = gr.File(
+                            label="Word Document (.docx)", interactive=False)
+                        dl_history_txt_file  = gr.File(
+                            label="Text File (.txt)", interactive=False)
 
                 # ── TAB: System ──────────────────────────────────────
                 with gr.Tab("System Status"):
@@ -384,7 +411,6 @@ def create_interface():
             </div>
             """)
 
-        # ── Event wiring ─────────────────────────────────────────────
         login_btn.click(
             fn=handle_login,
             inputs=[login_user, login_pass, session_token],
@@ -433,10 +459,15 @@ def create_interface():
             inputs=[username_state, session_token],
             outputs=[history_table],
         )
-        dl_history_btn.click(
-            fn=download_from_history,
+        dl_history_docx_btn.click(
+            fn=download_docx_from_history,
             inputs=[username_state, session_token, entry_id_input],
-            outputs=[dl_history_file],
+            outputs=[dl_history_docx_file],
+        )
+        dl_history_txt_btn.click(
+            fn=download_txt_from_history,
+            inputs=[username_state, session_token, entry_id_input],
+            outputs=[dl_history_txt_file],
         )
 
     return app

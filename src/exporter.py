@@ -112,7 +112,18 @@ class DocumentExporter:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(content)
         return path
-
+    @staticmethod
+    def _line_to_html_element(stripped: str) -> str:
+        """Convert one stripped text line to an HTML element string."""
+        if not stripped:
+            return "<br>"
+        if stripped.startswith("###"):
+            return f"<h3>{stripped.lstrip('# ')}</h3>"
+        if stripped.startswith("##"):
+            return f"<h2>{stripped.lstrip('# ')}</h2>"
+        if stripped.startswith("#"):
+            return f"<h1>{stripped.lstrip('# ')}</h1>"
+        return f"<p>{stripped}</p>"
     # ── HTML ──────────────────────────────────────────────────────────────────
     @staticmethod
     def create_html(text: str, tables_html: Optional[List[str]] = None,
@@ -135,17 +146,7 @@ class DocumentExporter:
                          f"border-bottom:1px solid #e2e8f0;padding-bottom:1rem;"
                          f"margin-bottom:2rem'>{metadata}</div>")
         for line in text.split("\n"):
-            stripped = line.strip()
-            if not stripped:
-                parts.append("<br>")
-            elif stripped.startswith("###"):
-                parts.append(f"<h3>{stripped.lstrip('# ')}</h3>")
-            elif stripped.startswith("##"):
-                parts.append(f"<h2>{stripped.lstrip('# ')}</h2>")
-            elif stripped.startswith("#"):
-                parts.append(f"<h1>{stripped.lstrip('# ')}</h1>")
-            else:
-                parts.append(f"<p>{stripped}</p>")
+            parts.append(DocumentExporter._line_to_html_element(line.strip()))
         if tables_html:
             for th in tables_html:
                 parts.append(th)
@@ -190,31 +191,7 @@ class DocumentExporter:
             if not stripped:
                 doc.add_paragraph("")
                 continue
-            if stripped.startswith("###"):
-                h = doc.add_heading(stripped.lstrip("# "), level=3)
-                for run in h.runs:
-                    run.font.name = self.FONT_NAME
-                continue
-            if stripped.startswith("##"):
-                h = doc.add_heading(stripped.lstrip("# "), level=2)
-                for run in h.runs:
-                    run.font.name = self.FONT_NAME
-                continue
-            if stripped.startswith("#"):
-                h = doc.add_heading(stripped.lstrip("# "), level=1)
-                for run in h.runs:
-                    run.font.name = self.FONT_NAME
-                continue
-            if stripped.startswith(("\u2022 ", "- ", "* ")):
-                p = doc.add_paragraph(stripped[2:], style="List Bullet")
-                for run in p.runs:
-                    run.font.name = self.FONT_NAME
-                    run.font.size = Pt(self.FONT_SIZE_NORMAL)
-                continue
-            p = doc.add_paragraph(stripped)
-            for run in p.runs:
-                run.font.name = self.FONT_NAME
-                run.font.size = Pt(self.FONT_SIZE_NORMAL)
+            self._add_docx_paragraph(doc, stripped)
 
         if tables_html and BS4_AVAILABLE:
             for th in tables_html:
@@ -227,6 +204,27 @@ class DocumentExporter:
         os.close(fd)
         doc.save(path)
         return path
+
+    def _add_docx_paragraph(self, doc, stripped: str) -> None:
+        """Add a single line as the appropriate DOCX block element."""
+        heading_level = (
+            3 if stripped.startswith("###") else
+            2 if stripped.startswith("##") else
+            1 if stripped.startswith("#") else
+            0
+        )
+        if heading_level:
+            h = doc.add_heading(stripped.lstrip("# "), level=heading_level)
+            for run in h.runs:
+                run.font.name = self.FONT_NAME
+            return
+        if stripped.startswith(("\u2022 ", "- ", "* ")):
+            p = doc.add_paragraph(stripped[2:], style="List Bullet")
+        else:
+            p = doc.add_paragraph(stripped)
+        for run in p.runs:
+            run.font.name = self.FONT_NAME
+            run.font.size = Pt(self.FONT_SIZE_NORMAL)
 
     def _add_html_table(self, doc, html: str):
         soup = BeautifulSoup(html, "html.parser")
@@ -245,14 +243,17 @@ class DocumentExporter:
             cells = row_el.find_all(["td", "th"])
             for ci, cell_el in enumerate(cells):
                 if ci < max_cols:
-                    cell = tbl.cell(ri, ci)
-                    cell.text = cell_el.get_text(strip=True)
-                    for p in cell.paragraphs:
-                        for run in p.runs:
-                            run.font.name = self.FONT_NAME
-                            run.font.size = Pt(self.FONT_SIZE_TABLE)
-                            if cell_el.name == "th":
-                                run.bold = True
+                    self._style_table_cell(tbl.cell(ri, ci), cell_el)
+
+    def _style_table_cell(self, cell, cell_el) -> None:
+        """Apply OCR text and font style to a DOCX table cell."""
+        cell.text = cell_el.get_text(strip=True)
+        for p in cell.paragraphs:
+            for run in p.runs:
+                run.font.name = self.FONT_NAME
+                run.font.size = Pt(self.FONT_SIZE_TABLE)
+                if cell_el.name == "th":
+                    run.bold = True
 
     def _add_figure(self, doc, fig: Dict[str, Any]):
         b64 = fig.get("base64", "")
