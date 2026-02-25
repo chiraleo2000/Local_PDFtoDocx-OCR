@@ -1,6 +1,6 @@
 # ============================================
 # PDF-to-DOCX OCR Pipeline — Dependencies
-# v0.4.0  |  HTML-first, YOLO layout detection
+# v0.1.1  |  Security-hardened, HTML-first, YOLO layout
 # ============================================
 
 # Core

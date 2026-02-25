@@ -38,4 +38,10 @@ Thumbs.db
 # Test outputs
 *.docx
 *.html
+test_output.txt
+test_results_full.txt
+
+# Correction / training data (user-generated)
+correction_data/
+
 !README.md

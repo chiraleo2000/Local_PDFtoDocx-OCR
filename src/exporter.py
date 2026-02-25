@@ -1,10 +1,17 @@
 """
-Document Exporter + Image Extractor — v0.4
+Document Exporter + Image Extractor — v1.0
 HTML-first export: Build positioned HTML → convert to DOCX & TXT.
 Images embedded as base64 in HTML, properly transferred to DOCX via htmldocx.
 Figure numbering: 1-based.
+
+Security:
+    - All user text is escaped via ``html.escape()`` before HTML insertion (XSS)
+    - Base64 data validated before embedding
+    - Filenames sanitised in temp file operations
 """
 import os
+import re
+import html
 import logging
 import base64
 import tempfile
@@ -43,6 +50,15 @@ try:
     HTMLDOCX_AVAILABLE = True
 except ImportError:
     logger.info("htmldocx not installed — will use fallback DOCX builder")
+
+_BASE64_RE = re.compile(r"^[A-Za-z0-9+/\n\r]*={0,2}$")
+
+
+def _is_valid_base64(data: str) -> bool:
+    """Validate that *data* looks like legitimate base64 (anti-injection)."""
+    if not data or len(data) > 50_000_000:  # 50 MB max
+        return False
+    return bool(_BASE64_RE.match(data))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -202,16 +218,17 @@ class DocumentExporter:
 
             elif b.block_type == "figure":
                 b64 = b.figure.get("base64", "")
-                fig_idx = b.figure.get("index", "?")
-                fig_page = b.figure.get("page", "?")
+                fig_idx = int(b.figure.get("index", 0))
+                fig_page = b.figure.get("page", 0)
                 page_disp = (fig_page + 1) if isinstance(fig_page, int) else fig_page
-                if b64:
+                if b64 and _is_valid_base64(b64):
+                    escaped_alt = html.escape(f"Figure {fig_idx}")
+                    escaped_cap = html.escape(f"Figure {fig_idx} \u2014 Page {page_disp}")
                     parts.append(
                         f"<figure>"
                         f"<img src='data:image/png;base64,{b64}' "
-                        f"alt='Figure {fig_idx}' />"
-                        f"<figcaption>Figure {fig_idx} — "
-                        f"Page {page_disp}</figcaption>"
+                        f"alt='{escaped_alt}' />"
+                        f"<figcaption>{escaped_cap}</figcaption>"
                         f"</figure>")
 
         parts += ["</body>", "</html>"]
@@ -386,30 +403,34 @@ class DocumentExporter:
     # ── Helpers ───────────────────────────────────────────────────────────────
     @staticmethod
     def _text_to_html(stripped: str) -> str:
+        """Convert a single line of text to an HTML element, XSS-safe."""
         if not stripped:
             return ""
+        escaped = html.escape(stripped)
         if stripped.startswith("###"):
-            return f"<h3>{stripped.lstrip('# ')}</h3>"
+            return f"<h3>{html.escape(stripped.lstrip('# '))}</h3>"
         if stripped.startswith("##"):
-            return f"<h2>{stripped.lstrip('# ')}</h2>"
+            return f"<h2>{html.escape(stripped.lstrip('# '))}</h2>"
         if stripped.startswith("#"):
-            return f"<h1>{stripped.lstrip('# ')}</h1>"
-        return f"<p>{stripped}</p>"
+            return f"<h1>{html.escape(stripped.lstrip('# '))}</h1>"
+        return f"<p>{escaped}</p>"
 
     # ══════════════════════════════════════════════════════════════════════════
     # LEGACY API  (backward-compatible with tests)
     # ══════════════════════════════════════════════════════════════════════════
     @staticmethod
     def _line_to_html_element(stripped: str) -> str:
+        """Convert a single line to an HTML element, XSS-safe."""
         if not stripped:
             return "<br>"
+        escaped = html.escape(stripped)
         if stripped.startswith("###"):
-            return f"<h3>{stripped.lstrip('# ')}</h3>"
+            return f"<h3>{html.escape(stripped.lstrip('# '))}</h3>"
         if stripped.startswith("##"):
-            return f"<h2>{stripped.lstrip('# ')}</h2>"
+            return f"<h2>{html.escape(stripped.lstrip('# '))}</h2>"
         if stripped.startswith("#"):
-            return f"<h1>{stripped.lstrip('# ')}</h1>"
-        return f"<p>{stripped}</p>"
+            return f"<h1>{html.escape(stripped.lstrip('# '))}</h1>"
+        return f"<p>{escaped}</p>"
 
     @staticmethod
     def create_txt(text: str, metadata: str = "") -> str:
@@ -426,6 +447,7 @@ class DocumentExporter:
     def create_html(text: str, tables_html: Optional[List[str]] = None,
                     figures: Optional[List[Dict[str, Any]]] = None,
                     metadata: str = "") -> str:
+        """Legacy HTML builder — XSS-safe."""
         parts = [
             "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>",
             "<title>OCR Result</title>",
@@ -441,33 +463,33 @@ class DocumentExporter:
         if metadata:
             parts.append(f"<div style='color:#64748b;font-size:0.85rem;"
                          f"border-bottom:1px solid #e2e8f0;padding-bottom:1rem;"
-                         f"margin-bottom:2rem'>{metadata}</div>")
+                         f"margin-bottom:2rem'>{html.escape(metadata)}</div>")
         for line in text.split("\n"):
             stripped = line.strip()
             if not stripped:
                 parts.append("<br>")
             elif stripped.startswith("###"):
-                parts.append(f"<h3>{stripped.lstrip('# ')}</h3>")
+                parts.append(f"<h3>{html.escape(stripped.lstrip('# '))}</h3>")
             elif stripped.startswith("##"):
-                parts.append(f"<h2>{stripped.lstrip('# ')}</h2>")
+                parts.append(f"<h2>{html.escape(stripped.lstrip('# '))}</h2>")
             elif stripped.startswith("#"):
-                parts.append(f"<h1>{stripped.lstrip('# ')}</h1>")
+                parts.append(f"<h1>{html.escape(stripped.lstrip('# '))}</h1>")
             else:
-                parts.append(f"<p>{stripped}</p>")
+                parts.append(f"<p>{html.escape(stripped)}</p>")
         if tables_html:
             for th in tables_html:
                 parts.append(th)
         if figures:
             for fig in figures:
                 b64 = fig.get("base64", "")
-                if b64:
+                if b64 and _is_valid_base64(b64):
                     parts.append(
                         f"<figure><img src='data:image/png;base64,{b64}' "
                         f"alt='Figure'/></figure>")
         parts.append("</body></html>")
         fd, path = tempfile.mkstemp(suffix=".html", prefix="ocr_")
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write("\n".join(parts))
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(parts))
         return path
 
     def create_docx(self, text: str,

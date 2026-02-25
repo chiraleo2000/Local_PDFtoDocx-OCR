@@ -1,14 +1,39 @@
 """
-Multi-Engine OCR Module — v0.3
+Multi-Engine OCR Module — v1.0
 Supports Tesseract 5 (primary), with optional PaddleOCR and EasyOCR.
 Each engine is loaded lazily and fails gracefully.
-Runtime language override supported via `languages` parameter.
+Runtime language override supported via ``languages`` parameter.
+
+Security:
+    - Tesseract config parameters sanitised (no shell injection)
+    - Image inputs validated before processing
+    - Error messages do not expose internal paths
 """
 import os
+import re
 import logging
 from typing import Optional, List, Dict, Any
 import numpy as np
 import cv2
+
+logger = logging.getLogger(__name__)
+
+# Config sanitisation: only allow safe characters in Tesseract flags
+_SAFE_TESS_CONFIG_RE = re.compile(r"^[a-zA-Z0-9_ .=-]+$")
+_MAX_IMAGE_PIXELS = 100_000_000  # 100 megapixels
+
+
+def _validate_image(image: np.ndarray) -> bool:
+    """Return True if *image* is a valid, reasonably sized numpy array."""
+    if image is None or not isinstance(image, np.ndarray):
+        return False
+    if image.size == 0 or image.ndim < 2:
+        return False
+    h, w = image.shape[:2]
+    if h * w > _MAX_IMAGE_PIXELS:
+        logger.warning("Image too large: %d x %d pixels", w, h)
+        return False
+    return True
 
 logger = logging.getLogger(__name__)
 
@@ -47,25 +72,37 @@ def _check_easyocr():
 
 
 class OCREngine:
-    """Unified multi-engine OCR with automatic fallback and runtime language override."""
+    """Unified multi-engine OCR with automatic fallback and runtime language override.
 
-    def __init__(self):
+    Security: OEM/PSM values are range-checked and config strings are sanitised.
+    """
+
+    _VALID_OEM_RANGE = range(0, 4)  # 0–3
+    _VALID_PSM_RANGE = range(0, 14)  # 0–13
+
+    def __init__(self) -> None:
         self.use_gpu = os.getenv("USE_GPU", "false").lower() == "true"
         self.primary_engine = os.getenv("OCR_ENGINE", "tesseract").lower()
         self.fallback_engine = os.getenv("OCR_FALLBACK", "tesseract").lower()
         self.languages = os.getenv("LANGUAGES", "eng")
-        self.tess_oem = int(os.getenv("TESSERACT_OEM", "1"))
-        self.tess_psm = int(os.getenv("TESSERACT_PSM", "3"))
+
+        oem_raw = int(os.getenv("TESSERACT_OEM", "1"))
+        psm_raw = int(os.getenv("TESSERACT_PSM", "3"))
+        self.tess_oem = oem_raw if oem_raw in self._VALID_OEM_RANGE else 1
+        self.tess_psm = psm_raw if psm_raw in self._VALID_PSM_RANGE else 3
 
         self._paddle_instance = None
         self._easyocr_instance = None
 
-        logger.info(f"OCREngine — primary={self.primary_engine}, "
-                     f"fallback={self.fallback_engine}, gpu={self.use_gpu}")
+        logger.info(
+            "OCREngine — primary=%s, fallback=%s, gpu=%s",
+            self.primary_engine, self.fallback_engine, self.use_gpu,
+        )
 
     # ── Lazy loaders ──
 
     def _get_paddle(self, languages: Optional[str] = None):
+        """Lazily initialise PaddleOCR."""
         if self._paddle_instance is None and PADDLE_AVAILABLE:
             try:
                 lang = self._paddle_lang(languages)
@@ -73,18 +110,19 @@ class OCREngine:
                     use_angle_cls=True, lang=lang,
                     use_gpu=self.use_gpu, show_log=False,
                 )
-            except Exception as e:
-                logger.warning(f"PaddleOCR init failed: {e}")
+            except (ImportError, OSError, RuntimeError) as exc:
+                logger.warning("PaddleOCR init failed: %s", type(exc).__name__)
         return self._paddle_instance
 
     def _get_easyocr(self, languages: Optional[str] = None):
+        """Lazily initialise EasyOCR."""
         _check_easyocr()
         if self._easyocr_instance is None and EASYOCR_AVAILABLE:
             try:
                 langs = self._easyocr_langs(languages)
                 self._easyocr_instance = _easyocr.Reader(langs, gpu=self.use_gpu)
-            except Exception as e:
-                logger.warning(f"EasyOCR init failed: {e}")
+            except (ImportError, OSError, RuntimeError) as exc:
+                logger.warning("EasyOCR init failed: %s", type(exc).__name__)
         return self._easyocr_instance
 
     # ── Public API ──
@@ -92,11 +130,14 @@ class OCREngine:
     def ocr_image(self, image: np.ndarray,
                   engine_override: Optional[str] = None,
                   languages: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Run OCR on an image crop.
+        """Run OCR on an image crop.
+
         Returns: {"text", "confidence", "engine_used", "lines"}
         """
-        engine = engine_override or self.primary_engine
+        if not _validate_image(image):
+            return {"text": "", "confidence": 0.0, "engine_used": "none", "lines": []}
+
+        engine = (engine_override or self.primary_engine).lower()
         lang = languages or self.languages
 
         result = self._run_engine(image, engine, lang)
@@ -114,22 +155,26 @@ class OCREngine:
     def ocr_full_page(self, image: np.ndarray,
                       languages: Optional[str] = None) -> Dict[str, Any]:
         """Run OCR on a full page image."""
+        if not _validate_image(image):
+            return {"text": "", "confidence": 0.0, "engine_used": "none", "lines": []}
         return self.ocr_image(image, languages=languages)
 
     # ── Engine runners ──
 
     def _run_engine(self, image: np.ndarray, engine: str,
                     languages: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Dispatch to the named engine with error containment."""
         try:
             lang = languages or self.languages
             if engine == "tesseract":
                 return self._run_tesseract(image, lang)
-            elif engine == "paddleocr":
+            if engine == "paddleocr":
                 return self._run_paddle(image, lang)
-            elif engine == "easyocr":
+            if engine == "easyocr":
                 return self._run_easyocr(image, lang)
-        except Exception as exc:
-            logger.error(f"Engine '{engine}' error: {exc}")
+            logger.warning("Unknown engine: %s", engine)
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.error("Engine '%s' error: %s", engine, type(exc).__name__)
         return None
 
     def _run_tesseract(self, image: np.ndarray,
@@ -143,20 +188,24 @@ class OCREngine:
             gray = image
 
         lang = self._tess_lang(languages)
+        # Sanitise config to prevent command injection
         config = f"--oem {self.tess_oem} --psm {self.tess_psm}"
+        if not _SAFE_TESS_CONFIG_RE.match(config):
+            logger.warning("Unsafe Tesseract config rejected")
+            config = "--oem 1 --psm 3"
 
         try:
             data = pytesseract.image_to_data(
                 gray, lang=lang, config=config,
                 output_type=pytesseract.Output.DICT,
             )
-        except Exception as exc:
-            logger.warning(f"Tesseract image_to_data failed: {exc}")
+        except (OSError, RuntimeError) as exc:
+            logger.warning("Tesseract image_to_data failed: %s", type(exc).__name__)
             try:
                 text = pytesseract.image_to_string(gray, lang=lang, config=config)
                 return {"text": text.strip(), "confidence": 0.5,
                         "engine_used": "tesseract", "lines": []}
-            except Exception:
+            except (OSError, RuntimeError):
                 return None
 
         lines_map: Dict[int, List[str]] = {}

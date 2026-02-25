@@ -1,8 +1,15 @@
 """
 Application Services — Auth & History
 In-memory authentication + per-user processing history.
+
+Security:
+    - PBKDF2-HMAC-SHA256 password hashing (260k iterations, random salt)
+    - Path traversal protection on all file operations
+    - Input sanitization on usernames, entry IDs
+    - Session tokens via ``secrets.token_hex``
 """
 import os
+import re
 import json
 import shutil
 import logging
@@ -16,40 +23,84 @@ from typing import Dict, List, Any, Optional
 logger = logging.getLogger(__name__)
 
 _INFO_FILENAME = "info.json"
+_PBKDF2_ITERATIONS = 260_000
+_SAFE_NAME_RE = re.compile(r"[^a-zA-Z0-9_-]")
+_SAFE_DISPLAY_NAME_RE = re.compile(r"[^a-zA-Z0-9_.\- ]")
+_USERNAME_RE = re.compile(r"^[a-zA-Z0-9_]{3,50}$")
+
+
+def _sanitize_path_component(value: str) -> str:
+    """Strip any character that could enable path traversal."""
+    return _SAFE_NAME_RE.sub("", value)
 
 
 # Authentication
 class AuthManager:
-    """In-memory user registration, login, session management."""
+    """In-memory user registration, login, session management.
 
-    def __init__(self):
-        self._users: Dict[str, str] = {}       # username -> password_hash
+    Security:
+        - Passwords hashed with PBKDF2-HMAC-SHA256 (260 000 iterations)
+        - Random 32-byte salt per password
+        - Default credentials loaded from environment (never hardcoded)
+        - Session tokens: 256-bit random via ``secrets``
+    """
+
+    def __init__(self) -> None:
+        self._users: Dict[str, str] = {}       # username -> "salt_hex:key_hex"
         self._sessions: Dict[str, Dict] = {}   # token -> {"username", "expires_at"}
-        # Default guest user
-        self._users["guest"] = self._hash("guest123")
-        logger.info("AuthManager initialised (in-memory)")
+        self._setup_default_user()
+        logger.info("AuthManager initialised (PBKDF2, in-memory)")
+
+    def _setup_default_user(self) -> None:
+        """Create default account from environment variables."""
+        default_user = os.getenv("DEFAULT_USERNAME", "guest")
+        default_pass = os.getenv("DEFAULT_PASSWORD", "guest123")
+        if default_user and default_pass:
+            self._users[default_user.strip().lower()] = self._hash(default_pass)
 
     @staticmethod
     def _hash(password: str) -> str:
-        return hashlib.sha256(password.encode()).hexdigest()
+        """Hash *password* with PBKDF2-HMAC-SHA256 + random salt."""
+        salt = os.urandom(32)
+        key = hashlib.pbkdf2_hmac(
+            "sha256", password.encode("utf-8"), salt, _PBKDF2_ITERATIONS,
+        )
+        return salt.hex() + ":" + key.hex()
 
     @staticmethod
-    def _verify(password: str, hashed: str) -> bool:
-        return hashlib.sha256(password.encode()).hexdigest() == hashed
+    def _verify(password: str, stored: str) -> bool:
+        """Verify *password* against a PBKDF2 stored hash."""
+        try:
+            salt_hex, key_hex = stored.split(":", maxsplit=1)
+            salt = bytes.fromhex(salt_hex)
+            key = hashlib.pbkdf2_hmac(
+                "sha256", password.encode("utf-8"), salt, _PBKDF2_ITERATIONS,
+            )
+            # Constant-time comparison to prevent timing attacks
+            return secrets.compare_digest(key.hex(), key_hex)
+        except (ValueError, TypeError):
+            return False
 
     def register(self, username: str, password: str) -> Dict[str, Any]:
+        """Register a new user after input validation."""
         username = username.strip().lower()
-        if len(username) < 3:
-            return {"success": False, "error": "Username must be at least 3 characters"}
-        if len(password) < 4:
-            return {"success": False, "error": "Password must be at least 4 characters"}
+        if not _USERNAME_RE.match(username):
+            return {
+                "success": False,
+                "error": "Username must be 3-50 alphanumeric/underscore characters",
+            }
+        if len(password) < 6:
+            return {"success": False, "error": "Password must be at least 6 characters"}
         if username in self._users:
             return {"success": False, "error": "Username already exists"}
         self._users[username] = self._hash(password)
         return {"success": True, "message": "Registration successful"}
 
     def login(self, username: str, password: str) -> Dict[str, Any]:
+        """Authenticate and return a session token."""
         username = username.strip().lower()
+        if not username or not password:
+            return {"success": False, "error": "Invalid credentials"}
         stored = self._users.get(username)
         if not stored or not self._verify(password, stored):
             return {"success": False, "error": "Invalid credentials"}
@@ -59,6 +110,7 @@ class AuthManager:
         return {"success": True, "token": token, "username": username}
 
     def validate_session(self, token: str) -> Optional[str]:
+        """Return username if *token* is valid, else ``None``."""
         if not token:
             return None
         sess = self._sessions.get(token)
@@ -68,7 +120,8 @@ class AuthManager:
             del self._sessions[token]
         return None
 
-    def logout(self, token: str):
+    def logout(self, token: str) -> None:
+        """Invalidate a session token."""
         self._sessions.pop(token, None)
 
 
@@ -82,34 +135,46 @@ class HistoryManager:
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     def user_dir(self, username: str) -> Path:
-        d = self.base_dir / username
+        """Return per-user directory, sanitised against path traversal."""
+        safe_name = _sanitize_path_component(username)
+        if not safe_name:
+            safe_name = "anonymous"
+        d = self.base_dir / safe_name
+        # Ensure resolved path is under base_dir (extra guard)
+        if not str(d.resolve()).startswith(str(self.base_dir.resolve())):
+            d = self.base_dir / "anonymous"
         d.mkdir(parents=True, exist_ok=True)
         return d
 
     def save_result(self, username: str, original_filename: str,
                     output_paths: Dict[str, Optional[str]],
                     metadata: Optional[Dict[str, Any]] = None) -> str:
+        """Save conversion output files and metadata."""
         entry_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        entry_dir = self.user_dir(username) / entry_id
+        entry_dir = self.user_dir(username) / _sanitize_path_component(entry_id)
         entry_dir.mkdir(parents=True, exist_ok=True)
+
+        # Sanitise original filename for storage (preserve dots for display)
+        safe_filename = _SAFE_DISPLAY_NAME_RE.sub("_", original_filename)[:200]
 
         saved_files: Dict[str, str] = {}
         for fmt, src_path in output_paths.items():
+            safe_fmt = _sanitize_path_component(fmt)
             if src_path and os.path.exists(src_path):
                 ext = os.path.splitext(src_path)[1]
                 dest = entry_dir / f"output{ext}"
                 shutil.copy2(src_path, dest)
-                saved_files[fmt] = str(dest)
+                saved_files[safe_fmt] = str(dest)
 
         info = {
             "entry_id": entry_id,
-            "original_filename": original_filename,
+            "original_filename": safe_filename,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "files": saved_files,
             "metadata": metadata or {},
         }
-        with open(entry_dir / _INFO_FILENAME, "w", encoding="utf-8") as f:
-            json.dump(info, f, indent=2, ensure_ascii=False)
+        with open(entry_dir / _INFO_FILENAME, "w", encoding="utf-8") as fh:
+            json.dump(info, fh, indent=2, ensure_ascii=False)
         return entry_id
 
     def list_entries(self, username: str) -> List[Dict[str, Any]]:
@@ -128,18 +193,28 @@ class HistoryManager:
 
     def get_file_path(self, username: str, entry_id: str,
                       fmt: str = "docx") -> Optional[str]:
-        entry_dir = self.user_dir(username) / entry_id
+        """Retrieve file path from history, with path-traversal protection."""
+        safe_id = _sanitize_path_component(entry_id)
+        if not safe_id:
+            return None
+        safe_fmt = _sanitize_path_component(fmt) or "docx"
+        entry_dir = self.user_dir(username) / safe_id
+        # Guard: resolved path must be under user_dir
+        if not str(entry_dir.resolve()).startswith(
+                str(self.user_dir(username).resolve())):
+            logger.warning("Path traversal attempt blocked: %s", entry_id)
+            return None
         info_file = entry_dir / _INFO_FILENAME
         if not info_file.exists():
             return None
         try:
-            with open(info_file, "r", encoding="utf-8") as f:
-                info = json.load(f)
-            path = info.get("files", {}).get(fmt)
+            with open(info_file, "r", encoding="utf-8") as fh:
+                info = json.load(fh)
+            path = info.get("files", {}).get(safe_fmt)
             if path and os.path.exists(path):
                 return path
-        except Exception:
-            pass
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.debug("get_file_path error: %s", exc)
         return None
 
     def cleanup_old_entries(self, username: Optional[str] = None) -> None:

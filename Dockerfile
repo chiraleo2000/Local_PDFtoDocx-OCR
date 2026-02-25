@@ -1,10 +1,11 @@
 # PDF-to-DOCX OCR Pipeline — Docker Image
-# v0.5.0  |  CPU-only, YOLO layout, HTML-first export, manual-correction + auto-retrain  |  Apache-2.0
+# v0.1.1  |  Security-hardened, non-root, CPU-only, YOLO layout  |  Apache-2.0
 FROM python:3.12-slim
 
 LABEL maintainer="BeTime"
-LABEL version="0.5.0"
+LABEL version="0.1.1"
 LABEL license="Apache-2.0"
+LABEL org.opencontainers.image.description="PDF OCR Pipeline — security-hardened"
 
 WORKDIR /app
 
@@ -39,14 +40,22 @@ COPY tests/ ./tests/
 COPY .env.example ./.env.example
 COPY models/ ./models/
 
+# Create non-root user for security (SonarQube S4823)
+RUN groupadd --gid 1001 appuser && \
+    useradd --uid 1001 --gid 1001 --create-home appuser
+
 # Setup env and runtime directories
 RUN cp .env.example .env \
     && mkdir -p /tmp/pdf_ocr_history /tmp/pdf_ocr_images \
     && mkdir -p /app/correction_data/images /app/correction_data/labels \
-    && chmod -R 777 /tmp/pdf_ocr_history /tmp/pdf_ocr_images /app/models /app/correction_data
+    && chown -R appuser:appuser /tmp/pdf_ocr_history /tmp/pdf_ocr_images \
+       /app/models /app/correction_data /app
 
 # Correction & training data — mount a volume here for persistence
 VOLUME ["/app/correction_data"]
+
+# Switch to non-root user
+USER appuser
 
 EXPOSE 7870
 

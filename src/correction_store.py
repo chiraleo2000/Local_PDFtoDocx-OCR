@@ -1,9 +1,15 @@
 """
-Correction Store & Auto-Retrain — v0.5
+Correction Store & Auto-Retrain — v1.0
 
 Logs every manual region correction (add table / add figure / remove region).
 Stores page image crops + YOLO-format labels for fine-tuning.
 Triggers automatic YOLO fine-tune every N corrections (default 100).
+
+Security:
+    - Filenames sanitised (only alphanumeric, underscore, hyphen, dot)
+    - All file writes performed under a thread lock
+    - Exception handlers scoped narrowly
+    - No internal paths exposed in error messages
 
 Directory layout (under CORRECTION_DATA_DIR):
     images/          — full page images (PNG)
@@ -14,6 +20,7 @@ Directory layout (under CORRECTION_DATA_DIR):
 import json
 import logging
 import os
+import re
 import shutil
 import threading
 import time
@@ -28,6 +35,22 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)),
                                  "correction_data")
+
+_SAFE_FILENAME_RE = re.compile(r"[^a-zA-Z0-9_.-]")
+_LEADING_DOTS_RE = re.compile(r"^\.+")
+_CONSECUTIVE_DOTS_RE = re.compile(r"\.{2,}")
+
+
+def _sanitize_filename(name: str, max_len: int = 100) -> str:
+    """Strip unsafe characters from *name* for use in file paths.
+
+    Also removes leading dots and consecutive dots to prevent
+    path traversal (e.g. ``../../etc/passwd`` → ``etc_passwd``).
+    """
+    result = _SAFE_FILENAME_RE.sub("_", name)
+    result = _CONSECUTIVE_DOTS_RE.sub(".", result)
+    result = _LEADING_DOTS_RE.sub("", result)
+    return result[:max_len] or "unnamed"
 
 # YOLO class IDs matching LayoutDetector.LAYOUT_CLASSES
 YOLO_CLASS_MAP = {
@@ -57,7 +80,7 @@ class CorrectionStore:
     """
 
     def __init__(self, data_dir: Optional[str] = None,
-                 retrain_interval: int = 100):
+                 retrain_interval: int = 100) -> None:
         self.data_dir = Path(
             data_dir or os.getenv("CORRECTION_DATA_DIR", _DEFAULT_DATA_DIR))
         self.images_dir = self.data_dir / "images"
@@ -67,8 +90,8 @@ class CorrectionStore:
 
         self.corrections_file = self.data_dir / "corrections.jsonl"
         self.retrain_log_file = self.data_dir / "retrain_log.json"
-        self.retrain_interval = int(
-            os.getenv("RETRAIN_INTERVAL", str(retrain_interval)))
+        self.retrain_interval = max(1, int(
+            os.getenv("RETRAIN_INTERVAL", str(retrain_interval))))
 
         self._lock = threading.Lock()
         self._correction_count = self._count_existing()
@@ -103,43 +126,52 @@ class CorrectionStore:
             Dict with correction_id, total_corrections, retrain_triggered.
         """
         h, w = page_image.shape[:2]
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
-        page_key = f"{pdf_name}_p{page_number}_{ts}"
+        if h == 0 or w == 0:
+            return {"correction_id": "", "total_corrections": self._correction_count,
+                    "retrain_triggered": False}
 
-        # ── Save page image (once per page_key) ──
-        img_path = self.images_dir / f"{page_key}.png"
-        cv2.imwrite(str(img_path), page_image)
+        safe_pdf = _sanitize_filename(pdf_name) if pdf_name else "unknown"
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+        page_key = f"{safe_pdf}_p{int(page_number)}_{ts}"
 
         # ── Convert bbox to YOLO normalised format ──
-        x0, y0, x1, y1 = bbox
+        x0, y0, x1, y1 = [float(v) for v in bbox]
         cx = ((x0 + x1) / 2.0) / w
         cy = ((y0 + y1) / 2.0) / h
-        bw = (x1 - x0) / w
-        bh = (y1 - y0) / h
+        bw = abs(x1 - x0) / w
+        bh = abs(y1 - y0) / h
         cls_id = YOLO_CLASS_MAP.get(region_class, 3)  # default figure
 
-        # ── Write YOLO label ──
-        lbl_path = self.labels_dir / f"{page_key}.txt"
-        with open(lbl_path, "a", encoding="utf-8") as f:
-            f.write(f"{cls_id} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}\n")
+        # ── Prepare label line ──
+        label_line = f"{cls_id} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}\n"
 
-        # ── Append to corrections log ──
+        # ── Prepare correction record ──
         record = {
             "correction_id": page_key,
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "pdf_name": pdf_name,
-            "page": page_number,
-            "bbox": [float(v) for v in bbox],
+            "pdf_name": safe_pdf,
+            "page": int(page_number),
+            "bbox": [x0, y0, x1, y1],
             "class": region_class,
             "class_id": cls_id,
             "action": action,
             "source": source,
-            "image_file": str(img_path.name),
-            "label_file": str(lbl_path.name),
+            "image_file": f"{page_key}.png",
+            "label_file": f"{page_key}.txt",
         }
+
+        # ── Atomic write under lock ──
         with self._lock:
+            img_path = self.images_dir / f"{page_key}.png"
+            cv2.imwrite(str(img_path), page_image)
+
+            lbl_path = self.labels_dir / f"{page_key}.txt"
+            with open(lbl_path, "a", encoding="utf-8") as f:
+                f.write(label_line)
+
             with open(self.corrections_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
             if source == "manual":
                 self._correction_count += 1
             count = self._correction_count
@@ -172,8 +204,9 @@ class CorrectionStore:
         if h == 0 or w == 0:
             return
 
+        safe_pdf = _sanitize_filename(pdf_name) if pdf_name else "auto"
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
-        page_key = f"auto_{pdf_name}_p{page_number}_{ts}"
+        page_key = f"auto_{safe_pdf}_p{int(page_number)}_{ts}"
 
         img_path = self.images_dir / f"{page_key}.png"
         cv2.imwrite(str(img_path), page_image)
@@ -360,10 +393,10 @@ class CorrectionStore:
                 result["status"] = "completed_no_best"
                 result["reason"] = "Training ran but no best.pt found"
 
-        except Exception as exc:
-            logger.error("Retrain failed: %s", exc, exc_info=True)
+        except (OSError, RuntimeError, ImportError, ValueError) as exc:
+            logger.error("Retrain failed: %s", type(exc).__name__, exc_info=True)
             result["status"] = "error"
-            result["error"] = str(exc)
+            result["error"] = type(exc).__name__
         finally:
             result["finished_at"] = datetime.now(timezone.utc).isoformat()
             self._save_retrain_result(result)
@@ -385,19 +418,20 @@ class CorrectionStore:
                         rec = json.loads(line.strip())
                         if rec.get("source") == "manual":
                             count += 1
-                    except json.JSONDecodeError:
+                    except (json.JSONDecodeError, ValueError):
                         pass
-        except Exception:
-            pass
+        except OSError as exc:
+            logger.warning("Could not read corrections file: %s", type(exc).__name__)
         return count
 
     def _load_retrain_log(self) -> List[Dict]:
+        """Load the retrain history log."""
         if not self.retrain_log_file.exists():
             return []
         try:
             with open(self.retrain_log_file, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception:
+        except (OSError, json.JSONDecodeError, ValueError):
             return []
 
     def _save_retrain_result(self, result: Dict) -> None:

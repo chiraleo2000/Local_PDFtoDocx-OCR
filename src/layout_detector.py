@@ -1,13 +1,13 @@
 """
-Layout Detection & Table Extraction Module — v0.4
+Layout Detection & Table Extraction Module — v1.0
 DocLayout-YOLO for AI-powered layout detection with OpenCV contour fallback.
 Detects text blocks, tables, figures, formulas, headings on page images.
 Includes table grid extraction and per-cell OCR with language support.
 
-v0.4 changes:
-  - Fix torch.load weights_only issue for PyTorch >= 2.6
-  - Improved OpenCV fallback: multi-scale line detection, table scoring
-  - Smarter figure-vs-table classification
+Security:
+    - Temp files cleaned up in finally blocks
+    - Input images validated before processing
+    - No internal paths exposed in error messages
 """
 import os
 import logging
@@ -19,6 +19,10 @@ import cv2
 logger = logging.getLogger(__name__)
 
 _PLAIN_TEXT = "plain text"
+_EMPTY_DETECTIONS = {
+    "figures": [], "tables": [], "text_regions": [],
+    "formulas": [], "captions": [], "other": [],
+}
 
 # ── Optional heavy imports ────────────────────────────────────────────────────
 YOLO_AVAILABLE = False
@@ -34,7 +38,7 @@ try:
     from doclayout_yolo import YOLOv10
     YOLO_AVAILABLE = True
     logger.info("DocLayout-YOLO available")
-except Exception:
+except (ImportError, OSError, RuntimeError):
     pass
 
 TESSERACT_AVAILABLE = False
@@ -42,14 +46,14 @@ try:
     import pytesseract
     pytesseract.get_tesseract_version()
     TESSERACT_AVAILABLE = True
-except Exception:
+except (ImportError, OSError):
     pass
 
 PPSTRUCTURE_AVAILABLE = False
 try:
     from paddleocr import PPStructure
     PPSTRUCTURE_AVAILABLE = True
-except Exception:
+except (ImportError, OSError):
     pass
 
 
@@ -70,32 +74,37 @@ class LayoutDetector:
 
     def __init__(self, model_path: Optional[str] = None,
                  confidence_threshold: float = 0.15,
-                 iou_threshold: float = 0.45):
+                 iou_threshold: float = 0.45) -> None:
         self.confidence = float(os.getenv("YOLO_CONFIDENCE", str(confidence_threshold)))
         self.iou = float(os.getenv("YOLO_NMS", str(iou_threshold)))
         self.model = None
         self.model_loaded = False
 
         if YOLO_AVAILABLE:
-            try:
-                if model_path and os.path.exists(model_path):
-                    self.model = YOLOv10(model_path)
+            self._try_load_model(model_path)
+
+    def _try_load_model(self, model_path: Optional[str] = None) -> None:
+        """Attempt to load the YOLO model from disk or HuggingFace."""
+        try:
+            if model_path and os.path.exists(model_path):
+                self.model = YOLOv10(model_path)
+            else:
+                local_pt = os.path.join(
+                    os.path.dirname(os.path.dirname(__file__)),
+                    "models", "DocLayout-YOLO-DocStructBench",
+                    "doclayout_yolo_docstructbench_imgsz1280_2501.pt",
+                )
+                if os.path.exists(local_pt):
+                    self.model = YOLOv10(local_pt)
                 else:
-                    local_pt = os.path.join(
-                        os.path.dirname(os.path.dirname(__file__)),
-                        "models", "DocLayout-YOLO-DocStructBench",
-                        "doclayout_yolo_docstructbench_imgsz1280_2501.pt",
+                    self.model = YOLOv10.from_pretrained(
+                        "juliozhao/DocLayout-YOLO-DocStructBench-imgsz1280-2501"
                     )
-                    if os.path.exists(local_pt):
-                        self.model = YOLOv10(local_pt)
-                    else:
-                        self.model = YOLOv10.from_pretrained(
-                            "juliozhao/DocLayout-YOLO-DocStructBench-imgsz1280-2501"
-                        )
-                self.model_loaded = True
-                logger.info("DocLayout-YOLO model loaded")
-            except Exception as e:
-                logger.warning(f"Failed to load YOLO: {e} — using OpenCV fallback")
+            self.model_loaded = True
+            logger.info("DocLayout-YOLO model loaded")
+        except (ImportError, OSError, RuntimeError) as exc:
+            logger.warning("Failed to load YOLO (%s) — using OpenCV fallback",
+                           type(exc).__name__)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -115,16 +124,20 @@ class LayoutDetector:
     def _detect_yolo(self, image: np.ndarray, page_number: int,
                      confidence: Optional[float] = None) -> Dict[str, Any]:
         try:
-            import tempfile, uuid
+            import tempfile
+            import uuid
             conf = confidence if confidence is not None else self.confidence
             tmp = os.path.join(tempfile.gettempdir(), f"yolo_{uuid.uuid4().hex}.png")
-            cv2.imwrite(tmp, image)
-            results = self.model.predict(tmp, imgsz=1280,
-                                         conf=conf, iou=self.iou)
             try:
-                os.remove(tmp)
-            except OSError:
-                pass
+                cv2.imwrite(tmp, image)
+                results = self.model.predict(tmp, imgsz=1280,
+                                             conf=conf, iou=self.iou)
+            finally:
+                # Guarantee cleanup of temp file
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
 
             detections = {
                 "figures": [], "tables": [], "text_regions": [],
@@ -160,8 +173,8 @@ class LayoutDetector:
                 "detections": detections,
                 "total": sum(len(v) for v in detections.values()),
             }
-        except Exception as exc:
-            logger.error(f"YOLO detection failed: {exc}")
+        except (OSError, RuntimeError, ValueError) as exc:
+            logger.error("YOLO detection failed: %s", type(exc).__name__)
             return self._detect_opencv_fallback(image, page_number)
 
     def _reclassify_figures_as_tables(self, image: np.ndarray,
@@ -352,24 +365,25 @@ class TableExtractor:
     # ── PPStructure (optional) ────────────────────────────────────────────────
 
     def _extract_ppstructure(self, img: np.ndarray) -> Optional[Dict[str, Any]]:
+        """Extract table via PaddleOCR PPStructure (optional)."""
         if self._pp_structure is None:
             try:
                 self._pp_structure = PPStructure(
                     table=True, ocr=True,
                     use_gpu=self.use_gpu, show_log=False,
                 )
-            except Exception as exc:
-                logger.warning(f"PPStructure init failed: {exc}")
+            except (ImportError, OSError, RuntimeError) as exc:
+                logger.warning("PPStructure init failed: %s", type(exc).__name__)
                 return None
         try:
             result = self._pp_structure(img)
             for item in result:
                 if item.get("type") == "table":
-                    html = item.get("res", {}).get("html", "")
-                    if html:
-                        return {"html": html, "text": ""}
-        except Exception as exc:
-            logger.warning(f"PPStructure error: {exc}")
+                    table_html = item.get("res", {}).get("html", "")
+                    if table_html:
+                        return {"html": table_html, "text": ""}
+        except (OSError, RuntimeError, ValueError) as exc:
+            logger.warning("PPStructure error: %s", type(exc).__name__)
         return None
 
     # ── OpenCV grid extraction ────────────────────────────────────────────────
@@ -447,5 +461,5 @@ class TableExtractor:
             return pytesseract.image_to_string(
                 gray_img, lang=lang, config="--oem 1 --psm 6"
             ).strip()
-        except Exception:
+        except (OSError, RuntimeError):
             return ""

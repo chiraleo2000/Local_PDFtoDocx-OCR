@@ -1,7 +1,7 @@
 """
-Backend unit / integration tests for the OCR pipeline — v0.5.
+Backend unit / integration tests for the OCR pipeline — v1.0.
 Tests the pipeline, services, preprocessor, OCR engine, exporter,
-and the new CorrectionStore + manual-region APIs.
+CorrectionStore + manual-region APIs, and security hardening.
 """
 import os
 import shutil
@@ -460,3 +460,69 @@ class TestHistoryManager:
         txt_path = hist.get_file_path("user2", entry_id, "txt")
         assert docx_path is not None and os.path.exists(docx_path)
         assert txt_path is not None and os.path.exists(txt_path)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Security tests (v1.0)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestSecurityHardening:
+    """Verify security measures introduced in v1.0."""
+
+    def test_pipeline_rejects_non_pdf(self, pipeline):
+        """Pipeline should reject files without .pdf extension."""
+        result = pipeline.process_pdf("document.txt")
+        assert result["success"] is False
+        assert ".pdf" in result["error"].lower()
+
+    def test_pipeline_rejects_empty_path(self, pipeline):
+        """Pipeline should reject empty/None paths."""
+        result = pipeline.process_pdf("")
+        assert result["success"] is False
+
+    def test_pipeline_validate_trim_bounds(self, pipeline):
+        """Header/footer trim should be clamped to [0, 25]."""
+        # This shouldn't crash — values get clamped internally
+        result = pipeline.process_pdf(
+            str(TEST_PDF), quality="fast",
+            header_trim=999, footer_trim=-5)
+        # Should still succeed (values are clamped)
+        assert result["success"] is True
+
+    def test_auth_rejects_short_password(self):
+        """Registration should reject passwords shorter than 6 chars."""
+        from src.services import AuthManager
+        auth = AuthManager()
+        result = auth.register("validuser", "ab")
+        assert result["success"] is False
+
+    def test_auth_rejects_invalid_username(self):
+        """Registration should reject usernames with special chars."""
+        from src.services import AuthManager
+        auth = AuthManager()
+        result = auth.register("../evil", "password123")
+        assert result["success"] is False
+
+    def test_correction_store_sanitizes_filename(self):
+        """CorrectionStore should sanitize pdf_name in filenames."""
+        from src.correction_store import CorrectionStore
+        store = CorrectionStore(data_dir=str(Path(tempfile.mkdtemp()) / "sec"))
+        img = np.ones((200, 300, 3), dtype=np.uint8) * 128
+        result = store.log_correction(
+            page_image=img, bbox=[10, 20, 100, 80],
+            region_class="table", page_number=0,
+            pdf_name="../../etc/passwd.pdf",
+        )
+        # The correction_id should not contain path traversal
+        assert ".." not in result["correction_id"]
+        assert "/" not in result["correction_id"]
+
+    def test_detect_page_regions_validates_path(self, pipeline):
+        """detect_page_regions should validate PDF path."""
+        result = pipeline.detect_page_regions("/nonexistent.pdf", 0)
+        assert result["success"] is False
+
+    def test_process_with_corrections_validates_path(self, pipeline):
+        """process_pdf_with_corrections should validate PDF path."""
+        result = pipeline.process_pdf_with_corrections("/nonexistent.pdf")
+        assert result["success"] is False

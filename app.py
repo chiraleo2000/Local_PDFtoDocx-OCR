@@ -1,9 +1,14 @@
 """
 PDF to DOCX OCR Service — Gradio Web Application
-v0.5.0  |  Manual correction + auto-retrain every 100 corrections
+v0.1.1  |  Security-hardened  |  Manual correction + auto-retrain
 
 Convert tab: Upload → detect → manual add tables/figures → convert
 Review tab: See detected regions, draw new ones, re-convert
+
+Security:
+    - show_error gated on DEBUG_MODE env var
+    - Input validation on all user-facing handlers
+    - No internal paths leaked in error messages
 """
 import os
 import json
@@ -17,8 +22,10 @@ import fitz
 from dotenv import load_dotenv
 load_dotenv()
 
+_DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG if _DEBUG_MODE else logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
@@ -126,10 +133,11 @@ def _draw_detections(img: np.ndarray, detections: dict,
 # ══════════════════════════════════════════════════════════════════════════════
 def render_page_preview(pdf_path: str, page_num: int = 0, scale: float = 1.5,
                         header_pct: float = 0, footer_pct: float = 0):
+    """Render a PDF page to an RGB numpy array for Gradio preview."""
+    doc = None
     try:
         doc = fitz.open(pdf_path)
-        if page_num >= len(doc):
-            doc.close()
+        if page_num < 0 or page_num >= len(doc):
             return None, 0
         page = doc[page_num]
         mat = fitz.Matrix(scale, scale)
@@ -151,11 +159,13 @@ def render_page_preview(pdf_path: str, page_num: int = 0, scale: float = 1.5,
             img = cv2.addWeighted(overlay, 0.5, img, 0.5, 0)
 
         total = len(doc)
-        doc.close()
         return img, total
-    except Exception as exc:
-        logger.error(f"Preview error: {exc}")
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.error("Preview error: %s", type(exc).__name__)
         return None, 0
+    finally:
+        if doc:
+            doc.close()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -269,7 +279,7 @@ def review_load_pdf(pdf_file, yolo_conf):
         doc = fitz.open(pdf_path)
         total = len(doc)
         doc.close()
-    except Exception:
+    except (OSError, RuntimeError, ValueError):
         return (None, "Cannot open PDF.", 0, 0, {}, [],
                 gr.update(visible=False))
     annotated, dets, info = _detect_and_draw(pdf_path, 0, yolo_conf, [])
@@ -524,7 +534,7 @@ def create_interface():
                     <h1>PDF OCR Pipeline</h1>
                     <p>OpenCV | Tesseract | DocLayout-YOLO | HTML-first Export | Auto-Retrain</p>
                 </div>
-                <div class="hero-badge">v0.5.0 &middot; Trainable</div>
+                <div class="hero-badge">v0.1.1 &middot; Trainable</div>
             </div>
             """)
 
@@ -837,7 +847,7 @@ def create_interface():
         gr.HTML("""
         <div style="text-align:center;padding:20px;margin-top:20px;
                     border-top:1px solid #e2e8f0;color:#94a3b8;font-size:0.85rem;">
-            PDF OCR Pipeline v0.5.0 — Apache-2.0 License — Auto-retrain enabled
+            PDF OCR Pipeline v0.1.1 — Apache-2.0 License — Auto-retrain enabled
         </div>
         """)
 
@@ -970,7 +980,8 @@ def main():
     port = int(os.getenv("SERVER_PORT", "7870"))
     host = os.getenv("SERVER_HOST", "127.0.0.1")
     share = os.getenv("SHARE_GRADIO", "false").lower() == "true"
-    app.launch(server_name=host, server_port=port, share=share, show_error=True)
+    app.launch(server_name=host, server_port=port, share=share,
+               show_error=_DEBUG_MODE)
 
 
 if __name__ == "__main__":

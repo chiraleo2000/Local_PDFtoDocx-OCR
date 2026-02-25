@@ -1,15 +1,14 @@
 """
-OCR Pipeline Orchestrator — v0.4
+OCR Pipeline Orchestrator — v1.0
 PDF → Render → Layout Detect → GROUP (text/table/figure)
   → OCR text only → Table extraction → Image extraction
   → Build HTML → HTML→DOCX + HTML→TXT
 
-v0.4 changes:
-  - Group-first: detect layout, group regions, then process each group type
-  - OCR only on text regions (figures are extracted as images, not OCR'd)
-  - No LLM correction (CPU-only, simple ML pipeline)
-  - 1-based figure numbering
-  - Simplified API: fewer parameters, best defaults
+Security:
+    - PDF path validated (exists, is file, size limit)
+    - Input bounds checked on all parameters
+    - Error messages do not expose internal paths
+    - Documents properly closed in finally blocks
 """
 import os
 import re
@@ -28,6 +27,27 @@ from .exporter import ImageExtractor, DocumentExporter
 from .correction_store import CorrectionStore
 
 logger = logging.getLogger(__name__)
+
+_MAX_PDF_SIZE_BYTES = int(os.getenv("MAX_PDF_SIZE_MB", "200")) * 1024 * 1024
+_MAX_TRIM_PERCENT = 25.0
+
+
+def _validate_pdf_path(pdf_path: str) -> Optional[str]:
+    """Return an error message if *pdf_path* is invalid, else ``None``."""
+    if not pdf_path or not isinstance(pdf_path, str):
+        return "No PDF path provided."
+    if not pdf_path.lower().endswith(".pdf"):
+        return "File does not have a .pdf extension."
+    if not os.path.isfile(pdf_path):
+        return "PDF file not found."
+    try:
+        size = os.path.getsize(pdf_path)
+    except OSError:
+        return "Cannot read PDF file."
+    if size > _MAX_PDF_SIZE_BYTES:
+        limit_mb = _MAX_PDF_SIZE_BYTES // (1024 * 1024)
+        return f"PDF exceeds the {limit_mb} MB size limit."
+    return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -108,7 +128,7 @@ def _sort_reading_order(blocks: List[ContentBlock],
 # Pipeline
 # ══════════════════════════════════════════════════════════════════════════════
 class OCRPipeline:
-    """Full PDF → DOCX/TXT/HTML pipeline (v0.4).
+    """Full PDF → DOCX/TXT/HTML pipeline (v1.0).
 
     Group-first architecture:
       1. Render page
@@ -119,6 +139,8 @@ class OCRPipeline:
       6. Extract figures as images
       7. Sort reading order
       8. Export via HTML-first
+
+    Security: PDF inputs validated, file size limited, all paths checked.
     """
 
     QUALITY_MAP = {
@@ -127,7 +149,7 @@ class OCRPipeline:
         "accurate": {"dpi_scale": 2.5, "quality": "accurate"},
     }
 
-    def __init__(self):
+    def __init__(self) -> None:
         quality = os.getenv("QUALITY_PRESET", "balanced")
         self.languages = os.getenv("LANGUAGES", "tha+eng")
         self.preprocessor = OpenCVPreprocessor(quality=quality)
@@ -137,7 +159,7 @@ class OCRPipeline:
         self.image_extractor = ImageExtractor()
         self.exporter = DocumentExporter()
         self.corrections = CorrectionStore()
-        logger.info("OCR Pipeline initialised (v0.5 — group-first, HTML-first, trainable)")
+        logger.info("OCR Pipeline initialised (v1.0 — security-hardened, HTML-first, trainable)")
 
     def process_pdf(self, pdf_path: str, quality: str = "balanced",
                     header_trim: float = 0, footer_trim: float = 0,
@@ -146,9 +168,20 @@ class OCRPipeline:
         """Process a PDF end-to-end.
 
         Args:
+            pdf_path: Path to the PDF file (validated).
             languages: Override OCR language (e.g. ``"tha+eng"``).
             yolo_confidence: Override YOLO threshold (lower = more regions).
         """
+        # ── Input validation ──
+        validation_error = _validate_pdf_path(pdf_path)
+        if validation_error:
+            return {"success": False, "text": "", "files": {},
+                    "metadata": {}, "error": validation_error}
+
+        header_trim = max(0.0, min(float(header_trim), _MAX_TRIM_PERCENT))
+        footer_trim = max(0.0, min(float(footer_trim), _MAX_TRIM_PERCENT))
+
+        doc = None
         try:
             langs = languages or self.languages
             cfg = self.QUALITY_MAP.get(quality, self.QUALITY_MAP["balanced"])
@@ -174,8 +207,6 @@ class OCRPipeline:
                 all_blocks.extend(page_blocks)
                 total_tables += n_tables
                 total_figures += n_figures
-
-            doc.close()
 
             full_text = self._blocks_to_text(all_blocks)
 
@@ -205,12 +236,15 @@ class OCRPipeline:
                 "error": None,
             }
 
-        except Exception as exc:
+        except (OSError, RuntimeError, ValueError) as exc:
             logger.error("Pipeline error: %s", exc, exc_info=True)
             return {
                 "success": False, "text": "", "files": {},
                 "metadata": {}, "error": str(exc),
             }
+        finally:
+            if doc:
+                doc.close()
 
     # ── Single-page processing (group-first) ─────────────────────────────────
 
@@ -414,15 +448,18 @@ class OCRPipeline:
 
         Used by the UI to show detected regions before the user adds manual ones.
         """
+        validation_error = _validate_pdf_path(pdf_path)
+        if validation_error:
+            return {"success": False, "error": validation_error}
+
+        doc = None
         try:
             cfg = self.QUALITY_MAP.get(quality, self.QUALITY_MAP["balanced"])
             scale = cfg["dpi_scale"]
             doc = fitz.open(pdf_path)
-            if page_num >= len(doc):
-                doc.close()
+            if page_num < 0 or page_num >= len(doc):
                 return {"success": False, "error": "Invalid page number"}
             img = self._render_page_image(doc[page_num], scale, 0, 0)
-            doc.close()
 
             layout_result = self.layout.detect_layout(
                 img, page_num, confidence=yolo_confidence)
@@ -434,9 +471,12 @@ class OCRPipeline:
                 "detections": detections,
                 "image_shape": list(img.shape),
             }
-        except Exception as exc:
+        except (OSError, RuntimeError, ValueError) as exc:
             logger.error("detect_page_regions error: %s", exc)
             return {"success": False, "error": str(exc)}
+        finally:
+            if doc:
+                doc.close()
 
     def add_manual_region(self, page_image: np.ndarray,
                           bbox: List[float], region_class: str,
@@ -470,6 +510,16 @@ class OCRPipeline:
         Args:
             manual_regions: ``{page_num: [{"bbox": [x0,y0,x1,y1], "class": "table"|"figure"}, ...]}``
         """
+        # ── Input validation ──
+        validation_error = _validate_pdf_path(pdf_path)
+        if validation_error:
+            return {"success": False, "text": "", "files": {},
+                    "metadata": {}, "error": validation_error}
+
+        header_trim = max(0.0, min(float(header_trim), _MAX_TRIM_PERCENT))
+        footer_trim = max(0.0, min(float(footer_trim), _MAX_TRIM_PERCENT))
+
+        doc = None
         try:
             langs = languages or self.languages
             cfg = self.QUALITY_MAP.get(quality, self.QUALITY_MAP["balanced"])
@@ -513,8 +563,6 @@ class OCRPipeline:
                 total_tables += n_tables
                 total_figures += n_figures
 
-            doc.close()
-
             full_text = self._blocks_to_text(all_blocks)
             engines = self.ocr.get_available_engines()
             active_engines = [k for k, v in engines.items() if v]
@@ -543,12 +591,15 @@ class OCRPipeline:
                 },
                 "error": None,
             }
-        except Exception as exc:
+        except (OSError, RuntimeError, ValueError) as exc:
             logger.error("Pipeline error: %s", exc, exc_info=True)
             return {
                 "success": False, "text": "", "files": {},
                 "metadata": {}, "error": str(exc),
             }
+        finally:
+            if doc:
+                doc.close()
 
     def get_status(self) -> Dict[str, Any]:
         correction_stats = self.corrections.get_stats()

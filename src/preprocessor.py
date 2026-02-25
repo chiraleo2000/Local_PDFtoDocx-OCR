@@ -1,11 +1,15 @@
 """
-OpenCV Pre-processing Pipeline
+OpenCV Pre-processing Pipeline — v1.0
 Deskew, denoise, binarise, CLAHE contrast, morphological ops.
+
+Quality presets: fast (denoise only), balanced (+ deskew, CLAHE),
+accurate (+ binarise, morphology).
 """
 import logging
+from typing import List, Optional
+
 import cv2
 import numpy as np
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -13,12 +17,14 @@ logger = logging.getLogger(__name__)
 class OpenCVPreprocessor:
     """Full OpenCV pre-processing pipeline for page images before OCR."""
 
-    def __init__(self, quality: str = "balanced"):
+    def __init__(self, quality: str = "balanced") -> None:
         self.quality = quality
-        logger.info(f"OpenCV Preprocessor — quality={quality}")
+        logger.info("OpenCV Preprocessor — quality=%s", quality)
 
     def preprocess(self, image: np.ndarray, *, quality: Optional[str] = None) -> np.ndarray:
         """Run the pre-processing pipeline; return cleaned image."""
+        if image is None or image.size == 0:
+            return image
         q = quality or self.quality
         steps = self._steps_for_quality(q)
         result = image.copy()
@@ -31,12 +37,12 @@ class OpenCVPreprocessor:
                 out = fn(result)
                 if out is not None and out.size > 0:
                     result = out
-            except Exception as exc:
-                logger.warning(f"OpenCV step '{step_name}' failed: {exc}")
+            except (cv2.error, ValueError, RuntimeError) as exc:
+                logger.warning("OpenCV step '%s' failed: %s", step_name, type(exc).__name__)
         return result
 
     @staticmethod
-    def _steps_for_quality(q: str):
+    def _steps_for_quality(q: str) -> List[str]:
         if q == "fast":
             return ["denoise"]
         elif q == "accurate":
