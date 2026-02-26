@@ -1,0 +1,69 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 1.85kB 0.0s done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/python:3.12-slim
+#2 DONE 1.5s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 430B done
+#3 DONE 0.0s
+
+#4 [ 1/12] FROM docker.io/library/python:3.12-slim@sha256:9e01bf1ae5db7649a236da7be1e94ffbbbdd7a93f867dd0d8d5720d9e1f89fab
+#4 resolve docker.io/library/python:3.12-slim@sha256:9e01bf1ae5db7649a236da7be1e94ffbbbdd7a93f867dd0d8d5720d9e1f89fab 0.0s done
+#4 DONE 0.1s
+
+#5 [internal] load build context
+#5 transferring context: 1.93kB done
+#5 DONE 0.0s
+
+#6 [ 7/12] COPY src/ ./src/
+#6 CACHED
+
+#7 [11/12] COPY models/ ./models/
+#7 CACHED
+
+#8 [ 3/12] RUN apt-get update && apt-get install -y --no-install-recommends     tesseract-ocr     tesseract-ocr-eng tesseract-ocr-tha     tesseract-ocr-chi-sim tesseract-ocr-jpn tesseract-ocr-kor     tesseract-ocr-ara     libgl1 libglib2.0-0     curl     && rm -rf /var/lib/apt/lists/*
+#8 CACHED
+
+#9 [ 5/12] COPY requirements.txt ./
+#9 CACHED
+
+#10 [ 8/12] COPY app.py ./
+#10 CACHED
+
+#11 [10/12] COPY .env.example ./.env.example
+#11 CACHED
+
+#12 [ 2/12] WORKDIR /app
+#12 CACHED
+
+#13 [ 4/12] RUN pip install --no-cache-dir --upgrade pip &&     pip install --no-cache-dir torch torchvision     --index-url https://download.pytorch.org/whl/cpu
+#13 CACHED
+
+#14 [ 6/12] RUN pip install --no-cache-dir -r requirements.txt
+#14 CACHED
+
+#15 [ 9/12] COPY tests/ ./tests/
+#15 CACHED
+
+#16 [12/12] RUN cp .env.example .env     && mkdir -p /tmp/pdf_ocr_history /tmp/pdf_ocr_images     && mkdir -p /app/correction_data/images /app/correction_data/labels     && chmod -R 777 /tmp/pdf_ocr_history /tmp/pdf_ocr_images /app/models /app/correction_data
+#16 CACHED
+
+#17 exporting to image
+#17 exporting layers done
+#17 exporting manifest sha256:b876b98a7a5a64e008c2e08c074a6fc195c6b28df0eb60fbc847d73d87f8db92 0.0s done
+#17 exporting config sha256:7123a1f7d8385becb2ef51fe0a0aaea80ce8242be57453c93384ee659ce66b9d 0.0s done
+#17 exporting attestation manifest sha256:4f103fd3f7c4655a31cf2671bea77a228b6ebf9e94328932a7401881d6f0b0e0
+#17 exporting attestation manifest sha256:4f103fd3f7c4655a31cf2671bea77a228b6ebf9e94328932a7401881d6f0b0e0 0.1s done
+#17 exporting manifest list sha256:69cebb0d79c868189f70c27db2b09ff770f8097b49c51f4093ed84053373ce3d 0.0s done
+#17 naming to docker.io/library/pdf-ocr-pipeline:v0.5.0 done
+#17 unpacking to docker.io/library/pdf-ocr-pipeline:v0.5.0
+#17 unpacking to docker.io/library/pdf-ocr-pipeline:v0.5.0 0.5s done
+#17 naming to docker.io/library/pdf-ocr-pipeline:latest done
+#17 unpacking to docker.io/library/pdf-ocr-pipeline:latest 0.0s done
+#17 DONE 0.8s
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/lzbhoglw06iwhaybow9ore31h

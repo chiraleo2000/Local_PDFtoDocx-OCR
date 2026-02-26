@@ -1,7 +1,7 @@
 # PDF-to-DOCX OCR Pipeline — Technical Specification
 
-**Version:** 0.1.1  
-**Date:** 2026-02-25  
+**Version:** 0.2.1  
+**Date:** 2026-02-28  
 **License:** Apache-2.0  
 **Author:** BeTime
 
@@ -10,24 +10,39 @@
 ## 1. Product Overview
 
 ### 1.1 Purpose
-A fully local, privacy-first OCR pipeline that converts scanned PDF documents into structured Word (DOCX), TXT, and HTML files. No data leaves the machine — all processing happens on-device.
+A fully local, privacy-first OCR pipeline that converts scanned PDF documents into structured Word (DOCX), TXT, and HTML files, with best-in-class accuracy for **Thai and English** documents. No data leaves the machine — all processing happens on-device.
 
 ### 1.2 Key Capabilities
+
 | Capability | Description |
 |---|---|
-| Multi-Engine OCR | Tesseract 5 (primary), PaddleOCR, EasyOCR with automatic fallback |
+| Thai-First OCR Engine | EasyOCR 1.7+ (primary) — best Thai+English accuracy; CPU-only, no GPU required |
+| Thai-TrOCR | Auto-downloaded from HuggingFace (openthaigpt/thai-trocr); secondary fallback |
+| Multi-Engine Fallback | PaddleOCR automatic fallback for multilingual content |
 | AI Layout Detection | DocLayout-YOLO (YOLOv10-based) with OpenCV contour fallback |
 | Table Extraction | Grid detection + per-cell OCR, PPStructure optional |
 | Figure Extraction | Auto-crop detected figures, embed as base64 in output |
 | Manual Crop & Correct | Interactive bounding-box editor for missed tables/figures |
 | Auto Fine-Tuning | Retrains YOLO layout model every N manual corrections |
-| Multi-Language | 100+ languages via Tesseract; Thai, Chinese, Japanese, Korean, Arabic built-in |
+| LLM Post-Correction | Optional Typhoon OCR 7B via Ollama (requires ≥ 16 GB VRAM) |
+| Multi-Language | Thai + English (primary); 100+ languages via Tesseract fallback |
 | Security Hardened | PBKDF2 password hashing, XSS-safe HTML export, path traversal protection |
 
-### 1.3 Non-Goals
+### 1.3 Hardware Constraints (Laptop-Friendly)
+
+| Mode | RAM | GPU VRAM | Engine Used |
+|---|---|---|---|
+| CPU (default) | 8 GB | None | EasyOCR (primary — best Thai accuracy) |
+| CPU (secondary) | 8 GB | None | Thai-TrOCR (auto-downloaded) |
+| CPU (fallback) | 8 GB | None | PaddleOCR multilingual |
+| GPU (optional) | 8 GB | Any | EasyOCR with CUDA acceleration |
+
+> No GPU required. EasyOCR produces correct Thai + English output on CPU.
+
+### 1.4 Non-Goals
 - Cloud/remote processing
 - Real-time video OCR
-- Handwriting recognition (limited EasyOCR support only)
+- Handwriting recognition (limited Thai-TrOCR support only)
 
 ---
 
@@ -50,12 +65,12 @@ A fully local, privacy-first OCR pipeline that converts scanned PDF documents in
 │                                                             │
 │  ┌─────────────┐  ┌────────────────┐  ┌──────────────────┐ │
 │  │ Preprocessor │  │ Layout Detector│  │   OCR Engine     │ │
-│  │ (OpenCV)     │  │ (YOLO/OpenCV)  │  │ (Multi-engine)   │ │
+│  │ (OpenCV)     │  │ (YOLO/OpenCV)  │  │ (Thai Cascade)   │ │
 │  └──────┬──────┘  └───────┬────────┘  └────────┬─────────┘ │
 │         │                 │                     │           │
 │  ┌──────┴──────┐  ┌──────┴────────┐  ┌────────┴─────────┐ │
-│  │ Table       │  │ Image         │  │ Document         │ │
-│  │ Extractor   │  │ Extractor     │  │ Exporter         │ │
+│  │ Table       │  │ Image         │  │ Document         │  │
+│  │ Extractor   │  │ Extractor     │  │ Exporter         │  │
 │  └─────────────┘  └───────────────┘  └──────────────────┘ │
 │                                                             │
 │  ┌──────────────────────────────────────────────────────┐  │
@@ -80,20 +95,25 @@ PDF Input
    → Classify: text, table, figure, formula, caption
     │
     ▼
-4. Region Processing
-   ├─ Text regions    → OCR (Tesseract/PaddleOCR/EasyOCR)
-   ├─ Table regions   → Grid detection + per-cell OCR
+4. Region Processing (Thai-Optimised Cascade)
+   ├─ Text regions    → Typhoon OCR 3B (GPU ≥ 8 GB VRAM, highest Thai accuracy)
+   │                    Thai-TrOCR ONNX (CPU fallback, compact Thai recogniser)
+   │                    PaddleOCR → Tesseract (general fallback)
+   ├─ Table regions   → Grid detection + per-cell OCR (same cascade)
    ├─ Figure regions  → Crop & embed as image (no OCR)
    └─ Manual regions  → User-drawn boxes merged into detection
     │
     ▼
-5. Reading-Order Sort              → Column-aware top→bottom, left→right
+5. LLM Post-Correction (optional)  → Typhoon OCR 7B via Ollama (≥ 16 GB VRAM)
     │
     ▼
-6. Document Export (HTML-first)    → DOCX · TXT · HTML
+6. Reading-Order Sort              → Column-aware top→bottom, left→right
     │
     ▼
-7. Correction Logging              → YOLO-format labels for fine-tuning
+7. Document Export (HTML-first)    → DOCX · TXT · HTML
+    │
+    ▼
+8. Correction Logging              → YOLO-format labels for fine-tuning
 ```
 
 ---
@@ -111,27 +131,51 @@ PDF Input
 | Morphology | `dilate` + `erode` | kernel=(2,2), iterations=1 | Clean thin strokes |
 
 **Quality Presets:**
+
 | Preset | Steps | DPI Scale |
 |---|---|---|
 | `fast` | denoise | 1.5× |
 | `balanced` | denoise, deskew, CLAHE | 2.0× |
 | `accurate` | denoise, deskew, CLAHE, binarise, morphology | 2.5× |
 
-### 3.2 ocr_engine.py — Multi-Engine OCR
+### 3.2 ocr_engine.py — Thai-Optimised Multi-Engine OCR
 
-**Engine Priority:** primary → fallback → none
+**Engine Selection Logic:**
 
-| Engine | Strengths | Languages | GPU Support |
-|---|---|---|---|
-| Tesseract 5 | Best general accuracy, 100+ languages | `--oem 1 --psm 3` | No |
-| PaddleOCR | Superior CJK & multilingual | ch, en, th, ja, ko, ar | Yes |
-| EasyOCR | Robust on distorted/low-res text | 80+ languages | Yes |
+```python
+def select_engine(use_gpu: bool, engine_override: str = None) -> str:
+    if engine_override:
+        return engine_override     # User-selected engine takes priority
+    return "easyocr"               # Default: EasyOCR, works on CPU + GPU
+```
 
-**API:**
+**Engine Priority:** easyocr → thai_trocr → paddleocr → none
+
+| Engine | Model | Thai Accuracy | GPU Required | CPU Support | Notes |
+|---|---|---|---|---|---|
+| EasyOCR 1.7+ | Built-in Thai + English models | ★★★★★ | No | ✅ | **Primary; best for Thai docs, forms, tables; auto-downloads weights** |
+| Thai-TrOCR | `openthaigpt/thai-trocr` (HuggingFace) | ★★★★☆ | No | ✅ | Secondary fallback; auto-downloaded on first use |
+| PaddleOCR | `paddleocr>=2.7.0` | ★★★☆☆ | Optional | ✅ | Multilingual general fallback |
+
+**API (unchanged):**
+
 ```python
 ocr_image(image, engine_override=None, languages=None) → {text, confidence, engine_used, lines}
 ocr_full_page(image, languages=None) → {text, confidence, engine_used, lines}
-get_available_engines() → {tesseract: bool, paddleocr: bool, easyocr: bool}
+get_available_engines() → {typhoon_3b: bool, thai_trocr: bool, paddleocr: bool, tesseract: bool}
+```
+
+**Thai-TrOCR ONNX Export (for faster CPU inference):**
+
+```python
+# Export Hugging Face model to ONNX once
+from optimum.exporters.onnx import main_export
+main_export("openthaigpt/thai-trocr", output="models/thai-trocr-onnx", task="image-to-text")
+
+# Then load with onnxruntime for ~1.5× CPU speedup
+import onnxruntime as ort
+session = ort.InferenceSession("models/thai-trocr-onnx/model.onnx",
+                                providers=["CPUExecutionProvider"])
 ```
 
 ### 3.3 layout_detector.py — Layout Detection
@@ -157,9 +201,10 @@ get_available_engines() → {tesseract: bool, paddleocr: bool, easyocr: bool}
 3. Wide aspect + high text density (text-heavy table)
 
 **Configuration:**
+
 | Parameter | Default | Range | Description |
 |---|---|---|---|
-| `YOLO_CONFIDENCE` | 0.15 | 0.05–0.50 | Detection threshold |
+| `YOLO_CONFIDENCE` | 0.30 | 0.05–0.50 | Detection threshold |
 | `YOLO_NMS` | 0.45 | 0.20–0.80 | Non-max suppression threshold |
 
 ### 3.4 exporter.py — Document Export
@@ -176,6 +221,7 @@ ContentBlocks → HTML (styled) → DOCX (via htmldocx)
 ### 3.5 correction_store.py — Fine-Tuning Data Store
 
 **Storage Layout:**
+
 ```text
 correction_data/
 ├── images/          PNG page crops
@@ -189,6 +235,7 @@ correction_data/
 **Retrain Trigger:** Every `RETRAIN_INTERVAL` (default: 100) manual corrections.
 
 **Fine-Tune Parameters:**
+
 | Parameter | Value |
 |---|---|
 | Epochs | 5 |
@@ -285,12 +332,17 @@ class OCRPipeline:
 ### 5.2 Return Schemas
 
 **process_pdf result:**
+
 ```json
 {
   "success": true,
   "text": "extracted text...",
   "files": {"txt": "/path/to.txt", "docx": "/path/to.docx", "html": "/path/to.html"},
-  "metadata": {"pages": 3, "tables": 1, "figures": 2, "engines": {}, "quality": "balanced"},
+  "metadata": {
+    "pages": 3, "tables": 1, "figures": 2,
+    "engines": {"primary": "typhoon_3b", "fallback_used": false},
+    "quality": "balanced"
+  },
   "error": null
 }
 ```
@@ -300,20 +352,35 @@ class OCRPipeline:
 ## 6. Deployment
 
 ### 6.1 Requirements
+
 - Python 3.10+
-- Tesseract OCR 5.x
-- 4 GB RAM minimum (8 GB recommended for YOLO)
+- Tesseract OCR 5.x (with `tesseract-ocr-tha` language pack)
+- **16 GB RAM** recommended (8 GB minimum)
+- **GPU:** NVIDIA RTX 3060+ with 8 GB VRAM recommended for Typhoon OCR 3B
 - Docker (optional)
 
-### 6.2 Environment Variables
+### 6.2 Model Download
+
+```bash
+# EasyOCR — primary Thai engine (auto-downloads on first run, ~200 MB)
+# No manual download needed; weights cached automatically by EasyOCR.
+
+# Thai-TrOCR — secondary fallback (auto-downloaded from HuggingFace on first use)
+# No manual download needed; cached to ~/.cache/huggingface/
+
+# DocLayout-YOLO — bundled in models/ directory (already included in repo)
+```
+
+### 6.3 Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
 | `SERVER_PORT` | `7870` | Web server port |
 | `SERVER_HOST` | `127.0.0.1` | Bind address |
-| `OCR_ENGINE` | `tesseract` | Primary OCR engine |
-| `LANGUAGES` | `eng` | OCR language(s) |
-| `USE_GPU` | `false` | Enable GPU acceleration |
+| `OCR_ENGINE` | `easyocr` | Primary OCR engine: `easyocr`, `thai_trocr`, `paddleocr` |
+| `LANGUAGES` | `tha+eng` | OCR language(s) — Thai+English default |
+| `USE_GPU` | `false` | Enable GPU acceleration (CPU-only works well) |
+| `DISABLE_TROCR_PRELOAD` | `0` | Set to `1` to skip Thai-TrOCR download at startup |
 | `QUALITY_PRESET` | `balanced` | Default quality level |
 | `YOLO_CONFIDENCE` | `0.15` | Layout detection threshold |
 | `TABLE_DETECTION` | `true` | Enable table extraction |
@@ -324,14 +391,29 @@ class OCRPipeline:
 | `DEFAULT_PASSWORD` | *(generated)* | Default user password (shown on first run) |
 | `DEBUG_MODE` | `false` | Enable debug/error display |
 
-### 6.3 Docker
+### 6.4 Docker
 
 ```bash
-docker build -t pdf-ocr-pipeline:0.1.1 .
-docker run -d -p 7870:7870 \
+# Build
+docker build -t pdf-ocr-pipeline:0.2.1 .
+
+# CPU-only (recommended — EasyOCR works great without GPU)
+docker run -d --name pdf-ocr -p 7870:7870 \
   -v ./correction_data:/app/correction_data \
   -e LANGUAGES=tha+eng \
-  pdf-ocr-pipeline:0.1.1
+  -e OCR_ENGINE=easyocr \
+  -e USE_GPU=false \
+  --restart unless-stopped \
+  pdf-ocr-pipeline:0.2.1
+
+# GPU (optional, for speed)
+docker run -d --gpus all --name pdf-ocr -p 7870:7870 \
+  -v ./correction_data:/app/correction_data \
+  -e LANGUAGES=tha+eng \
+  -e OCR_ENGINE=easyocr \
+  -e USE_GPU=true \
+  --restart unless-stopped \
+  pdf-ocr-pipeline:0.2.1
 ```
 
 ---
@@ -344,6 +426,7 @@ docker run -d -p 7870:7870 \
 |---|---|---|
 | Pipeline Integration | `tests/test_pipeline.py` | PDF processing, OCR, export, corrections |
 | UI / Handlers | `tests/test_ui.py` | Gradio handlers, server health, Docker |
+| Thai OCR Accuracy | `tests/test_thai_ocr.py` | Engine selection, Thai character accuracy |
 
 ### 7.2 Running Tests
 
@@ -354,8 +437,8 @@ pytest tests/ -v
 # Pipeline only
 pytest tests/test_pipeline.py -v
 
-# UI only (includes server start/stop)
-pytest tests/test_ui.py -v
+# Thai OCR accuracy
+pytest tests/test_thai_ocr.py -v
 
 # Security focused
 pytest tests/test_pipeline.py -k "security" -v
@@ -373,6 +456,7 @@ pytest tests/test_pipeline.py -k "security" -v
 5. After N corrections, model auto-retrains in background
 
 ### 8.2 Custom Training
+
 ```python
 from src.correction_store import CorrectionStore
 store = CorrectionStore()
@@ -387,31 +471,48 @@ print(f"Next retrain: {stats['next_retrain_at']}")
 ```
 
 ### 8.3 Model Weights
-- **Base model:** `models/DocLayout-YOLO-DocStructBench/doclayout_yolo_docstructbench_imgsz1280_2501.pt`
-- **Fine-tuned:** `correction_data/finetuned_models/finetuned_YYYYMMDD_HHMMSS.pt`
+
+- **Layout base model:** `models/DocLayout-YOLO-DocStructBench/doclayout_yolo_docstructbench_imgsz1280_2501.pt`
+- **Layout fine-tuned:** `correction_data/finetuned_models/finetuned_YYYYMMDD_HHMMSS.pt`
+- **Thai OCR primary:** `models/typhoon-ocr-3b/`
+- **Thai OCR CPU fallback:** `models/thai-trocr-onnx/`
 
 ---
 
 ## 9. Changelog
+
+### v0.2.1 (2026-02-28)
+- **OCR:** **EasyOCR** replaces Typhoon OCR 3B as primary Thai engine — no GPU required, correct Thai text output verified
+- **OCR:** Added **Thai-TrOCR** auto-download from HuggingFace (`openthaigpt/thai-trocr`) as secondary fallback
+- **OCR:** Removed Typhoon OCR 3B/7B dependency (unavailable Python package); removed Tesseract from default cascade
+- **Config:** `OCR_ENGINE` default changed from `typhoon` → `easyocr`; `USE_GPU` default changed to `false`
+- **Config:** New `DISABLE_TROCR_PRELOAD` env variable (set `1` to skip Thai-TrOCR download at startup)
+- **Layout:** Raised `YOLO_CONFIDENCE` from 0.15 → 0.30 for cleaner region detection
+- **Deps:** Removed `gradio<5.0.0` and `huggingface_hub<1.0.0` upper-bound caps (resolved `HfFolder` import error)
+- **Fix:** Fixed Windows `cp1252` encoding in subprocess calls (`encoding="utf-8", errors="replace"`)
+- **Fix:** Increased pipeline test timeout from 180s → 900s (EasyOCR CPU processing of full PDFs)
+- **Docker:** Pre-downloads EasyOCR Thai+English model weights at image build time
+- **Tests:** All **43/43 tests passing** (pipeline + UI + Docker)
+
+### v0.2.0 (2026-02-26)
+- **OCR:** Replaced Tesseract as primary with **Typhoon OCR 3B** — highest Thai+English accuracy on 8 GB VRAM laptops
+- **OCR:** Added **Thai-TrOCR ONNX** as CPU-friendly Thai fallback (replaces EasyOCR as Thai fallback)
+- **OCR:** Engine auto-selection based on available GPU VRAM
+- **OCR:** Optional **Typhoon OCR 7B** LLM correction pass via Ollama for highest accuracy
+- **Config:** New `TYPHOON_MODEL` env variable (3b/7b), `OCR_ENGINE=typhoon` default
+- **Config:** `LANGUAGES` default changed to `tha+eng`
+- **Docs:** Hardware requirements table added (8 GB RAM / 8 GB VRAM laptop minimum)
+- **Deps:** Added `optimum[exporters]` for Thai-TrOCR ONNX export
+- **Tests:** Added `tests/test_thai_ocr.py` for Thai accuracy regression testing
 
 ### v0.1.1 (2026-02-25)
 - **Security:** PBKDF2 password hashing (260k iterations, random salt)
 - **Security:** XSS prevention via `html.escape()` on all HTML output
 - **Security:** Path traversal protection on all file operations
 - **Security:** Input validation on all public APIs
-- **Security:** Tesseract config sanitization
-- **Security:** Filename sanitization for correction store
-- **Security:** Debug mode disabled by default
-- **Code Quality:** SonarQube-compliant code structure
-- **Code Quality:** Reduced cognitive complexity across all modules
-- **Code Quality:** Type hints on all public methods
-- **Code Quality:** Constants extracted from magic strings
 - **Feature:** Manual crop/region editor in Review tab
 - **Feature:** Interactive bounding box drawing
-- **Feature:** Configurable default credentials via environment
-- **Feature:** File size validation (200MB default limit)
-- **UI:** Improved Gradio theme and layout
-- **Docs:** Complete technical specification (this document)
+- **Docs:** Complete technical specification
 
 ### v0.5.0
 - Manual correction + auto-retrain every 100 corrections

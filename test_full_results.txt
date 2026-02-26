@@ -1,0 +1,164 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.0.2, pluggy-1.6.0 -- C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1
+plugins: anyio-4.12.1
+collecting ... collected 43 items
+
+tests/test_ui.py::TestServerHealth::test_server_returns_200 ERROR        [  2%]
+tests/test_ui.py::TestServerHealth::test_server_serves_html ERROR        [  4%]
+tests/test_ui.py::TestPDFConversionActions::test_conversion_succeeds PASSED [  6%]
+tests/test_ui.py::TestPDFConversionActions::test_conversion_extracts_text PASSED [  9%]
+tests/test_ui.py::TestPDFConversionActions::test_conversion_produces_docx PASSED [ 11%]
+tests/test_ui.py::TestPDFConversionActions::test_conversion_produces_txt PASSED [ 13%]
+tests/test_ui.py::TestPDFConversionActions::test_docx_file_is_valid_word PASSED [ 16%]
+tests/test_ui.py::TestPDFConversionActions::test_metadata_has_page_count PASSED [ 18%]
+tests/test_ui.py::TestPDFConversionActions::test_metadata_has_languages PASSED [ 20%]
+tests/test_ui.py::TestPDFConversionActions::test_no_pdf_returns_error PASSED [ 23%]
+tests/test_ui.py::TestPDFConversionActions::test_header_footer_trim PASSED [ 25%]
+tests/test_ui.py::TestPDFConversionActions::test_language_override_works PASSED [ 27%]
+tests/test_ui.py::TestPDFConversionActions::test_yolo_confidence_override PASSED [ 30%]
+tests/test_ui.py::TestDownloadActionsOCRPage::test_download_docx_file_exists PASSED [ 32%]
+tests/test_ui.py::TestDownloadActionsOCRPage::test_download_txt_file_exists PASSED [ 34%]
+tests/test_ui.py::TestDownloadActionsOCRPage::test_download_docx_not_empty PASSED [ 37%]
+tests/test_ui.py::TestDownloadActionsOCRPage::test_download_txt_not_empty PASSED [ 39%]
+tests/test_ui.py::TestHistoryPageActions::test_history_lists_entries PASSED [ 41%]
+tests/test_ui.py::TestHistoryPageActions::test_history_entry_has_filename PASSED [ 44%]
+tests/test_ui.py::TestHistoryPageActions::test_history_download_docx PASSED [ 46%]
+tests/test_ui.py::TestHistoryPageActions::test_history_download_txt PASSED [ 48%]
+tests/test_ui.py::TestHistoryPageActions::test_history_download_invalid_returns_none PASSED [ 51%]
+tests/test_ui.py::TestHistoryPageActions::test_history_download_empty_returns_none PASSED [ 53%]
+tests/test_ui.py::TestGradioInterfaceConstruction::test_create_interface_no_error PASSED [ 55%]
+tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_language_dropdown PASSED [ 58%]
+tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_engine_dropdown PASSED [ 60%]
+tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_convert_button PASSED [ 62%]
+tests/test_ui.py::TestGradioInterfaceConstruction::test_no_login_section PASSED [ 65%]
+tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_settings_tab PASSED [ 67%]
+tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_review_tab PASSED [ 69%]
+tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_load_pdf PASSED [ 72%]
+tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_add_region PASSED [ 74%]
+tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_add_region_invalid_bbox PASSED [ 76%]
+tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_clear_manual PASSED [ 79%]
+tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_convert_with_corrections PASSED [ 81%]
+tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_no_pdf_returns_error PASSED [ 83%]
+tests/test_ui.py::TestTrainingStats::test_correction_stats_md PASSED     [ 86%]
+tests/test_ui.py::TestTrainingStats::test_corrections_log_md PASSED      [ 88%]
+tests/test_ui.py::TestTrainingStats::test_draw_detections PASSED         [ 90%]
+tests/test_ui.py::TestDockerDeployment::test_http_root_returns_200 PASSED [ 93%]
+tests/test_ui.py::TestDockerDeployment::test_container_pipeline_processes_pdf PASSED [ 95%]
+tests/test_ui.py::TestDockerDeployment::test_container_pipeline_with_language PASSED [ 97%]
+tests/test_ui.py::TestDockerDeployment::test_container_gradio_interface_builds PASSED [100%]
+
+=================================== ERRORS ====================================
+_________ ERROR at setup of TestServerHealth.test_server_returns_200 __________
+
+self = <tests.test_ui.TestServerHealth object at 0x000002390E8C78C0>
+
+    @pytest.fixture(scope="class")
+    def server(self):
+        import sys
+        env = os.environ.copy()
+        env.update({"SERVER_PORT": str(APP_PORT), "SERVER_HOST": "127.0.0.1",
+                    "SHARE_GRADIO": "false"})
+        proc = subprocess.Popen(
+            [sys.executable, str(ROOT_DIR / "app.py")],
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cwd=str(ROOT_DIR),
+        )
+        import urllib.request
+        deadline = time.time() + 120
+        ready = False
+        while time.time() < deadline:
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{APP_PORT}/", timeout=2)
+                ready = True
+                break
+            except Exception:
+                time.sleep(1)
+        if not ready:
+            proc.terminate()
+            _, err = proc.communicate(timeout=5)
+>           pytest.fail(f"Server did not start: {err.decode(errors='replace')[-1000:]}")
+E           Failed: Server did not start: `ViTImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`. 
+
+E           2026-02-26 16:11:17,337 [httpx] INFO: HTTP Request: HEAD https://huggingface.co/openthaigpt/thai-trocr/resolve/main/processor_config.json "HTTP/1.1 404 Not Found"
+
+E           2026-02-26 16:11:17,637 [httpx] INFO: HTTP Request: HEAD https://huggingface.co/openthaigpt/thai-trocr/resolve/main/preprocessor_config.json "HTTP/1.1 307 Temporary Redirect"
+
+E           2026-02-26 16:11:17,650 [httpx] INFO: HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/openthaigpt/thai-trocr/ce167339d2eaa48137cd6ed3efd65bac1ec45430/preprocessor_config.json "HTTP/1.1 200 OK"
+
+E           2026-02-26 16:11:17,939 [httpx] INFO: HTTP Request: HEAD https://huggingface.co/openthaigpt/thai-trocr/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+
+tests\test_ui.py:134: Failed
+_________ ERROR at setup of TestServerHealth.test_server_serves_html __________
+
+self = <tests.test_ui.TestServerHealth object at 0x000002390E8C78C0>
+
+    @pytest.fixture(scope="class")
+    def server(self):
+        import sys
+        env = os.environ.copy()
+        env.update({"SERVER_PORT": str(APP_PORT), "SERVER_HOST": "127.0.0.1",
+                    "SHARE_GRADIO": "false"})
+        proc = subprocess.Popen(
+            [sys.executable, str(ROOT_DIR / "app.py")],
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cwd=str(ROOT_DIR),
+        )
+        import urllib.request
+        deadline = time.time() + 120
+        ready = False
+        while time.time() < deadline:
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{APP_PORT}/", timeout=2)
+                ready = True
+                break
+            except Exception:
+                time.sleep(1)
+        if not ready:
+            proc.terminate()
+            _, err = proc.communicate(timeout=5)
+>           pytest.fail(f"Server did not start: {err.decode(errors='replace')[-1000:]}")
+E           Failed: Server did not start: `ViTImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`. 
+
+E           2026-02-26 16:11:17,337 [httpx] INFO: HTTP Request: HEAD https://huggingface.co/openthaigpt/thai-trocr/resolve/main/processor_config.json "HTTP/1.1 404 Not Found"
+
+E           2026-02-26 16:11:17,637 [httpx] INFO: HTTP Request: HEAD https://huggingface.co/openthaigpt/thai-trocr/resolve/main/preprocessor_config.json "HTTP/1.1 307 Temporary Redirect"
+
+E           2026-02-26 16:11:17,650 [httpx] INFO: HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/openthaigpt/thai-trocr/ce167339d2eaa48137cd6ed3efd65bac1ec45430/preprocessor_config.json "HTTP/1.1 200 OK"
+
+E           2026-02-26 16:11:17,939 [httpx] INFO: HTTP Request: HEAD https://huggingface.co/openthaigpt/thai-trocr/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+
+tests\test_ui.py:134: Failed
+============================== warnings summary ===============================
+tests/test_ui.py::TestPDFConversionActions::test_conversion_succeeds
+  C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\requests\__init__.py:113: RequestsDependencyWarning: urllib3 (2.6.3) or chardet (6.0.0.post1)/charset_normalizer (3.4.4) doesn't match a supported version!
+    warnings.warn(
+
+tests/test_ui.py::TestPDFConversionActions::test_conversion_succeeds
+tests/test_ui.py::TestPDFConversionActions::test_conversion_succeeds
+  C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\thop\profile.py:12: DeprecationWarning: distutils Version classes are deprecated. Use packaging.version instead.
+    if LooseVersion(torch.__version__) < LooseVersion("1.0.0"):
+
+tests/test_ui.py::TestPDFConversionActions::test_conversion_succeeds
+tests/test_ui.py::TestPDFConversionActions::test_conversion_succeeds
+  C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\thop\profile.py:68: DeprecationWarning: distutils Version classes are deprecated. Use packaging.version instead.
+    if LooseVersion(torch.__version__) >= LooseVersion("1.1.0"):
+
+tests/test_ui.py::TestGradioInterfaceConstruction::test_create_interface_no_error
+tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_language_dropdown
+tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_engine_dropdown
+tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_convert_button
+tests/test_ui.py::TestGradioInterfaceConstruction::test_no_login_section
+tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_settings_tab
+tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_review_tab
+  C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\app.py:485: UserWarning: The parameters have been moved from the Blocks constructor to the launch() method in Gradio 6.0: theme. Please pass these parameters to launch() instead.
+    with gr.Blocks(title="PDF OCR Pipeline", theme=theme) as app:
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+ERROR tests/test_ui.py::TestServerHealth::test_server_returns_200 - Failed: Server did not start: `ViTImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`. 
+
+ERROR tests/test_ui.py::TestServerHealth::test_server_serves_html - Failed: Server did not start: `ViTImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`. 
+
+=========== 41 passed, 12 warnings, 2 errors in 3400.79s (0:56:40) ============

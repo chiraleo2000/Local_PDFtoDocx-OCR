@@ -1,0 +1,121 @@
+{
+  "timestamp": "2026-02-26T13:12:48.087986",
+  "total_tests": 14,
+  "passed": 14,
+  "failed": 0,
+  "duration_s": 142.67,
+  "results": [
+    {
+      "name": "Server Health",
+      "passed": true,
+      "detail": "Title: 'PDF OCR Pipeline', HTML: True, Gradio: True",
+      "duration_s": 2.52,
+      "screenshot": "C:\\Users\\chira\\Documents\\visualstudiocode\\Work\\Local_PDFtoDocx-OCR-V0.1\\test_selenium_output\\screenshot_server_health_1772086228.png",
+      "timestamp": "2026-02-26T13:10:28.904263"
+    },
+    {
+      "name": "Hero Bar Content",
+      "passed": true,
+      "detail": "Title: True, Version: True, Engines: True",
+      "duration_s": 2.37,
+      "screenshot": "C:\\Users\\chira\\Documents\\visualstudiocode\\Work\\Local_PDFtoDocx-OCR-V0.1\\test_selenium_output\\screenshot_hero_bar_1772086231.png",
+      "timestamp": "2026-02-26T13:10:31.886123"
+    },
+    {
+      "name": "Tab Navigation",
+      "passed": true,
+      "detail": "Expected: ['Convert PDF', 'Review & Correct', 'Training', 'History', 'Settings', 'System Status'], Found: ['Convert PDF', 'Review & Correct', 'Training', 'History', 'Settings', 'System Status']",
+      "duration_s": 6.53,
+      "screenshot": "C:\\Users\\chira\\Documents\\visualstudiocode\\Work\\Local_PDFtoDocx-OCR-V0.1\\test_selenium_output\\screenshot_tabs_1772086238.png",
+      "timestamp": "2026-02-26T13:10:38.936003"
+    },
+    {
+      "name": "Convert Tab Elements",
+      "passed": true,
+      "detail": "Upload area: OK, Language dropdown: OK, Quality dropdown: OK, Convert button: OK, Preview area: OK",
+      "duration_s": 2.3,
+      "screenshot": "C:\\Users\\chira\\Documents\\visualstudiocode\\Work\\Local_PDFtoDocx-OCR-V0.1\\test_selenium_output\\screenshot_convert_tab_1772086241.png",
+      "timestamp": "2026-02-26T13:10:41.837997"
+    },
+    {
+      "name": "Engine Dropdown Options",
+      "passed": true,
+      "detail": "Typhoon: True, TrOCR: True, Paddle: True, NoTesseract: True, NoEasyOCR: True",
+      "duration_s": 2.57,
+      "screenshot": "C:\\Users\\chira\\Documents\\visualstudiocode\\Work\\Local_PDFtoDocx-OCR-V0.1\\test_selenium_output\\screenshot_engine_options_1772086244.png",
+      "timestamp": "2026-02-26T13:10:45.001348"
+    },
+    {
+      "name": "Language Options",
+      "passed": true,
+      "detail": "Thai: True, English: True, Thai+Eng: True, Auto: True",
+      "duration_s": 2.22,
+      "screenshot": null,
+      "timestamp": "2026-02-26T13:10:47.225065"
+    },
+    {
+      "name": "No Tesseract/EasyOCR",
+      "passed": true,
+      "detail": "NoTesseract: True, NoEasyOCR: True",
+      "duration_s": 12.12,
+      "screenshot": null,
+      "timestamp": "2026-02-26T13:10:59.345922"
+    },
+    {
+      "name": "Settings Tab",
+      "passed": true,
+      "detail": "Config: True, OCR: True, Layout: True, Installed: True, YOLO: True",
+      "duration_s": 3.75,
+      "screenshot": "C:\\Users\\chira\\Documents\\visualstudiocode\\Work\\Local_PDFtoDocx-OCR-V0.1\\test_selenium_output\\screenshot_settings_tab_1772086263.png",
+      "timestamp": "2026-02-26T13:11:03.652329"
+    },
+    {
+      "name": "System Status Tab",
+      "passed": true,
+      "detail": "Status section: True, JSON data: True",
+      "duration_s": 4.46,
+      "screenshot": "C:\\Users\\chira\\Documents\\visualstudiocode\\Work\\Local_PDFtoDocx-OCR-V0.1\\test_selenium_output\\screenshot_system_status_1772086268.png",
+      "timestamp": "2026-02-26T13:11:08.694607"
+    },
+    {
+      "name": "Review Tab Elements",
+      "passed": true,
+      "detail": "AddRegion: True, Clear: True, ConvertCorr: True, BBox: True, RegType: True",
+      "duration_s": 4.04,
+      "screenshot": "C:\\Users\\chira\\Documents\\visualstudiocode\\Work\\Local_PDFtoDocx-OCR-V0.1\\test_selenium_output\\screenshot_review_tab_1772086272.png",
+      "timestamp": "2026-02-26T13:11:13.390385"
+    },
+    {
+      "name": "History Tab",
+      "passed": true,
+      "detail": "History: True, Refresh: True, EntryID: True, Download: True",
+      "duration_s": 3.6,
+      "screenshot": "C:\\Users\\chira\\Documents\\visualstudiocode\\Work\\Local_PDFtoDocx-OCR-V0.1\\test_selenium_output\\screenshot_history_tab_1772086276.png",
+      "timestamp": "2026-02-26T13:11:17.557164"
+    },
+    {
+      "name": "Training Tab",
+      "passed": true,
+      "detail": "Retrain: True, Corrections: True, Refresh: True",
+      "duration_s": 3.94,
+      "screenshot": "C:\\Users\\chira\\Documents\\visualstudiocode\\Work\\Local_PDFtoDocx-OCR-V0.1\\test_selenium_output\\screenshot_training_tab_1772086281.png",
+      "timestamp": "2026-02-26T13:11:22.020997"
+    },
+    {
+      "name": "Responsive Layout",
+      "passed": true,
+      "detail": "Rendered OK: True. JS warnings: 0",
+      "duration_s": 6.69,
+      "screenshot": null,
+      "timestamp": "2026-02-26T13:11:28.712413"
+    },
+    {
+      "name": "PDF Upload & Convert",
+      "passed": true,
+      "detail": "Conversion completed. Downloads: True. Status: Pages: 19 | Tables: 0 | Figures: 10 Language: Thai + English | Quality: Balanced (Recommended) | Engine: Typhoon OCR 3B (Best Thai)",
+      "duration_s": 74.53,
+      "screenshot": "C:\\Users\\chira\\Documents\\visualstudiocode\\Work\\Local_PDFtoDocx-OCR-V0.1\\test_selenium_output\\screenshot_after_convert_1772086362.png",
+      "timestamp": "2026-02-26T13:12:43.265234"
+    }
+  ]
+}

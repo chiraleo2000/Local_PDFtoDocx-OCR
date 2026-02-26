@@ -1,8 +1,13 @@
-"""
-OCR Pipeline Orchestrator — v1.0
-PDF → Render → Layout Detect → GROUP (text/table/figure)
-  → OCR text only → Table extraction → Image extraction
-  → Build HTML → HTML→DOCX + HTML→TXT
+"""OCR Pipeline Orchestrator - v2.0
+
+PDF -> Render -> Layout Detect -> GROUP (text/table/figure)
+  -> OCR text only -> Table extraction -> Image extraction
+  -> Build HTML -> HTML->DOCX + HTML->TXT
+
+v2.0 changes:
+    - Tesseract removed; Thai-optimised cascade (Typhoon/TrOCR/PaddleOCR)
+    - Improved table extraction with grid-aware cell alignment
+    - OCR engine shared with table extractor for consistent results
 
 Security:
     - PDF path validated (exists, is file, size limit)
@@ -73,7 +78,7 @@ _THAI_SPACE_RE = re.compile(r"([\u0E00-\u0E7F])\s+([\u0E00-\u0E7F])")
 
 
 def _fix_thai_spacing(text: str) -> str:
-    """Remove artificial spaces between Thai characters (Tesseract artifact)."""
+    """Remove artificial spaces between Thai characters (OCR artifact)."""
     lines = []
     for line in text.split("\n"):
         prev = None
@@ -128,18 +133,19 @@ def _sort_reading_order(blocks: List[ContentBlock],
 # Pipeline
 # ══════════════════════════════════════════════════════════════════════════════
 class OCRPipeline:
-    """Full PDF → DOCX/TXT/HTML pipeline (v1.0).
+    """Full PDF → DOCX/TXT/HTML pipeline (v2.0).
 
     Group-first architecture:
       1. Render page
       2. Layout detection (YOLO / OpenCV)
       3. Group regions: text, table, figure
-      4. OCR text regions only (not figures)
-      5. Extract tables (grid + cell OCR)
+      4. OCR text regions (Typhoon/TrOCR/PaddleOCR cascade)
+      5. Extract tables (grid + cell OCR, improved alignment)
       6. Extract figures as images
       7. Sort reading order
       8. Export via HTML-first
 
+    v2.0: Tesseract removed. Thai-optimised engine cascade.
     Security: PDF inputs validated, file size limited, all paths checked.
     """
 
@@ -156,10 +162,11 @@ class OCRPipeline:
         self.ocr = OCREngine()
         self.layout = LayoutDetector()
         self.table_extractor = TableExtractor()
+        self.table_extractor.set_ocr_engine(self.ocr)  # Share OCR engine
         self.image_extractor = ImageExtractor()
         self.exporter = DocumentExporter()
         self.corrections = CorrectionStore()
-        logger.info("OCR Pipeline initialised (v1.0 — security-hardened, HTML-first, trainable)")
+        logger.info("OCR Pipeline initialised (v2.0 — Thai-optimised, HTML-first, trainable)")
 
     def process_pdf(self, pdf_path: str, quality: str = "balanced",
                     header_trim: float = 0, footer_trim: float = 0,

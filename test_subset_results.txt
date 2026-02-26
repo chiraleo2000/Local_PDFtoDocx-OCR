@@ -1,0 +1,106 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.0.2, pluggy-1.6.0 -- C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1
+plugins: anyio-4.12.1
+collecting ... collected 11 items
+
+tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_load_pdf PASSED [  9%]
+tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_add_region PASSED [ 18%]
+tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_add_region_invalid_bbox PASSED [ 27%]
+tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_clear_manual PASSED [ 36%]
+tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_convert_with_corrections PASSED [ 45%]
+tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_no_pdf_returns_error PASSED [ 54%]
+tests/test_ui.py::TestTrainingStats::test_correction_stats_md PASSED     [ 63%]
+tests/test_ui.py::TestTrainingStats::test_corrections_log_md PASSED      [ 72%]
+tests/test_ui.py::TestTrainingStats::test_draw_detections PASSED         [ 81%]
+tests/test_ui.py::TestServerHealth::test_server_returns_200 ERROR        [ 90%]
+tests/test_ui.py::TestServerHealth::test_server_serves_html ERROR        [100%]
+
+=================================== ERRORS ====================================
+_________ ERROR at setup of TestServerHealth.test_server_returns_200 __________
+
+self = <tests.test_ui.TestServerHealth object at 0x000001CFC786E210>
+
+    @pytest.fixture(scope="class")
+    def server(self):
+        import sys
+        env = os.environ.copy()
+        env.update({"SERVER_PORT": str(APP_PORT), "SERVER_HOST": "127.0.0.1",
+                    "SHARE_GRADIO": "false"})
+        proc = subprocess.Popen(
+            [sys.executable, str(ROOT_DIR / "app.py")],
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cwd=str(ROOT_DIR),
+        )
+        import urllib.request
+        deadline = time.time() + 60
+        ready = False
+        while time.time() < deadline:
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{APP_PORT}/", timeout=2)
+                ready = True
+                break
+            except Exception:
+                time.sleep(1)
+        if not ready:
+            proc.terminate()
+            _, err = proc.communicate(timeout=5)
+>           pytest.fail(f"Server did not start: {err.decode()[-1000:]}")
+                                                 ^^^^^^^^^^^^
+E           UnicodeDecodeError: 'utf-8' codec can't decode byte 0x97 in position 418: invalid start byte
+
+tests\test_ui.py:134: UnicodeDecodeError
+_________ ERROR at setup of TestServerHealth.test_server_serves_html __________
+
+self = <tests.test_ui.TestServerHealth object at 0x000001CFC786E210>
+
+    @pytest.fixture(scope="class")
+    def server(self):
+        import sys
+        env = os.environ.copy()
+        env.update({"SERVER_PORT": str(APP_PORT), "SERVER_HOST": "127.0.0.1",
+                    "SHARE_GRADIO": "false"})
+        proc = subprocess.Popen(
+            [sys.executable, str(ROOT_DIR / "app.py")],
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cwd=str(ROOT_DIR),
+        )
+        import urllib.request
+        deadline = time.time() + 60
+        ready = False
+        while time.time() < deadline:
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{APP_PORT}/", timeout=2)
+                ready = True
+                break
+            except Exception:
+                time.sleep(1)
+        if not ready:
+            proc.terminate()
+            _, err = proc.communicate(timeout=5)
+>           pytest.fail(f"Server did not start: {err.decode()[-1000:]}")
+                                                 ^^^^^^^^^^^^
+E           UnicodeDecodeError: 'utf-8' codec can't decode byte 0x97 in position 418: invalid start byte
+
+tests\test_ui.py:134: UnicodeDecodeError
+============================== warnings summary ===============================
+tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_load_pdf
+  C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\requests\__init__.py:113: RequestsDependencyWarning: urllib3 (2.6.3) or chardet (6.0.0.post1)/charset_normalizer (3.4.4) doesn't match a supported version!
+    warnings.warn(
+
+tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_load_pdf
+tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_load_pdf
+  C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\thop\profile.py:12: DeprecationWarning: distutils Version classes are deprecated. Use packaging.version instead.
+    if LooseVersion(torch.__version__) < LooseVersion("1.0.0"):
+
+tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_load_pdf
+tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_load_pdf
+  C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\thop\profile.py:68: DeprecationWarning: distutils Version classes are deprecated. Use packaging.version instead.
+    if LooseVersion(torch.__version__) >= LooseVersion("1.1.0"):
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+ERROR tests/test_ui.py::TestServerHealth::test_server_returns_200 - UnicodeDe...
+ERROR tests/test_ui.py::TestServerHealth::test_server_serves_html - UnicodeDe...
+============= 9 passed, 5 warnings, 2 errors in 503.30s (0:08:23) =============

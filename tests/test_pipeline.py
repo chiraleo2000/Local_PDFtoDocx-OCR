@@ -91,7 +91,7 @@ class TestOCRPipeline:
         """get_status should return a dict with expected keys."""
         status = pipeline.get_status()
         assert "ocr_engines" in status
-        assert "tesseract" in status["ocr_engines"]
+        assert "easyocr" in status["ocr_engines"]
 
     def test_get_status_has_corrections(self, pipeline):
         """get_status should include correction stats (v0.5)."""
@@ -251,11 +251,12 @@ class TestOCREngine:
         engine = OCREngine()
         engines = engine.get_available_engines()
         assert isinstance(engines, dict)
-        assert "tesseract" in engines
+        assert "easyocr" in engines
+        assert "paddleocr" in engines
 
-    def test_tesseract_available(self):
-        from src.ocr_engine import TESSERACT_AVAILABLE
-        assert TESSERACT_AVAILABLE, "Tesseract should be available in the test environment"
+    def test_easyocr_available(self):
+        from src.ocr_engine import EASYOCR_AVAILABLE
+        assert EASYOCR_AVAILABLE, "EasyOCR should be available in the test environment"
 
     def test_ocr_image(self):
         """OCR should return text from a simple image."""

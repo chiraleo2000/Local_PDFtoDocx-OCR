@@ -1,15 +1,12 @@
 # ============================================
 # PDF-to-DOCX OCR Pipeline — Dependencies
-# v0.1.1  |  Security-hardened, HTML-first, YOLO layout
+# v0.2.1  |  Thai-optimised, EasyOCR primary
 # ============================================
 
 # Core
-gradio>=4.0.0,<5.0.0
-huggingface_hub<1.0.0
+gradio>=4.0.0
+huggingface_hub
 python-dotenv>=1.0.0
-
-# OCR
-pytesseract>=0.3.10
 
 # Image Processing
 Pillow>=10.0.0
@@ -31,12 +28,19 @@ doclayout-yolo>=0.0.2
 # Network
 requests>=2.31.0
 
-# ============================================
-# OPTIONAL — install manually as needed
-# ============================================
-# paddleocr>=2.7.0        # Better multilingual OCR
-# easyocr>=1.7.0          # Fallback OCR for distorted text
+# OCR Engines (v2.0 — all required, no Tesseract)
+easyocr>=1.7.0                  # Thai + multilingual OCR (primary for Thai)
+paddlepaddle>=2.6.0             # PaddlePaddle framework (required by paddleocr)
+paddleocr>=2.7.0,<3.0.0
+onnxruntime>=1.17.0
+transformers>=4.37.0
 
-# NOTE: torch is auto-installed by doclayout-yolo.
-# For CPU-only (smaller image), install from:
-#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+# Testing
+selenium>=4.15.0
+
+# ============================================
+# OPTIONAL — GPU acceleration
+# ============================================
+# onnxruntime-gpu>=1.17.0 # Thai-TrOCR ONNX GPU inference (replaces onnxruntime)
+# accelerate>=0.25.0      # Typhoon OCR GPU acceleration
+# torch>=2.0.0            # Auto-installed by doclayout-yolo

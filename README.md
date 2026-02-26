@@ -1,6 +1,6 @@
 # PDF-to-DOCX OCR Pipeline
 
-> **v0.1.0-dev** — Open-source, multi-language OCR pipeline that converts scanned PDF documents into structured Word (DOCX), TXT, and HTML files.
+> **v0.2.1** — Open-source, privacy-first OCR pipeline optimised for **Thai + English** documents. Converts scanned PDFs into structured Word (DOCX), TXT, and HTML files — 100% local, no data leaves your machine.
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-green.svg)](https://python.org)
@@ -8,21 +8,54 @@
 
 ---
 
+## Hardware Requirements
+
+| Config | Minimum | Recommended |
+| --- | --- | --- |
+| **RAM** | 8 GB | 16 GB |
+| **GPU VRAM** | None (CPU-only works great) | Optional (CUDA for speed) |
+| **Disk** | 10 GB | 20 GB (models + data) |
+
+> **No GPU required.** EasyOCR runs on CPU and produces accurate Thai + English results.
+
+---
+
 ## Features
 
 | Feature | Description |
 | --- | --- |
-| **Multi-Engine OCR** | Tesseract 5 (primary) with optional PaddleOCR and EasyOCR fallback |
+| **EasyOCR (Primary Thai)** | EasyOCR 1.7+ — best Thai+English accuracy, no GPU needed, zero setup |
+| **Thai-TrOCR (Secondary)** | Auto-downloaded from HuggingFace (`openthaigpt/thai-trocr`) — line-level Thai recogniser |
+| **PaddleOCR (Fallback)** | Multilingual fallback for general-purpose documents (CJK, Arabic, etc.) |
 | **OpenCV Pre-processing** | Deskew, denoise, binarise, CLAHE contrast enhancement |
 | **Layout Detection** | DocLayout-YOLO (AI) or OpenCV contour-based fallback — detects text blocks, tables, figures |
 | **Table Extraction** | Grid detection with per-cell OCR, exports as HTML tables in DOCX |
 | **Figure Extraction** | Isolates images/charts and embeds them into output documents |
-| **LLM Post-Correction** | Optional Qwen2.5-VL or Ollama-based text correction (GPU recommended) |
-| **Multi-Language** | Thai, English, Chinese, Japanese, Korean, Arabic + 100 more via Tesseract |
+| **Multi-Language** | Thai, English, Chinese, Japanese, Korean, Arabic + more via EasyOCR |
 | **Output Formats** | DOCX (styled, with tables & images), TXT, HTML |
 | **Web UI** | Gradio interface — upload PDF, configure settings, preview, download |
 | **Auth & History** | Simple login system with per-user processing history |
 | **Docker Ready** | Single-command deployment with `docker run` |
+
+---
+
+## OCR Engine Strategy
+
+The pipeline uses a **Thai-optimised cascade** — engines tried in order:
+
+```text
+Input Region
+    │
+    ├─ EasyOCR          → Primary (Thai + English, CPU-first, accurate)
+    ├─ Thai-TrOCR       → Secondary fallback (auto-downloaded from HuggingFace)
+    └─ PaddleOCR        → Final multilingual fallback
+```
+
+| Engine | Thai Accuracy | GPU Required | CPU OK | Best For |
+| --- | --- | --- | --- | --- |
+| **EasyOCR 1.7+** | ★★★★★ | No | ✅ | **Primary — Thai docs, forms, government PDFs** |
+| **Thai-TrOCR** | ★★★★☆ | No | ✅ | Line-level Thai text, secondary fallback |
+| **PaddleOCR** | ★★★☆☆ | Optional | ✅ | Multilingual general fallback |
 
 ---
 
@@ -32,22 +65,23 @@
 PDF Input
     │
     ▼
-┌──────────────────────────────────┐
-│  1. PDF Rendering (PyMuPDF)      │  High-res page images
-├──────────────────────────────────┤
-│  2. OpenCV Pre-processing        │  Deskew · Denoise · Binarise · CLAHE
-├──────────────────────────────────┤
-│  3. Layout Detection             │  DocLayout-YOLO or OpenCV fallback
-│     → text, table, figure regions│
-├──────────────────────────────────┤
-│  4. OCR per Region               │  Tesseract / PaddleOCR / EasyOCR
-├──────────────────────────────────┤
-│  5. LLM Correction (optional)    │  Qwen2.5-VL / Ollama
-├──────────────────────────────────┤
-│  6. Table & Figure Extraction    │  Grid OCR · Image crop & embed
-├──────────────────────────────────┤
-│  7. Document Export               │  DOCX · TXT · HTML
-└──────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│  1. PDF Rendering (PyMuPDF)                  │  High-res page images (configurable DPI)
+├──────────────────────────────────────────────┤
+│  2. OpenCV Pre-processing                    │  Deskew · Denoise · Binarise · CLAHE
+├──────────────────────────────────────────────┤
+│  3. Layout Detection                         │  DocLayout-YOLO or OpenCV fallback
+│     → text, table, figure, formula regions   │
+├──────────────────────────────────────────────┤
+│  4. OCR per Region (Thai-Optimised Cascade)  │
+│     ├─ EasyOCR          (primary, CPU)        │  Best Thai accuracy, no GPU needed
+│     ├─ Thai-TrOCR       (secondary fallback)  │  Line-level, auto-downloaded
+│     └─ PaddleOCR                             │  General multilingual fallback
+├──────────────────────────────────────────────┤
+│  5. Table & Figure Extraction                │  Grid OCR · Image crop & embed
+├──────────────────────────────────────────────┤
+│  6. Document Export                          │  DOCX · TXT · HTML
+└──────────────────────────────────────────────┘
 ```
 
 ---
@@ -58,17 +92,19 @@ PDF Input
 ├── app.py                 # Gradio web application
 ├── Dockerfile             # Docker deployment
 ├── requirements.txt       # Python dependencies
-├── .env.example           # Environment configuration template
+├── models/
+│   └── DocLayout-YOLO/    # Layout detection weights (bundled)
 ├── src/
 │   ├── __init__.py        # Package init (version)
 │   ├── preprocessor.py    # OpenCV image pre-processing
-│   ├── ocr_engine.py      # Multi-engine OCR (Tesseract/PaddleOCR/EasyOCR)
+│   ├── ocr_engine.py      # Multi-engine OCR (EasyOCR / Thai-TrOCR / PaddleOCR)
 │   ├── layout_detector.py # Layout detection + table extraction
 │   ├── exporter.py        # DOCX/TXT/HTML export + figure embedding
 │   ├── pipeline.py        # Main pipeline orchestrator
 │   └── services.py        # Authentication + history management
 └── tests/
-    └── testocrtor.pdf     # Sample test PDF
+    ├── test_pipeline.py   # Pipeline integration tests
+    └── test_ui.py         # UI / server / Docker tests (43 tests total)
 ```
 
 ---
@@ -79,19 +115,11 @@ PDF Input
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/Local_PDFtoDocx-OCR.git
+git clone https://github.com/chiraleo2000/Local_PDFtoDocx-OCR.git
 cd Local_PDFtoDocx-OCR
 
-# Install Python dependencies
+# Install Python dependencies (EasyOCR + all engines included)
 pip install -r requirements.txt
-
-# Ensure Tesseract is installed
-# Windows: https://github.com/tesseract-ocr/tesseract/wiki
-# Linux:   sudo apt install tesseract-ocr tesseract-ocr-eng tesseract-ocr-tha
-
-# Configure environment
-cp .env.example .env
-# Edit .env to set LANGUAGES, OCR_ENGINE, etc.
 
 # Run the application
 python app.py
@@ -101,53 +129,73 @@ Open <http://127.0.0.1:7870> in your browser.
 
 Default login: `guest` / `guest123`
 
-### Docker
+EasyOCR will automatically download Thai + English model weights on first run (~200 MB).
+Thai-TrOCR weights are auto-downloaded from HuggingFace on first use.
+
+### Docker (CPU — recommended)
 
 ```bash
 # Build
-docker build -t pdf-ocr-pipeline:0.1.0-dev .
+docker build -t pdf-ocr-pipeline:0.2.1 .
 
-# Run
-docker run -d --name pdf-ocr -p 7870:7870 pdf-ocr-pipeline:0.1.0-dev
+# Run (CPU, EasyOCR primary — no GPU needed)
+docker run -d --name pdf-ocr -p 7870:7870 \
+  -v ./correction_data:/app/correction_data \
+  -e LANGUAGES=tha+eng \
+  -e OCR_ENGINE=easyocr \
+  -e USE_GPU=false \
+  --restart unless-stopped \
+  pdf-ocr-pipeline:0.2.1
+```
 
-# Open http://localhost:7870
+### Docker (GPU — optional for speed)
+
+```bash
+docker run -d --gpus all --name pdf-ocr -p 7870:7870 \
+  -v ./correction_data:/app/correction_data \
+  -e LANGUAGES=tha+eng \
+  -e OCR_ENGINE=easyocr \
+  -e USE_GPU=true \
+  --restart unless-stopped \
+  pdf-ocr-pipeline:0.2.1
 ```
 
 ---
 
 ## Configuration
 
-Copy `.env.example` to `.env` and adjust:
-
 | Variable | Default | Description |
 | --- | --- | --- |
 | `SERVER_PORT` | `7870` | Web server port |
-| `OCR_ENGINE` | `tesseract` | Primary OCR engine (`tesseract`, `paddleocr`, `easyocr`) |
-| `LANGUAGES` | `eng` | OCR languages (e.g. `tha+eng`, `chi_sim+eng`) |
-| `USE_GPU` | `false` | Enable GPU acceleration |
-| `LLM_CORRECTION` | `false` | Enable LLM post-correction |
+| `SERVER_HOST` | `0.0.0.0` | Bind address (`127.0.0.1` for local only) |
+| `OCR_ENGINE` | `easyocr` | Primary OCR engine: `easyocr`, `thai_trocr`, `paddleocr` |
+| `LANGUAGES` | `tha+eng` | OCR languages (Thai+English default) |
+| `USE_GPU` | `false` | Enable GPU acceleration (CPU works well without it) |
 | `QUALITY_PRESET` | `balanced` | Quality level (`fast`, `balanced`, `accurate`) |
+| `YOLO_CONFIDENCE` | `0.30` | Layout detection confidence threshold |
 | `TABLE_DETECTION` | `true` | Enable table detection and extraction |
 | `IMAGE_EXTRACTION` | `true` | Enable figure/image extraction |
+| `RETRAIN_INTERVAL` | `100` | Manual corrections before auto-retrain |
+| `MAX_PDF_SIZE_MB` | `200` | Maximum upload file size |
+| `DEFAULT_USERNAME` | `admin` | Default login username |
+| `DEFAULT_PASSWORD` | *(generated)* | Default login password (shown on first run) |
+| `DISABLE_TROCR_PRELOAD` | `0` | Set to `1` to skip Thai-TrOCR download at startup |
 
 ---
 
-## Optional Dependencies
+## Testing
 
-The core pipeline uses Tesseract + OpenCV. For enhanced capabilities:
+All 43 tests pass (as of v0.2.1):
 
 ```bash
-# PaddleOCR — better multilingual & handwriting OCR
-pip install paddleocr>=2.7.0
+# Run all tests
+pytest tests/ -v
 
-# EasyOCR — fallback for distorted text
-pip install easyocr>=1.7.0
+# Pipeline integration tests only
+pytest tests/test_pipeline.py -v
 
-# DocLayout-YOLO — AI layout detection
-pip install doclayout-yolo>=0.0.2
-
-# LLM correction (requires GPU with ≥6 GB VRAM)
-pip install torch>=2.0.0 transformers>=4.37.0 accelerate>=0.25.0
+# UI / server / Docker tests
+pytest tests/test_ui.py -v
 ```
 
 ---
@@ -165,7 +213,7 @@ The pipeline processes each page:
 - Renders to high-resolution image
 - Applies OpenCV preprocessing
 - Detects layout regions (text, tables, figures)
-- Runs OCR on each region
+- Runs Thai-optimised OCR cascade on each region
 - Exports structured DOCX with tables and embedded images
 
 ---
@@ -173,12 +221,32 @@ The pipeline processes each page:
 ## Development
 
 ```bash
-# Run tests
+# Quick pipeline smoke test
 python -c "from src.pipeline import OCRPipeline; p = OCRPipeline(); r = p.process_pdf('tests/testocrtor.pdf'); print(r['success'], len(r['text']), 'chars')"
 
 # Check available OCR engines
 python -c "from src.ocr_engine import OCREngine; e = OCREngine(); print(e.get_available_engines())"
 ```
+
+---
+
+## Changelog
+
+### v0.2.1 (2026-02-28)
+- **EasyOCR** replaces Typhoon OCR 3B as primary Thai engine — no GPU required, correct Thai text output verified
+- Added **Thai-TrOCR** auto-download from HuggingFace as secondary fallback
+- Raised YOLO layout detection confidence from 0.15 → 0.30 for cleaner region detection
+- Fixed `gradio` + `huggingface_hub` version incompatibility (removed upper-bound caps)
+- Fixed Windows `cp1252` encoding in subprocess calls
+- Added `DISABLE_TROCR_PRELOAD` environment variable for faster local server startup
+- All **43/43 tests passing** (pipeline + UI + Docker)
+- Docker image pre-downloads EasyOCR model weights at build time
+
+### v0.2.0 (2026-02-22)
+- Initial release with Thai-optimised multi-engine OCR cascade
+- DocLayout-YOLO layout detection
+- Gradio web UI with review/correction workflow
+- Docker support
 
 ---
 

@@ -54,22 +54,23 @@ def handlers(app_module):
         "Thai + English": "tha+eng",
     }
     ENGINE_OPTIONS = {
-        "Tesseract (Default)": "tesseract",
-        "PaddleOCR": "paddleocr",
-        "EasyOCR": "easyocr",
+        "EasyOCR (Thai+English)": "easyocr",
+        "Thai-TrOCR (Line-level)": "thai_trocr",
+        "PaddleOCR (Multilingual)": "paddleocr",
+        "Typhoon OCR 3B (GPU LLM)": "typhoon",
     }
     _LOCAL_USER = "local"
 
     def _process_document(pdf_path, quality_label="Standard (Fast)",
                           header_pct=0, footer_pct=0,
                           language_label="English",
-                          engine_label="Tesseract (Default)",
-                          yolo_conf=0.15):
+                          engine_label="EasyOCR (Thai+English)",
+                          yolo_conf=0.30):
         if pdf_path is None:
             return {"success": False, "error": "No PDF provided"}
         quality = QUALITY_OPTIONS.get(quality_label, "fast")
         languages = LANGUAGE_OPTIONS.get(language_label, "eng")
-        engine = ENGINE_OPTIONS.get(engine_label, "tesseract")
+        engine = ENGINE_OPTIONS.get(engine_label, "paddleocr")
         pipeline.ocr.primary_engine = engine
         result = pipeline.process_pdf(
             pdf_path, quality=quality,
@@ -111,14 +112,15 @@ class TestServerHealth:
         import sys
         env = os.environ.copy()
         env.update({"SERVER_PORT": str(APP_PORT), "SERVER_HOST": "127.0.0.1",
-                    "SHARE_GRADIO": "false"})
+                    "SHARE_GRADIO": "false",
+                    "DISABLE_TROCR_PRELOAD": "1"})   # skip model download
         proc = subprocess.Popen(
             [sys.executable, str(ROOT_DIR / "app.py")],
             env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             cwd=str(ROOT_DIR),
         )
         import urllib.request
-        deadline = time.time() + 60
+        deadline = time.time() + 180             # 3 min for model loads
         ready = False
         while time.time() < deadline:
             try:
@@ -130,7 +132,7 @@ class TestServerHealth:
         if not ready:
             proc.terminate()
             _, err = proc.communicate(timeout=5)
-            pytest.fail(f"Server did not start: {err.decode()[-1000:]}")
+            pytest.fail(f"Server did not start: {err.decode(errors='replace')[-1000:]}")
         yield f"http://127.0.0.1:{APP_PORT}"
         proc.terminate()
         try:
@@ -418,7 +420,7 @@ class TestReviewAndCorrectHandlers:
         manuals = [{"bbox": [50, 50, 200, 200], "class": "table", "page": 0}]
         result = app_module.review_convert_with_corrections(
             str(TEST_PDF), "Standard (Fast)", 0, 0,
-            "English", "Tesseract (Default)", 0.15, manuals,
+            "English", "EasyOCR (Thai+English)", 0.30, manuals,
         )
         # Returns (text, status, txt_path, docx_path, vis, hist)
         text, status, txt_path, docx_path, vis, hist = result
@@ -431,7 +433,7 @@ class TestReviewAndCorrectHandlers:
         import app as app_module
         result = app_module.review_convert_with_corrections(
             None, "Standard (Fast)", 0, 0,
-            "English", "Tesseract (Default)", 0.15, [],
+            "English", "EasyOCR (Thai+English)", 0.30, [],
         )
         text, status = result[0], result[1]
         assert "Upload" in status or "Error" in status
@@ -504,7 +506,8 @@ _CONTAINER_TEST_PDF = "/app/tests/testocrtor.pdf"
 def _docker_exec(args: list, timeout: int = 120) -> "subprocess.CompletedProcess":
     return subprocess.run(
         ["docker", "exec", DOCKER_CONTAINER, *args],
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=timeout,
     )
 
 
@@ -516,7 +519,8 @@ class TestDockerDeployment:
 
         build = subprocess.run(
             ["docker", "build", "-t", DOCKER_IMAGE, str(ROOT_DIR)],
-            capture_output=True, text=True, timeout=300,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=900,
         )
         assert build.returncode == 0, f"docker build failed:\n{build.stderr[-2000:]}"
 
@@ -528,8 +532,10 @@ class TestDockerDeployment:
              "-p", f"{DOCKER_PORT}:7870",
              "-e", "SERVER_PORT=7870", "-e", "SERVER_HOST=0.0.0.0",
              "-e", "QUALITY_PRESET=fast",
+             "-e", "OCR_ENGINE=easyocr", "-e", "LANGUAGES=tha+eng",
              DOCKER_IMAGE],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=30,
         )
         assert run.returncode == 0, f"docker run failed:\n{run.stderr}"
 
@@ -539,7 +545,7 @@ class TestDockerDeployment:
         cp = subprocess.run(
             ["docker", "cp", str(TEST_PDF),
              f"{DOCKER_CONTAINER}:{_CONTAINER_TEST_PDF}"],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
         assert cp.returncode == 0, f"docker cp test PDF failed: {cp.stderr}"
 
@@ -556,7 +562,8 @@ class TestDockerDeployment:
 
         if not ready:
             logs = subprocess.run(["docker", "logs", DOCKER_CONTAINER],
-                                  capture_output=True, text=True).stdout
+                                  capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace").stdout
             subprocess.run(["docker", "rm", "-f", DOCKER_CONTAINER],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             pytest.fail(f"Container not ready.\nLogs:\n{logs[-3000:]}")
@@ -577,9 +584,9 @@ class TestDockerDeployment:
             f"r=p.process_pdf('{_CONTAINER_TEST_PDF}', quality='fast');"
             f"print('SUCCESS' if r['success'] else 'FAILED:'+str(r.get('error','')));"
             f"print('CHARS:', len(r['text']))"
-        ], timeout=180)
-        assert result.returncode == 0
-        assert "SUCCESS" in result.stdout
+        ], timeout=900)
+        assert result.returncode == 0, f"returncode={result.returncode}\nstderr={result.stderr[-500:]}"
+        assert "SUCCESS" in result.stdout, f"stdout={result.stdout[-500:]}"
 
     def test_container_pipeline_with_language(self, docker_container):
         result = _docker_exec([
@@ -588,9 +595,9 @@ class TestDockerDeployment:
             f"r=p.process_pdf('{_CONTAINER_TEST_PDF}', quality='fast', languages='eng');"
             f"print('SUCCESS' if r['success'] else 'FAILED:'+str(r.get('error','')));"
             f"print('LANG:', r['metadata'].get('languages','?'))"
-        ], timeout=180)
-        assert result.returncode == 0
-        assert "LANG: eng" in result.stdout
+        ], timeout=900)
+        assert result.returncode == 0, f"returncode={result.returncode}\nstderr={result.stderr[-500:]}"
+        assert "LANG: eng" in result.stdout, f"stdout={result.stdout[-500:]}"
 
     def test_container_gradio_interface_builds(self, docker_container):
         result = _docker_exec([

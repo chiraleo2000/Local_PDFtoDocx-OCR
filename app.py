@@ -1,9 +1,11 @@
 """
 PDF to DOCX OCR Service — Gradio Web Application
-v0.1.1  |  Security-hardened  |  Manual correction + auto-retrain
+v0.2.1  |  Thai-optimised OCR  |  Manual correction + auto-retrain
 
 Convert tab: Upload → detect → manual add tables/figures → convert
 Review tab: See detected regions, draw new ones, re-convert
+
+OCR engines: EasyOCR (Thai+English primary) → Thai-TrOCR → PaddleOCR → Typhoon
 
 Security:
     - show_error gated on DEBUG_MODE env var
@@ -78,9 +80,10 @@ LANGUAGE_OPTIONS = {
 }
 
 ENGINE_OPTIONS = {
-    "Tesseract (Default)": "tesseract",
-    "PaddleOCR": "paddleocr",
-    "EasyOCR": "easyocr",
+    "EasyOCR (Thai+English)": "easyocr",
+    "Thai-TrOCR (Line-level)": "thai_trocr",
+    "PaddleOCR (Multilingual)": "paddleocr",
+    "Typhoon OCR 3B (GPU LLM)": "typhoon",
 }
 
 CLASS_OPTIONS = ["table", "figure"]
@@ -199,8 +202,8 @@ def process_document(pdf_file, quality_label, header_pct, footer_pct,
 
     pdf_path = str(pdf_file)
     quality = QUALITY_OPTIONS.get(quality_label, "balanced")
-    languages = LANGUAGE_OPTIONS.get(language_label, "eng")
-    engine = ENGINE_OPTIONS.get(engine_label, "tesseract")
+    languages = LANGUAGE_OPTIONS.get(language_label, "tha+eng")
+    engine = ENGINE_OPTIONS.get(engine_label, "easyocr")
 
     pipeline.ocr.primary_engine = engine
 
@@ -215,7 +218,7 @@ def process_document(pdf_file, quality_label, header_pct, footer_pct,
         files = result["files"]
         meta = result["metadata"]
 
-        engine_display = engine_label or "Tesseract (Default)"
+        engine_display = engine_label or "EasyOCR (Thai+English)"
         status = (
             f"**Conversion Complete!**\n\n"
             f"Pages: {meta.get('pages', 0)} | "
@@ -349,8 +352,8 @@ def review_convert_with_corrections(pdf_file, quality_label, header_pct, footer_
                 gr.update(visible=False), gr.update())
     pdf_path = str(pdf_file)
     quality = QUALITY_OPTIONS.get(quality_label, "balanced")
-    languages = LANGUAGE_OPTIONS.get(language_label, "eng")
-    engine = ENGINE_OPTIONS.get(engine_label, "tesseract")
+    languages = LANGUAGE_OPTIONS.get(language_label, "tha+eng")
+    engine = ENGINE_OPTIONS.get(engine_label, "easyocr")
     pipeline.ocr.primary_engine = engine
 
     # Build manual_regions dict: {page_num: [{"bbox": ..., "class": ...}]}
@@ -372,7 +375,7 @@ def review_convert_with_corrections(pdf_file, quality_label, header_pct, footer_
         files = result["files"]
         meta = result["metadata"]
         mc = meta.get("manual_corrections", 0)
-        engine_display = engine_label or "Tesseract (Default)"
+        engine_display = engine_label or "EasyOCR (Thai+English)"
         status = (
             f"**Conversion Complete (with {mc} manual corrections)!**\n\n"
             f"Pages: {meta.get('pages', 0)} | "
@@ -532,9 +535,9 @@ def create_interface():
             <div class="hero-bar">
                 <div>
                     <h1>PDF OCR Pipeline</h1>
-                    <p>OpenCV | Tesseract | DocLayout-YOLO | HTML-first Export | Auto-Retrain</p>
+                    <p>Typhoon OCR | Thai-TrOCR | PaddleOCR | DocLayout-YOLO | HTML-first Export</p>
                 </div>
-                <div class="hero-badge">v0.1.1 &middot; Trainable</div>
+                <div class="hero-badge">v0.2.1 &middot; Thai-Optimised</div>
             </div>
             """)
 
@@ -568,12 +571,12 @@ def create_interface():
                         with gr.Accordion("Advanced Settings", open=False):
                             engine_dd = gr.Dropdown(
                                 choices=list(ENGINE_OPTIONS.keys()),
-                                value="Tesseract (Default)",
+                                value="EasyOCR (Thai+English)",
                                 label="OCR Engine",
-                                info="Tesseract is best for most documents",
+                                info="EasyOCR provides best Thai+English accuracy",
                             )
                             yolo_conf_sl = gr.Slider(
-                                0.05, 0.50, 0.15, step=0.05,
+                                0.05, 0.50, 0.30, step=0.05,
                                 label="Layout Detection Confidence",
                                 info="Lower = detect more regions (tables, figures). "
                                      "Try 0.10 if tables are missed.",
@@ -685,7 +688,7 @@ def create_interface():
                         with gr.Accordion("Advanced", open=False):
                             rv_engine_dd = gr.Dropdown(
                                 choices=list(ENGINE_OPTIONS.keys()),
-                                value="Tesseract (Default)", label="Engine",
+                                value="EasyOCR (Thai+English)", label="Engine",
                             )
                             with gr.Row():
                                 rv_header_sl = gr.Slider(0, 25, 0, step=1,
@@ -793,7 +796,7 @@ def create_interface():
                         )
                         settings_engine = gr.Dropdown(
                             choices=list(ENGINE_OPTIONS.keys()),
-                            value="Tesseract (Default)",
+                            value="EasyOCR (Thai+English)",
                             label="Default OCR Engine",
                         )
                         settings_quality = gr.Dropdown(
@@ -847,7 +850,7 @@ def create_interface():
         gr.HTML("""
         <div style="text-align:center;padding:20px;margin-top:20px;
                     border-top:1px solid #e2e8f0;color:#94a3b8;font-size:0.85rem;">
-            PDF OCR Pipeline v0.1.1 — Apache-2.0 License — Auto-retrain enabled
+            PDF OCR Pipeline v0.2.1 — Apache-2.0 License — Thai-optimised OCR
         </div>
         """)
 

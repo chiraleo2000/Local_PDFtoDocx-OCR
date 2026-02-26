@@ -5,8 +5,8 @@ rootdir: C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1
 plugins: anyio-4.12.1
 collecting ... collected 43 items
 
-tests/test_ui.py::TestServerHealth::test_server_returns_200 PASSED       [  2%]
-tests/test_ui.py::TestServerHealth::test_server_serves_html PASSED       [  4%]
+tests/test_ui.py::TestServerHealth::test_server_returns_200 ERROR        [  2%]
+tests/test_ui.py::TestServerHealth::test_server_serves_html ERROR        [  4%]
 tests/test_ui.py::TestPDFConversionActions::test_conversion_succeeds PASSED [  6%]
 tests/test_ui.py::TestPDFConversionActions::test_conversion_extracts_text PASSED [  9%]
 tests/test_ui.py::TestPDFConversionActions::test_conversion_produces_docx PASSED [ 11%]
@@ -28,273 +28,1116 @@ tests/test_ui.py::TestHistoryPageActions::test_history_download_docx PASSED [ 46
 tests/test_ui.py::TestHistoryPageActions::test_history_download_txt PASSED [ 48%]
 tests/test_ui.py::TestHistoryPageActions::test_history_download_invalid_returns_none PASSED [ 51%]
 tests/test_ui.py::TestHistoryPageActions::test_history_download_empty_returns_none PASSED [ 53%]
-tests/test_ui.py::TestGradioInterfaceConstruction::test_create_interface_no_error PASSED [ 55%]
-tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_language_dropdown PASSED [ 58%]
-tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_engine_dropdown PASSED [ 60%]
-tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_convert_button PASSED [ 62%]
-tests/test_ui.py::TestGradioInterfaceConstruction::test_no_login_section PASSED [ 65%]
-tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_settings_tab PASSED [ 67%]
-tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_review_tab PASSED [ 69%]
-tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_load_pdf PASSED [ 72%]
-tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_add_region PASSED [ 74%]
-tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_add_region_invalid_bbox PASSED [ 76%]
-tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_clear_manual PASSED [ 79%]
-tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_convert_with_corrections PASSED [ 81%]
-tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_no_pdf_returns_error PASSED [ 83%]
-tests/test_ui.py::TestTrainingStats::test_correction_stats_md PASSED     [ 86%]
-tests/test_ui.py::TestTrainingStats::test_corrections_log_md PASSED      [ 88%]
-tests/test_ui.py::TestTrainingStats::test_draw_detections PASSED         [ 90%]
-tests/test_ui.py::TestDockerDeployment::test_http_root_returns_200 ERROR [ 93%]
-tests/test_ui.py::TestDockerDeployment::test_container_pipeline_processes_pdf ERROR [ 95%]
-tests/test_ui.py::TestDockerDeployment::test_container_pipeline_with_language ERROR [ 97%]
-tests/test_ui.py::TestDockerDeployment::test_container_gradio_interface_builds ERROR [100%]
+tests/test_ui.py::TestGradioInterfaceConstruction::test_create_interface_no_error FAILED [ 55%]
+tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_language_dropdown FAILED [ 58%]
+tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_engine_dropdown FAILED [ 60%]
+tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_convert_button FAILED [ 62%]
+tests/test_ui.py::TestGradioInterfaceConstruction::test_no_login_section FAILED [ 65%]
+tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_settings_tab FAILED [ 67%]
+tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_review_tab FAILED [ 69%]
+tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_load_pdf FAILED [ 72%]
+tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_add_region FAILED [ 74%]
+tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_add_region_invalid_bbox FAILED [ 76%]
+tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_clear_manual FAILED [ 79%]
+tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_convert_with_corrections FAILED [ 81%]
+tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_no_pdf_returns_error FAILED [ 83%]
+tests/test_ui.py::TestTrainingStats::test_correction_stats_md FAILED     [ 86%]
+tests/test_ui.py::TestTrainingStats::test_corrections_log_md FAILED      [ 88%]
+tests/test_ui.py::TestTrainingStats::test_draw_detections FAILED         [ 90%]
+tests/test_ui.py::TestDockerDeployment::test_http_root_returns_200 PASSED [ 93%]
+tests/test_ui.py::TestDockerDeployment::test_container_pipeline_processes_pdf FAILED [ 95%]
+tests/test_ui.py::TestDockerDeployment::test_container_pipeline_with_language FAILED [ 97%]
+tests/test_ui.py::TestDockerDeployment::test_container_gradio_interface_builds PASSED [100%]
 
 =================================== ERRORS ====================================
-______ ERROR at setup of TestDockerDeployment.test_http_root_returns_200 ______
-tests\test_ui.py:521: in docker_container
-    assert build.returncode == 0, f"docker build failed:\n{build.stderr[-2000:]}"
-E   AssertionError: docker build failed:
-E     lim@sha256:9e01bf1ae5db7649a236da7be1e94ffbbbdd7a93f867dd0d8d5720d9e1f89fab 0.0s done
-E     #4 DONE 0.0s
-E     
-E     #5 [ 2/12] WORKDIR /app
-E     #5 CACHED
-E     
-E     #6 [ 3/12] RUN apt-get update && apt-get install -y --no-install-recommends     tesseract-ocr     tesseract-ocr-eng tesseract-ocr-tha     tesseract-ocr-chi-sim tesseract-ocr-jpn tesseract-ocr-kor     tesseract-ocr-ara     libgl1 libglib2.0-0     curl     && rm -rf /var/lib/apt/lists/*
-E     #6 CACHED
-E     
-E     #7 [internal] load build context
-E     #7 transferring context: 446.51kB 0.1s done
-E     #7 DONE 0.1s
-E     
-E     #8 [ 9/12] COPY tests/ ./tests/
-E     #8 CACHED
-E     
-E     #9 [10/12] COPY .env.example ./.env.example
-E     #9 CACHED
-E     
-E     #10 [ 8/12] COPY app.py ./
-E     #10 CACHED
-E     
-E     #11 [ 6/12] RUN pip install --no-cache-dir -r requirements.txt
-E     #11 CACHED
-E     
-E     #12 [ 7/12] COPY src/ ./src/
-E     #12 CACHED
-E     
-E     #13 [ 5/12] COPY requirements.txt ./
-E     #13 CACHED
-E     
-E     #14 [11/12] COPY models/ ./models/
-E     #14 ERROR: failed to calculate checksum of ref u560b5jzzviczj4j8rxklv0cm::z98ad8fgq16yw7w33purkgls7: "/models": not found
-E     
-E     #15 [ 4/12] RUN pip install --no-cache-dir --upgrade pip &&     pip install --no-cache-dir torch torchvision     --index-url https://download.pytorch.org/whl/cpu
-E     #15 0.118 runc run failed: unable to start container process: can't copy bootstrap data to pipe: write init-p: broken pipe
-E     #15 CANCELED
-E     ------
-E      > [11/12] COPY models/ ./models/:
-E     ------
-E     
-E      [33m1 warning found (use docker --debug to expand):
-E     [0m - CopyIgnoredFile: Attempting to Copy file "models" that is excluded by .dockerignore (line 40)
-E     Dockerfile:40
-E     --------------------
-E       38 |     COPY tests/ ./tests/
-E       39 |     COPY .env.example ./.env.example
-E       40 | >>> COPY models/ ./models/
-E       41 |     
-E       42 |     # Setup env and runtime directories
-E     --------------------
-E     ERROR: failed to build: failed to solve: failed to compute cache key: failed to calculate checksum of ref u560b5jzzviczj4j8rxklv0cm::z98ad8fgq16yw7w33purkgls7: "/models": not found
-E     
-E     View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/uvo3tq4sjjzp19zxptodamvsy
-E     
-E   assert 1 == 0
-E    +  where 1 = CompletedProcess(args=['docker', 'build', '-t', 'pdf-ocr-pipeline:test', 'C:\\Users\\chira\\Documents\\visualstudiocode\\Work\\Local_PDFtoDocx-OCR-V0.1'], returncode=1, stdout='', stderr='#0 building with "desktop-linux" instance using docker driver\n\n#1 [internal] load build definition from Dockerfile\n#1 transferring dockerfile: 1.61kB 0.0s done\n#1 DONE 0.0s\n\n#2 [internal] load metadata for docker.io/library/python:3.12-slim\n#2 DONE 1.5s\n\n#3 [internal] load .dockerignore\n#3 transferring context: 433B 0.0s done\n#3 DONE 0.0s\n\n#4 [ 1/12] FROM docker.io/library/python:3.12-slim@sha256:9e01bf1ae5db7649a236da7be1e94ffbbbdd7a93f867dd0d8d5720d9e1f89fab\n#4 resolve docker.io/library/python:3.12-slim@sha256:9e01bf1ae5db7649a236da7be1e94ffbbbdd7a93f867dd0d8d5720d9e1f89fab 0.0s done\n#4 DONE 0.0s\n\n#5 [ 2/12] WORKDIR /app\n#5 CACHED\n\n#6 [ 3/12] RUN apt-get update && apt-get install -y --no-install-recommends     tesseract-ocr     tesseract-ocr-eng tesseract-ocr-tha     tesseract-ocr-chi-sim tesseract-ocr-jpn tesseract-ocr-kor     tesseract-ocr-ara     libgl1 libglib2.0-0     curl     && rm -rf /var/lib/apt/lists/*\n#6 CACHED\n\n#7 [internal] load build context\n#7 transferrin...12] COPY models/ ./models/\n#14 ERROR: failed to calculate checksum of ref u560b5jzzviczj4j8rxklv0cm::z98ad8fgq16yw7w33purkgls7: "/models": not found\n\n#15 [ 4/12] RUN pip install --no-cache-dir --upgrade pip &&     pip install --no-cache-dir torch torchvision     --index-url https://download.pytorch.org/whl/cpu\n#15 0.118 runc run failed: unable to start container process: can\'t copy bootstrap data to pipe: write init-p: broken pipe\n#15 CANCELED\n------\n > [11/12] COPY models/ ./models/:\n------\n\n \x1b[33m1 warning found (use docker --debug to expand):\n\x1b[0m - CopyIgnoredFile: Attempting to Copy file "models" that is excluded by .dockerignore (line 40)\nDockerfile:40\n--------------------\n  38 |     COPY tests/ ./tests/\n  39 |     COPY .env.example ./.env.example\n  40 | >>> COPY models/ ./models/\n  41 |     \n  42 |     # Setup env and runtime directories\n--------------------\nERROR: failed to build: failed to solve: failed to compute cache key: failed to calculate checksum of ref u560b5jzzviczj4j8rxklv0cm::z98ad8fgq16yw7w33purkgls7: "/models": not found\n\nView build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/uvo3tq4sjjzp19zxptodamvsy\n').returncode
-_ ERROR at setup of TestDockerDeployment.test_container_pipeline_processes_pdf _
-tests\test_ui.py:521: in docker_container
-    assert build.returncode == 0, f"docker build failed:\n{build.stderr[-2000:]}"
-E   AssertionError: docker build failed:
-E     lim@sha256:9e01bf1ae5db7649a236da7be1e94ffbbbdd7a93f867dd0d8d5720d9e1f89fab 0.0s done
-E     #4 DONE 0.0s
-E     
-E     #5 [ 2/12] WORKDIR /app
-E     #5 CACHED
-E     
-E     #6 [ 3/12] RUN apt-get update && apt-get install -y --no-install-recommends     tesseract-ocr     tesseract-ocr-eng tesseract-ocr-tha     tesseract-ocr-chi-sim tesseract-ocr-jpn tesseract-ocr-kor     tesseract-ocr-ara     libgl1 libglib2.0-0     curl     && rm -rf /var/lib/apt/lists/*
-E     #6 CACHED
-E     
-E     #7 [internal] load build context
-E     #7 transferring context: 446.51kB 0.1s done
-E     #7 DONE 0.1s
-E     
-E     #8 [ 9/12] COPY tests/ ./tests/
-E     #8 CACHED
-E     
-E     #9 [10/12] COPY .env.example ./.env.example
-E     #9 CACHED
-E     
-E     #10 [ 8/12] COPY app.py ./
-E     #10 CACHED
-E     
-E     #11 [ 6/12] RUN pip install --no-cache-dir -r requirements.txt
-E     #11 CACHED
-E     
-E     #12 [ 7/12] COPY src/ ./src/
-E     #12 CACHED
-E     
-E     #13 [ 5/12] COPY requirements.txt ./
-E     #13 CACHED
-E     
-E     #14 [11/12] COPY models/ ./models/
-E     #14 ERROR: failed to calculate checksum of ref u560b5jzzviczj4j8rxklv0cm::z98ad8fgq16yw7w33purkgls7: "/models": not found
-E     
-E     #15 [ 4/12] RUN pip install --no-cache-dir --upgrade pip &&     pip install --no-cache-dir torch torchvision     --index-url https://download.pytorch.org/whl/cpu
-E     #15 0.118 runc run failed: unable to start container process: can't copy bootstrap data to pipe: write init-p: broken pipe
-E     #15 CANCELED
-E     ------
-E      > [11/12] COPY models/ ./models/:
-E     ------
-E     
-E      [33m1 warning found (use docker --debug to expand):
-E     [0m - CopyIgnoredFile: Attempting to Copy file "models" that is excluded by .dockerignore (line 40)
-E     Dockerfile:40
-E     --------------------
-E       38 |     COPY tests/ ./tests/
-E       39 |     COPY .env.example ./.env.example
-E       40 | >>> COPY models/ ./models/
-E       41 |     
-E       42 |     # Setup env and runtime directories
-E     --------------------
-E     ERROR: failed to build: failed to solve: failed to compute cache key: failed to calculate checksum of ref u560b5jzzviczj4j8rxklv0cm::z98ad8fgq16yw7w33purkgls7: "/models": not found
-E     
-E     View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/uvo3tq4sjjzp19zxptodamvsy
-E     
-E   assert 1 == 0
-E    +  where 1 = CompletedProcess(args=['docker', 'build', '-t', 'pdf-ocr-pipeline:test', 'C:\\Users\\chira\\Documents\\visualstudiocode\\Work\\Local_PDFtoDocx-OCR-V0.1'], returncode=1, stdout='', stderr='#0 building with "desktop-linux" instance using docker driver\n\n#1 [internal] load build definition from Dockerfile\n#1 transferring dockerfile: 1.61kB 0.0s done\n#1 DONE 0.0s\n\n#2 [internal] load metadata for docker.io/library/python:3.12-slim\n#2 DONE 1.5s\n\n#3 [internal] load .dockerignore\n#3 transferring context: 433B 0.0s done\n#3 DONE 0.0s\n\n#4 [ 1/12] FROM docker.io/library/python:3.12-slim@sha256:9e01bf1ae5db7649a236da7be1e94ffbbbdd7a93f867dd0d8d5720d9e1f89fab\n#4 resolve docker.io/library/python:3.12-slim@sha256:9e01bf1ae5db7649a236da7be1e94ffbbbdd7a93f867dd0d8d5720d9e1f89fab 0.0s done\n#4 DONE 0.0s\n\n#5 [ 2/12] WORKDIR /app\n#5 CACHED\n\n#6 [ 3/12] RUN apt-get update && apt-get install -y --no-install-recommends     tesseract-ocr     tesseract-ocr-eng tesseract-ocr-tha     tesseract-ocr-chi-sim tesseract-ocr-jpn tesseract-ocr-kor     tesseract-ocr-ara     libgl1 libglib2.0-0     curl     && rm -rf /var/lib/apt/lists/*\n#6 CACHED\n\n#7 [internal] load build context\n#7 transferrin...12] COPY models/ ./models/\n#14 ERROR: failed to calculate checksum of ref u560b5jzzviczj4j8rxklv0cm::z98ad8fgq16yw7w33purkgls7: "/models": not found\n\n#15 [ 4/12] RUN pip install --no-cache-dir --upgrade pip &&     pip install --no-cache-dir torch torchvision     --index-url https://download.pytorch.org/whl/cpu\n#15 0.118 runc run failed: unable to start container process: can\'t copy bootstrap data to pipe: write init-p: broken pipe\n#15 CANCELED\n------\n > [11/12] COPY models/ ./models/:\n------\n\n \x1b[33m1 warning found (use docker --debug to expand):\n\x1b[0m - CopyIgnoredFile: Attempting to Copy file "models" that is excluded by .dockerignore (line 40)\nDockerfile:40\n--------------------\n  38 |     COPY tests/ ./tests/\n  39 |     COPY .env.example ./.env.example\n  40 | >>> COPY models/ ./models/\n  41 |     \n  42 |     # Setup env and runtime directories\n--------------------\nERROR: failed to build: failed to solve: failed to compute cache key: failed to calculate checksum of ref u560b5jzzviczj4j8rxklv0cm::z98ad8fgq16yw7w33purkgls7: "/models": not found\n\nView build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/uvo3tq4sjjzp19zxptodamvsy\n').returncode
-_ ERROR at setup of TestDockerDeployment.test_container_pipeline_with_language _
-tests\test_ui.py:521: in docker_container
-    assert build.returncode == 0, f"docker build failed:\n{build.stderr[-2000:]}"
-E   AssertionError: docker build failed:
-E     lim@sha256:9e01bf1ae5db7649a236da7be1e94ffbbbdd7a93f867dd0d8d5720d9e1f89fab 0.0s done
-E     #4 DONE 0.0s
-E     
-E     #5 [ 2/12] WORKDIR /app
-E     #5 CACHED
-E     
-E     #6 [ 3/12] RUN apt-get update && apt-get install -y --no-install-recommends     tesseract-ocr     tesseract-ocr-eng tesseract-ocr-tha     tesseract-ocr-chi-sim tesseract-ocr-jpn tesseract-ocr-kor     tesseract-ocr-ara     libgl1 libglib2.0-0     curl     && rm -rf /var/lib/apt/lists/*
-E     #6 CACHED
-E     
-E     #7 [internal] load build context
-E     #7 transferring context: 446.51kB 0.1s done
-E     #7 DONE 0.1s
-E     
-E     #8 [ 9/12] COPY tests/ ./tests/
-E     #8 CACHED
-E     
-E     #9 [10/12] COPY .env.example ./.env.example
-E     #9 CACHED
-E     
-E     #10 [ 8/12] COPY app.py ./
-E     #10 CACHED
-E     
-E     #11 [ 6/12] RUN pip install --no-cache-dir -r requirements.txt
-E     #11 CACHED
-E     
-E     #12 [ 7/12] COPY src/ ./src/
-E     #12 CACHED
-E     
-E     #13 [ 5/12] COPY requirements.txt ./
-E     #13 CACHED
-E     
-E     #14 [11/12] COPY models/ ./models/
-E     #14 ERROR: failed to calculate checksum of ref u560b5jzzviczj4j8rxklv0cm::z98ad8fgq16yw7w33purkgls7: "/models": not found
-E     
-E     #15 [ 4/12] RUN pip install --no-cache-dir --upgrade pip &&     pip install --no-cache-dir torch torchvision     --index-url https://download.pytorch.org/whl/cpu
-E     #15 0.118 runc run failed: unable to start container process: can't copy bootstrap data to pipe: write init-p: broken pipe
-E     #15 CANCELED
-E     ------
-E      > [11/12] COPY models/ ./models/:
-E     ------
-E     
-E      [33m1 warning found (use docker --debug to expand):
-E     [0m - CopyIgnoredFile: Attempting to Copy file "models" that is excluded by .dockerignore (line 40)
-E     Dockerfile:40
-E     --------------------
-E       38 |     COPY tests/ ./tests/
-E       39 |     COPY .env.example ./.env.example
-E       40 | >>> COPY models/ ./models/
-E       41 |     
-E       42 |     # Setup env and runtime directories
-E     --------------------
-E     ERROR: failed to build: failed to solve: failed to compute cache key: failed to calculate checksum of ref u560b5jzzviczj4j8rxklv0cm::z98ad8fgq16yw7w33purkgls7: "/models": not found
-E     
-E     View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/uvo3tq4sjjzp19zxptodamvsy
-E     
-E   assert 1 == 0
-E    +  where 1 = CompletedProcess(args=['docker', 'build', '-t', 'pdf-ocr-pipeline:test', 'C:\\Users\\chira\\Documents\\visualstudiocode\\Work\\Local_PDFtoDocx-OCR-V0.1'], returncode=1, stdout='', stderr='#0 building with "desktop-linux" instance using docker driver\n\n#1 [internal] load build definition from Dockerfile\n#1 transferring dockerfile: 1.61kB 0.0s done\n#1 DONE 0.0s\n\n#2 [internal] load metadata for docker.io/library/python:3.12-slim\n#2 DONE 1.5s\n\n#3 [internal] load .dockerignore\n#3 transferring context: 433B 0.0s done\n#3 DONE 0.0s\n\n#4 [ 1/12] FROM docker.io/library/python:3.12-slim@sha256:9e01bf1ae5db7649a236da7be1e94ffbbbdd7a93f867dd0d8d5720d9e1f89fab\n#4 resolve docker.io/library/python:3.12-slim@sha256:9e01bf1ae5db7649a236da7be1e94ffbbbdd7a93f867dd0d8d5720d9e1f89fab 0.0s done\n#4 DONE 0.0s\n\n#5 [ 2/12] WORKDIR /app\n#5 CACHED\n\n#6 [ 3/12] RUN apt-get update && apt-get install -y --no-install-recommends     tesseract-ocr     tesseract-ocr-eng tesseract-ocr-tha     tesseract-ocr-chi-sim tesseract-ocr-jpn tesseract-ocr-kor     tesseract-ocr-ara     libgl1 libglib2.0-0     curl     && rm -rf /var/lib/apt/lists/*\n#6 CACHED\n\n#7 [internal] load build context\n#7 transferrin...12] COPY models/ ./models/\n#14 ERROR: failed to calculate checksum of ref u560b5jzzviczj4j8rxklv0cm::z98ad8fgq16yw7w33purkgls7: "/models": not found\n\n#15 [ 4/12] RUN pip install --no-cache-dir --upgrade pip &&     pip install --no-cache-dir torch torchvision     --index-url https://download.pytorch.org/whl/cpu\n#15 0.118 runc run failed: unable to start container process: can\'t copy bootstrap data to pipe: write init-p: broken pipe\n#15 CANCELED\n------\n > [11/12] COPY models/ ./models/:\n------\n\n \x1b[33m1 warning found (use docker --debug to expand):\n\x1b[0m - CopyIgnoredFile: Attempting to Copy file "models" that is excluded by .dockerignore (line 40)\nDockerfile:40\n--------------------\n  38 |     COPY tests/ ./tests/\n  39 |     COPY .env.example ./.env.example\n  40 | >>> COPY models/ ./models/\n  41 |     \n  42 |     # Setup env and runtime directories\n--------------------\nERROR: failed to build: failed to solve: failed to compute cache key: failed to calculate checksum of ref u560b5jzzviczj4j8rxklv0cm::z98ad8fgq16yw7w33purkgls7: "/models": not found\n\nView build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/uvo3tq4sjjzp19zxptodamvsy\n').returncode
-_ ERROR at setup of TestDockerDeployment.test_container_gradio_interface_builds _
-tests\test_ui.py:521: in docker_container
-    assert build.returncode == 0, f"docker build failed:\n{build.stderr[-2000:]}"
-E   AssertionError: docker build failed:
-E     lim@sha256:9e01bf1ae5db7649a236da7be1e94ffbbbdd7a93f867dd0d8d5720d9e1f89fab 0.0s done
-E     #4 DONE 0.0s
-E     
-E     #5 [ 2/12] WORKDIR /app
-E     #5 CACHED
-E     
-E     #6 [ 3/12] RUN apt-get update && apt-get install -y --no-install-recommends     tesseract-ocr     tesseract-ocr-eng tesseract-ocr-tha     tesseract-ocr-chi-sim tesseract-ocr-jpn tesseract-ocr-kor     tesseract-ocr-ara     libgl1 libglib2.0-0     curl     && rm -rf /var/lib/apt/lists/*
-E     #6 CACHED
-E     
-E     #7 [internal] load build context
-E     #7 transferring context: 446.51kB 0.1s done
-E     #7 DONE 0.1s
-E     
-E     #8 [ 9/12] COPY tests/ ./tests/
-E     #8 CACHED
-E     
-E     #9 [10/12] COPY .env.example ./.env.example
-E     #9 CACHED
-E     
-E     #10 [ 8/12] COPY app.py ./
-E     #10 CACHED
-E     
-E     #11 [ 6/12] RUN pip install --no-cache-dir -r requirements.txt
-E     #11 CACHED
-E     
-E     #12 [ 7/12] COPY src/ ./src/
-E     #12 CACHED
-E     
-E     #13 [ 5/12] COPY requirements.txt ./
-E     #13 CACHED
-E     
-E     #14 [11/12] COPY models/ ./models/
-E     #14 ERROR: failed to calculate checksum of ref u560b5jzzviczj4j8rxklv0cm::z98ad8fgq16yw7w33purkgls7: "/models": not found
-E     
-E     #15 [ 4/12] RUN pip install --no-cache-dir --upgrade pip &&     pip install --no-cache-dir torch torchvision     --index-url https://download.pytorch.org/whl/cpu
-E     #15 0.118 runc run failed: unable to start container process: can't copy bootstrap data to pipe: write init-p: broken pipe
-E     #15 CANCELED
-E     ------
-E      > [11/12] COPY models/ ./models/:
-E     ------
-E     
-E      [33m1 warning found (use docker --debug to expand):
-E     [0m - CopyIgnoredFile: Attempting to Copy file "models" that is excluded by .dockerignore (line 40)
-E     Dockerfile:40
-E     --------------------
-E       38 |     COPY tests/ ./tests/
-E       39 |     COPY .env.example ./.env.example
-E       40 | >>> COPY models/ ./models/
-E       41 |     
-E       42 |     # Setup env and runtime directories
-E     --------------------
-E     ERROR: failed to build: failed to solve: failed to compute cache key: failed to calculate checksum of ref u560b5jzzviczj4j8rxklv0cm::z98ad8fgq16yw7w33purkgls7: "/models": not found
-E     
-E     View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/uvo3tq4sjjzp19zxptodamvsy
-E     
-E   assert 1 == 0
-E    +  where 1 = CompletedProcess(args=['docker', 'build', '-t', 'pdf-ocr-pipeline:test', 'C:\\Users\\chira\\Documents\\visualstudiocode\\Work\\Local_PDFtoDocx-OCR-V0.1'], returncode=1, stdout='', stderr='#0 building with "desktop-linux" instance using docker driver\n\n#1 [internal] load build definition from Dockerfile\n#1 transferring dockerfile: 1.61kB 0.0s done\n#1 DONE 0.0s\n\n#2 [internal] load metadata for docker.io/library/python:3.12-slim\n#2 DONE 1.5s\n\n#3 [internal] load .dockerignore\n#3 transferring context: 433B 0.0s done\n#3 DONE 0.0s\n\n#4 [ 1/12] FROM docker.io/library/python:3.12-slim@sha256:9e01bf1ae5db7649a236da7be1e94ffbbbdd7a93f867dd0d8d5720d9e1f89fab\n#4 resolve docker.io/library/python:3.12-slim@sha256:9e01bf1ae5db7649a236da7be1e94ffbbbdd7a93f867dd0d8d5720d9e1f89fab 0.0s done\n#4 DONE 0.0s\n\n#5 [ 2/12] WORKDIR /app\n#5 CACHED\n\n#6 [ 3/12] RUN apt-get update && apt-get install -y --no-install-recommends     tesseract-ocr     tesseract-ocr-eng tesseract-ocr-tha     tesseract-ocr-chi-sim tesseract-ocr-jpn tesseract-ocr-kor     tesseract-ocr-ara     libgl1 libglib2.0-0     curl     && rm -rf /var/lib/apt/lists/*\n#6 CACHED\n\n#7 [internal] load build context\n#7 transferrin...12] COPY models/ ./models/\n#14 ERROR: failed to calculate checksum of ref u560b5jzzviczj4j8rxklv0cm::z98ad8fgq16yw7w33purkgls7: "/models": not found\n\n#15 [ 4/12] RUN pip install --no-cache-dir --upgrade pip &&     pip install --no-cache-dir torch torchvision     --index-url https://download.pytorch.org/whl/cpu\n#15 0.118 runc run failed: unable to start container process: can\'t copy bootstrap data to pipe: write init-p: broken pipe\n#15 CANCELED\n------\n > [11/12] COPY models/ ./models/:\n------\n\n \x1b[33m1 warning found (use docker --debug to expand):\n\x1b[0m - CopyIgnoredFile: Attempting to Copy file "models" that is excluded by .dockerignore (line 40)\nDockerfile:40\n--------------------\n  38 |     COPY tests/ ./tests/\n  39 |     COPY .env.example ./.env.example\n  40 | >>> COPY models/ ./models/\n  41 |     \n  42 |     # Setup env and runtime directories\n--------------------\nERROR: failed to build: failed to solve: failed to compute cache key: failed to calculate checksum of ref u560b5jzzviczj4j8rxklv0cm::z98ad8fgq16yw7w33purkgls7: "/models": not found\n\nView build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/uvo3tq4sjjzp19zxptodamvsy\n').returncode
+_________ ERROR at setup of TestServerHealth.test_server_returns_200 __________
+
+self = <tests.test_ui.TestServerHealth object at 0x00000247D79C5B50>
+
+    @pytest.fixture(scope="class")
+    def server(self):
+        import sys
+        env = os.environ.copy()
+        env.update({"SERVER_PORT": str(APP_PORT), "SERVER_HOST": "127.0.0.1",
+                    "SHARE_GRADIO": "false"})
+        proc = subprocess.Popen(
+            [sys.executable, str(ROOT_DIR / "app.py")],
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cwd=str(ROOT_DIR),
+        )
+        import urllib.request
+        deadline = time.time() + 60
+        ready = False
+        while time.time() < deadline:
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{APP_PORT}/", timeout=2)
+                ready = True
+                break
+            except Exception:
+                time.sleep(1)
+        if not ready:
+            proc.terminate()
+            _, err = proc.communicate(timeout=5)
+>           pytest.fail(f"Server did not start: {err.decode()[-1000:]}")
+E           Failed: Server did not start:   from gradio import ranged_response, route_utils, utils, wasm_utils
+
+E             File "C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\gradio\route_utils.py", line 53, in <module>
+
+E               from gradio.helpers import EventData
+
+E             File "C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\gradio\helpers.py", line 26, in <module>
+
+E               from gradio import components, oauth, processing_utils, routes, utils, wasm_utils
+
+E             File "C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\gradio\oauth.py", line 13, in <module>
+
+E               from huggingface_hub import HfFolder, whoami
+
+E           ImportError: cannot import name 'HfFolder' from 'huggingface_hub' (C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\huggingface_hub\__init__.py)
+
+E           2026-02-26 14:52:16,160 [httpx] INFO: HTTP Request: GET https://api.gradio.app/gradio-messaging/en "HTTP/1.1 200 OK"
+
+tests\test_ui.py:134: Failed
+_________ ERROR at setup of TestServerHealth.test_server_serves_html __________
+
+self = <tests.test_ui.TestServerHealth object at 0x00000247D79C5B50>
+
+    @pytest.fixture(scope="class")
+    def server(self):
+        import sys
+        env = os.environ.copy()
+        env.update({"SERVER_PORT": str(APP_PORT), "SERVER_HOST": "127.0.0.1",
+                    "SHARE_GRADIO": "false"})
+        proc = subprocess.Popen(
+            [sys.executable, str(ROOT_DIR / "app.py")],
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cwd=str(ROOT_DIR),
+        )
+        import urllib.request
+        deadline = time.time() + 60
+        ready = False
+        while time.time() < deadline:
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{APP_PORT}/", timeout=2)
+                ready = True
+                break
+            except Exception:
+                time.sleep(1)
+        if not ready:
+            proc.terminate()
+            _, err = proc.communicate(timeout=5)
+>           pytest.fail(f"Server did not start: {err.decode()[-1000:]}")
+E           Failed: Server did not start:   from gradio import ranged_response, route_utils, utils, wasm_utils
+
+E             File "C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\gradio\route_utils.py", line 53, in <module>
+
+E               from gradio.helpers import EventData
+
+E             File "C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\gradio\helpers.py", line 26, in <module>
+
+E               from gradio import components, oauth, processing_utils, routes, utils, wasm_utils
+
+E             File "C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\gradio\oauth.py", line 13, in <module>
+
+E               from huggingface_hub import HfFolder, whoami
+
+E           ImportError: cannot import name 'HfFolder' from 'huggingface_hub' (C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\huggingface_hub\__init__.py)
+
+E           2026-02-26 14:52:16,160 [httpx] INFO: HTTP Request: GET https://api.gradio.app/gradio-messaging/en "HTTP/1.1 200 OK"
+
+tests\test_ui.py:134: Failed
+================================== FAILURES ===================================
+_______ TestGradioInterfaceConstruction.test_create_interface_no_error ________
+
+self = <tests.test_ui.TestGradioInterfaceConstruction object at 0x00000247D79F1A00>
+
+    def test_create_interface_no_error(self):
+        import sys
+        sys.path.insert(0, str(ROOT_DIR))
+>       import app as app_module
+
+tests\test_ui.py:282: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+app.py:51: in <module>
+    import gradio as gr
+.venv\Lib\site-packages\gradio\__init__.py:3: in <module>
+    import gradio._simple_templates
+.venv\Lib\site-packages\gradio\_simple_templates\__init__.py:1: in <module>
+    from .simpledropdown import SimpleDropdown
+.venv\Lib\site-packages\gradio\_simple_templates\simpledropdown.py:6: in <module>
+    from gradio.components.base import Component, FormComponent
+.venv\Lib\site-packages\gradio\components\__init__.py:1: in <module>
+    from gradio.components.annotated_image import AnnotatedImage
+.venv\Lib\site-packages\gradio\components\annotated_image.py:14: in <module>
+    from gradio.components.base import Component
+.venv\Lib\site-packages\gradio\components\base.py:20: in <module>
+    from gradio.blocks import Block, BlockContext
+.venv\Lib\site-packages\gradio\blocks.py:39: in <module>
+    from gradio import (
+.venv\Lib\site-packages\gradio\networking.py:15: in <module>
+    from gradio.routes import App  # HACK: to avoid circular import # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv\Lib\site-packages\gradio\routes.py:69: in <module>
+    from gradio import ranged_response, route_utils, utils, wasm_utils
+.venv\Lib\site-packages\gradio\route_utils.py:53: in <module>
+    from gradio.helpers import EventData
+.venv\Lib\site-packages\gradio\helpers.py:26: in <module>
+    from gradio import components, oauth, processing_utils, routes, utils, wasm_utils
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    from __future__ import annotations
+    
+    import hashlib
+    import os
+    import time
+    import typing
+    import urllib.parse
+    import warnings
+    from dataclasses import dataclass, field
+    
+    import fastapi
+    from fastapi.responses import RedirectResponse
+>   from huggingface_hub import HfFolder, whoami
+E   ImportError: cannot import name 'HfFolder' from 'huggingface_hub' (C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\huggingface_hub\__init__.py)
+
+.venv\Lib\site-packages\gradio\oauth.py:13: ImportError
+____ TestGradioInterfaceConstruction.test_interface_has_language_dropdown _____
+
+self = <tests.test_ui.TestGradioInterfaceConstruction object at 0x00000247D79F1CD0>
+
+    def test_interface_has_language_dropdown(self):
+        import sys
+        sys.path.insert(0, str(ROOT_DIR))
+>       import app as app_module
+
+tests\test_ui.py:290: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+app.py:51: in <module>
+    import gradio as gr
+.venv\Lib\site-packages\gradio\__init__.py:3: in <module>
+    import gradio._simple_templates
+.venv\Lib\site-packages\gradio\_simple_templates\__init__.py:1: in <module>
+    from .simpledropdown import SimpleDropdown
+.venv\Lib\site-packages\gradio\_simple_templates\simpledropdown.py:6: in <module>
+    from gradio.components.base import Component, FormComponent
+.venv\Lib\site-packages\gradio\components\__init__.py:1: in <module>
+    from gradio.components.annotated_image import AnnotatedImage
+.venv\Lib\site-packages\gradio\components\annotated_image.py:14: in <module>
+    from gradio.components.base import Component
+.venv\Lib\site-packages\gradio\components\base.py:20: in <module>
+    from gradio.blocks import Block, BlockContext
+.venv\Lib\site-packages\gradio\blocks.py:39: in <module>
+    from gradio import (
+.venv\Lib\site-packages\gradio\networking.py:15: in <module>
+    from gradio.routes import App  # HACK: to avoid circular import # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv\Lib\site-packages\gradio\routes.py:69: in <module>
+    from gradio import ranged_response, route_utils, utils, wasm_utils
+.venv\Lib\site-packages\gradio\route_utils.py:53: in <module>
+    from gradio.helpers import EventData
+.venv\Lib\site-packages\gradio\helpers.py:26: in <module>
+    from gradio import components, oauth, processing_utils, routes, utils, wasm_utils
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    from __future__ import annotations
+    
+    import hashlib
+    import os
+    import time
+    import typing
+    import urllib.parse
+    import warnings
+    from dataclasses import dataclass, field
+    
+    import fastapi
+    from fastapi.responses import RedirectResponse
+>   from huggingface_hub import HfFolder, whoami
+E   ImportError: cannot import name 'HfFolder' from 'huggingface_hub' (C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\huggingface_hub\__init__.py)
+
+.venv\Lib\site-packages\gradio\oauth.py:13: ImportError
+_____ TestGradioInterfaceConstruction.test_interface_has_engine_dropdown ______
+
+self = <tests.test_ui.TestGradioInterfaceConstruction object at 0x00000247D5411D30>
+
+    def test_interface_has_engine_dropdown(self):
+        import sys
+        sys.path.insert(0, str(ROOT_DIR))
+>       import app as app_module
+
+tests\test_ui.py:299: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+app.py:51: in <module>
+    import gradio as gr
+.venv\Lib\site-packages\gradio\__init__.py:3: in <module>
+    import gradio._simple_templates
+.venv\Lib\site-packages\gradio\_simple_templates\__init__.py:1: in <module>
+    from .simpledropdown import SimpleDropdown
+.venv\Lib\site-packages\gradio\_simple_templates\simpledropdown.py:6: in <module>
+    from gradio.components.base import Component, FormComponent
+.venv\Lib\site-packages\gradio\components\__init__.py:1: in <module>
+    from gradio.components.annotated_image import AnnotatedImage
+.venv\Lib\site-packages\gradio\components\annotated_image.py:14: in <module>
+    from gradio.components.base import Component
+.venv\Lib\site-packages\gradio\components\base.py:20: in <module>
+    from gradio.blocks import Block, BlockContext
+.venv\Lib\site-packages\gradio\blocks.py:39: in <module>
+    from gradio import (
+.venv\Lib\site-packages\gradio\networking.py:15: in <module>
+    from gradio.routes import App  # HACK: to avoid circular import # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv\Lib\site-packages\gradio\routes.py:69: in <module>
+    from gradio import ranged_response, route_utils, utils, wasm_utils
+.venv\Lib\site-packages\gradio\route_utils.py:53: in <module>
+    from gradio.helpers import EventData
+.venv\Lib\site-packages\gradio\helpers.py:26: in <module>
+    from gradio import components, oauth, processing_utils, routes, utils, wasm_utils
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    from __future__ import annotations
+    
+    import hashlib
+    import os
+    import time
+    import typing
+    import urllib.parse
+    import warnings
+    from dataclasses import dataclass, field
+    
+    import fastapi
+    from fastapi.responses import RedirectResponse
+>   from huggingface_hub import HfFolder, whoami
+E   ImportError: cannot import name 'HfFolder' from 'huggingface_hub' (C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\huggingface_hub\__init__.py)
+
+.venv\Lib\site-packages\gradio\oauth.py:13: ImportError
+______ TestGradioInterfaceConstruction.test_interface_has_convert_button ______
+
+self = <tests.test_ui.TestGradioInterfaceConstruction object at 0x00000247D79C6300>
+
+    def test_interface_has_convert_button(self):
+        import sys
+        sys.path.insert(0, str(ROOT_DIR))
+>       import app as app_module
+
+tests\test_ui.py:307: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+app.py:51: in <module>
+    import gradio as gr
+.venv\Lib\site-packages\gradio\__init__.py:3: in <module>
+    import gradio._simple_templates
+.venv\Lib\site-packages\gradio\_simple_templates\__init__.py:1: in <module>
+    from .simpledropdown import SimpleDropdown
+.venv\Lib\site-packages\gradio\_simple_templates\simpledropdown.py:6: in <module>
+    from gradio.components.base import Component, FormComponent
+.venv\Lib\site-packages\gradio\components\__init__.py:1: in <module>
+    from gradio.components.annotated_image import AnnotatedImage
+.venv\Lib\site-packages\gradio\components\annotated_image.py:14: in <module>
+    from gradio.components.base import Component
+.venv\Lib\site-packages\gradio\components\base.py:20: in <module>
+    from gradio.blocks import Block, BlockContext
+.venv\Lib\site-packages\gradio\blocks.py:39: in <module>
+    from gradio import (
+.venv\Lib\site-packages\gradio\networking.py:15: in <module>
+    from gradio.routes import App  # HACK: to avoid circular import # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv\Lib\site-packages\gradio\routes.py:69: in <module>
+    from gradio import ranged_response, route_utils, utils, wasm_utils
+.venv\Lib\site-packages\gradio\route_utils.py:53: in <module>
+    from gradio.helpers import EventData
+.venv\Lib\site-packages\gradio\helpers.py:26: in <module>
+    from gradio import components, oauth, processing_utils, routes, utils, wasm_utils
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    from __future__ import annotations
+    
+    import hashlib
+    import os
+    import time
+    import typing
+    import urllib.parse
+    import warnings
+    from dataclasses import dataclass, field
+    
+    import fastapi
+    from fastapi.responses import RedirectResponse
+>   from huggingface_hub import HfFolder, whoami
+E   ImportError: cannot import name 'HfFolder' from 'huggingface_hub' (C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\huggingface_hub\__init__.py)
+
+.venv\Lib\site-packages\gradio\oauth.py:13: ImportError
+____________ TestGradioInterfaceConstruction.test_no_login_section ____________
+
+self = <tests.test_ui.TestGradioInterfaceConstruction object at 0x00000247D79C6600>
+
+    def test_no_login_section(self):
+        import sys
+        sys.path.insert(0, str(ROOT_DIR))
+>       import app as app_module
+
+tests\test_ui.py:319: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+app.py:51: in <module>
+    import gradio as gr
+.venv\Lib\site-packages\gradio\__init__.py:3: in <module>
+    import gradio._simple_templates
+.venv\Lib\site-packages\gradio\_simple_templates\__init__.py:1: in <module>
+    from .simpledropdown import SimpleDropdown
+.venv\Lib\site-packages\gradio\_simple_templates\simpledropdown.py:6: in <module>
+    from gradio.components.base import Component, FormComponent
+.venv\Lib\site-packages\gradio\components\__init__.py:1: in <module>
+    from gradio.components.annotated_image import AnnotatedImage
+.venv\Lib\site-packages\gradio\components\annotated_image.py:14: in <module>
+    from gradio.components.base import Component
+.venv\Lib\site-packages\gradio\components\base.py:20: in <module>
+    from gradio.blocks import Block, BlockContext
+.venv\Lib\site-packages\gradio\blocks.py:39: in <module>
+    from gradio import (
+.venv\Lib\site-packages\gradio\networking.py:15: in <module>
+    from gradio.routes import App  # HACK: to avoid circular import # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv\Lib\site-packages\gradio\routes.py:69: in <module>
+    from gradio import ranged_response, route_utils, utils, wasm_utils
+.venv\Lib\site-packages\gradio\route_utils.py:53: in <module>
+    from gradio.helpers import EventData
+.venv\Lib\site-packages\gradio\helpers.py:26: in <module>
+    from gradio import components, oauth, processing_utils, routes, utils, wasm_utils
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    from __future__ import annotations
+    
+    import hashlib
+    import os
+    import time
+    import typing
+    import urllib.parse
+    import warnings
+    from dataclasses import dataclass, field
+    
+    import fastapi
+    from fastapi.responses import RedirectResponse
+>   from huggingface_hub import HfFolder, whoami
+E   ImportError: cannot import name 'HfFolder' from 'huggingface_hub' (C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\huggingface_hub\__init__.py)
+
+.venv\Lib\site-packages\gradio\oauth.py:13: ImportError
+_______ TestGradioInterfaceConstruction.test_interface_has_settings_tab _______
+
+self = <tests.test_ui.TestGradioInterfaceConstruction object at 0x00000247D79C7770>
+
+    def test_interface_has_settings_tab(self):
+        import sys
+        sys.path.insert(0, str(ROOT_DIR))
+>       import app as app_module
+
+tests\test_ui.py:331: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+app.py:51: in <module>
+    import gradio as gr
+.venv\Lib\site-packages\gradio\__init__.py:3: in <module>
+    import gradio._simple_templates
+.venv\Lib\site-packages\gradio\_simple_templates\__init__.py:1: in <module>
+    from .simpledropdown import SimpleDropdown
+.venv\Lib\site-packages\gradio\_simple_templates\simpledropdown.py:6: in <module>
+    from gradio.components.base import Component, FormComponent
+.venv\Lib\site-packages\gradio\components\__init__.py:1: in <module>
+    from gradio.components.annotated_image import AnnotatedImage
+.venv\Lib\site-packages\gradio\components\annotated_image.py:14: in <module>
+    from gradio.components.base import Component
+.venv\Lib\site-packages\gradio\components\base.py:20: in <module>
+    from gradio.blocks import Block, BlockContext
+.venv\Lib\site-packages\gradio\blocks.py:39: in <module>
+    from gradio import (
+.venv\Lib\site-packages\gradio\networking.py:15: in <module>
+    from gradio.routes import App  # HACK: to avoid circular import # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv\Lib\site-packages\gradio\routes.py:69: in <module>
+    from gradio import ranged_response, route_utils, utils, wasm_utils
+.venv\Lib\site-packages\gradio\route_utils.py:53: in <module>
+    from gradio.helpers import EventData
+.venv\Lib\site-packages\gradio\helpers.py:26: in <module>
+    from gradio import components, oauth, processing_utils, routes, utils, wasm_utils
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    from __future__ import annotations
+    
+    import hashlib
+    import os
+    import time
+    import typing
+    import urllib.parse
+    import warnings
+    from dataclasses import dataclass, field
+    
+    import fastapi
+    from fastapi.responses import RedirectResponse
+>   from huggingface_hub import HfFolder, whoami
+E   ImportError: cannot import name 'HfFolder' from 'huggingface_hub' (C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\huggingface_hub\__init__.py)
+
+.venv\Lib\site-packages\gradio\oauth.py:13: ImportError
+________ TestGradioInterfaceConstruction.test_interface_has_review_tab ________
+
+self = <tests.test_ui.TestGradioInterfaceConstruction object at 0x00000247D79F1790>
+
+    def test_interface_has_review_tab(self):
+        """v0.5: Review & Correct tab should exist."""
+        import sys
+        sys.path.insert(0, str(ROOT_DIR))
+>       import app as app_module
+
+tests\test_ui.py:345: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+app.py:51: in <module>
+    import gradio as gr
+.venv\Lib\site-packages\gradio\__init__.py:3: in <module>
+    import gradio._simple_templates
+.venv\Lib\site-packages\gradio\_simple_templates\__init__.py:1: in <module>
+    from .simpledropdown import SimpleDropdown
+.venv\Lib\site-packages\gradio\_simple_templates\simpledropdown.py:6: in <module>
+    from gradio.components.base import Component, FormComponent
+.venv\Lib\site-packages\gradio\components\__init__.py:1: in <module>
+    from gradio.components.annotated_image import AnnotatedImage
+.venv\Lib\site-packages\gradio\components\annotated_image.py:14: in <module>
+    from gradio.components.base import Component
+.venv\Lib\site-packages\gradio\components\base.py:20: in <module>
+    from gradio.blocks import Block, BlockContext
+.venv\Lib\site-packages\gradio\blocks.py:39: in <module>
+    from gradio import (
+.venv\Lib\site-packages\gradio\networking.py:15: in <module>
+    from gradio.routes import App  # HACK: to avoid circular import # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv\Lib\site-packages\gradio\routes.py:69: in <module>
+    from gradio import ranged_response, route_utils, utils, wasm_utils
+.venv\Lib\site-packages\gradio\route_utils.py:53: in <module>
+    from gradio.helpers import EventData
+.venv\Lib\site-packages\gradio\helpers.py:26: in <module>
+    from gradio import components, oauth, processing_utils, routes, utils, wasm_utils
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    from __future__ import annotations
+    
+    import hashlib
+    import os
+    import time
+    import typing
+    import urllib.parse
+    import warnings
+    from dataclasses import dataclass, field
+    
+    import fastapi
+    from fastapi.responses import RedirectResponse
+>   from huggingface_hub import HfFolder, whoami
+E   ImportError: cannot import name 'HfFolder' from 'huggingface_hub' (C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\huggingface_hub\__init__.py)
+
+.venv\Lib\site-packages\gradio\oauth.py:13: ImportError
+______________ TestReviewAndCorrectHandlers.test_review_load_pdf ______________
+
+self = <tests.test_ui.TestReviewAndCorrectHandlers object at 0x00000247D79F1A30>
+
+    def test_review_load_pdf(self):
+        import sys
+        sys.path.insert(0, str(ROOT_DIR))
+>       import app as app_module
+
+tests\test_ui.py:365: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+app.py:51: in <module>
+    import gradio as gr
+.venv\Lib\site-packages\gradio\__init__.py:3: in <module>
+    import gradio._simple_templates
+.venv\Lib\site-packages\gradio\_simple_templates\__init__.py:1: in <module>
+    from .simpledropdown import SimpleDropdown
+.venv\Lib\site-packages\gradio\_simple_templates\simpledropdown.py:6: in <module>
+    from gradio.components.base import Component, FormComponent
+.venv\Lib\site-packages\gradio\components\__init__.py:1: in <module>
+    from gradio.components.annotated_image import AnnotatedImage
+.venv\Lib\site-packages\gradio\components\annotated_image.py:14: in <module>
+    from gradio.components.base import Component
+.venv\Lib\site-packages\gradio\components\base.py:20: in <module>
+    from gradio.blocks import Block, BlockContext
+.venv\Lib\site-packages\gradio\blocks.py:39: in <module>
+    from gradio import (
+.venv\Lib\site-packages\gradio\networking.py:15: in <module>
+    from gradio.routes import App  # HACK: to avoid circular import # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv\Lib\site-packages\gradio\routes.py:69: in <module>
+    from gradio import ranged_response, route_utils, utils, wasm_utils
+.venv\Lib\site-packages\gradio\route_utils.py:53: in <module>
+    from gradio.helpers import EventData
+.venv\Lib\site-packages\gradio\helpers.py:26: in <module>
+    from gradio import components, oauth, processing_utils, routes, utils, wasm_utils
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    from __future__ import annotations
+    
+    import hashlib
+    import os
+    import time
+    import typing
+    import urllib.parse
+    import warnings
+    from dataclasses import dataclass, field
+    
+    import fastapi
+    from fastapi.responses import RedirectResponse
+>   from huggingface_hub import HfFolder, whoami
+E   ImportError: cannot import name 'HfFolder' from 'huggingface_hub' (C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\huggingface_hub\__init__.py)
+
+.venv\Lib\site-packages\gradio\oauth.py:13: ImportError
+_____________ TestReviewAndCorrectHandlers.test_review_add_region _____________
+
+self = <tests.test_ui.TestReviewAndCorrectHandlers object at 0x00000247D79F1490>
+
+    def test_review_add_region(self):
+        import sys
+        sys.path.insert(0, str(ROOT_DIR))
+>       import app as app_module
+
+tests\test_ui.py:379: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+app.py:51: in <module>
+    import gradio as gr
+.venv\Lib\site-packages\gradio\__init__.py:3: in <module>
+    import gradio._simple_templates
+.venv\Lib\site-packages\gradio\_simple_templates\__init__.py:1: in <module>
+    from .simpledropdown import SimpleDropdown
+.venv\Lib\site-packages\gradio\_simple_templates\simpledropdown.py:6: in <module>
+    from gradio.components.base import Component, FormComponent
+.venv\Lib\site-packages\gradio\components\__init__.py:1: in <module>
+    from gradio.components.annotated_image import AnnotatedImage
+.venv\Lib\site-packages\gradio\components\annotated_image.py:14: in <module>
+    from gradio.components.base import Component
+.venv\Lib\site-packages\gradio\components\base.py:20: in <module>
+    from gradio.blocks import Block, BlockContext
+.venv\Lib\site-packages\gradio\blocks.py:39: in <module>
+    from gradio import (
+.venv\Lib\site-packages\gradio\networking.py:15: in <module>
+    from gradio.routes import App  # HACK: to avoid circular import # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv\Lib\site-packages\gradio\routes.py:69: in <module>
+    from gradio import ranged_response, route_utils, utils, wasm_utils
+.venv\Lib\site-packages\gradio\route_utils.py:53: in <module>
+    from gradio.helpers import EventData
+.venv\Lib\site-packages\gradio\helpers.py:26: in <module>
+    from gradio import components, oauth, processing_utils, routes, utils, wasm_utils
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    from __future__ import annotations
+    
+    import hashlib
+    import os
+    import time
+    import typing
+    import urllib.parse
+    import warnings
+    from dataclasses import dataclass, field
+    
+    import fastapi
+    from fastapi.responses import RedirectResponse
+>   from huggingface_hub import HfFolder, whoami
+E   ImportError: cannot import name 'HfFolder' from 'huggingface_hub' (C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\huggingface_hub\__init__.py)
+
+.venv\Lib\site-packages\gradio\oauth.py:13: ImportError
+______ TestReviewAndCorrectHandlers.test_review_add_region_invalid_bbox _______
+
+self = <tests.test_ui.TestReviewAndCorrectHandlers object at 0x00000247D79F1040>
+
+    def test_review_add_region_invalid_bbox(self):
+        import sys
+        sys.path.insert(0, str(ROOT_DIR))
+>       import app as app_module
+
+tests\test_ui.py:396: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+app.py:51: in <module>
+    import gradio as gr
+.venv\Lib\site-packages\gradio\__init__.py:3: in <module>
+    import gradio._simple_templates
+.venv\Lib\site-packages\gradio\_simple_templates\__init__.py:1: in <module>
+    from .simpledropdown import SimpleDropdown
+.venv\Lib\site-packages\gradio\_simple_templates\simpledropdown.py:6: in <module>
+    from gradio.components.base import Component, FormComponent
+.venv\Lib\site-packages\gradio\components\__init__.py:1: in <module>
+    from gradio.components.annotated_image import AnnotatedImage
+.venv\Lib\site-packages\gradio\components\annotated_image.py:14: in <module>
+    from gradio.components.base import Component
+.venv\Lib\site-packages\gradio\components\base.py:20: in <module>
+    from gradio.blocks import Block, BlockContext
+.venv\Lib\site-packages\gradio\blocks.py:39: in <module>
+    from gradio import (
+.venv\Lib\site-packages\gradio\networking.py:15: in <module>
+    from gradio.routes import App  # HACK: to avoid circular import # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv\Lib\site-packages\gradio\routes.py:69: in <module>
+    from gradio import ranged_response, route_utils, utils, wasm_utils
+.venv\Lib\site-packages\gradio\route_utils.py:53: in <module>
+    from gradio.helpers import EventData
+.venv\Lib\site-packages\gradio\helpers.py:26: in <module>
+    from gradio import components, oauth, processing_utils, routes, utils, wasm_utils
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    from __future__ import annotations
+    
+    import hashlib
+    import os
+    import time
+    import typing
+    import urllib.parse
+    import warnings
+    from dataclasses import dataclass, field
+    
+    import fastapi
+    from fastapi.responses import RedirectResponse
+>   from huggingface_hub import HfFolder, whoami
+E   ImportError: cannot import name 'HfFolder' from 'huggingface_hub' (C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\huggingface_hub\__init__.py)
+
+.venv\Lib\site-packages\gradio\oauth.py:13: ImportError
+____________ TestReviewAndCorrectHandlers.test_review_clear_manual ____________
+
+self = <tests.test_ui.TestReviewAndCorrectHandlers object at 0x00000247D79F0B30>
+
+    def test_review_clear_manual(self):
+        import sys
+        sys.path.insert(0, str(ROOT_DIR))
+>       import app as app_module
+
+tests\test_ui.py:407: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+app.py:51: in <module>
+    import gradio as gr
+.venv\Lib\site-packages\gradio\__init__.py:3: in <module>
+    import gradio._simple_templates
+.venv\Lib\site-packages\gradio\_simple_templates\__init__.py:1: in <module>
+    from .simpledropdown import SimpleDropdown
+.venv\Lib\site-packages\gradio\_simple_templates\simpledropdown.py:6: in <module>
+    from gradio.components.base import Component, FormComponent
+.venv\Lib\site-packages\gradio\components\__init__.py:1: in <module>
+    from gradio.components.annotated_image import AnnotatedImage
+.venv\Lib\site-packages\gradio\components\annotated_image.py:14: in <module>
+    from gradio.components.base import Component
+.venv\Lib\site-packages\gradio\components\base.py:20: in <module>
+    from gradio.blocks import Block, BlockContext
+.venv\Lib\site-packages\gradio\blocks.py:39: in <module>
+    from gradio import (
+.venv\Lib\site-packages\gradio\networking.py:15: in <module>
+    from gradio.routes import App  # HACK: to avoid circular import # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv\Lib\site-packages\gradio\routes.py:69: in <module>
+    from gradio import ranged_response, route_utils, utils, wasm_utils
+.venv\Lib\site-packages\gradio\route_utils.py:53: in <module>
+    from gradio.helpers import EventData
+.venv\Lib\site-packages\gradio\helpers.py:26: in <module>
+    from gradio import components, oauth, processing_utils, routes, utils, wasm_utils
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    from __future__ import annotations
+    
+    import hashlib
+    import os
+    import time
+    import typing
+    import urllib.parse
+    import warnings
+    from dataclasses import dataclass, field
+    
+    import fastapi
+    from fastapi.responses import RedirectResponse
+>   from huggingface_hub import HfFolder, whoami
+E   ImportError: cannot import name 'HfFolder' from 'huggingface_hub' (C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\huggingface_hub\__init__.py)
+
+.venv\Lib\site-packages\gradio\oauth.py:13: ImportError
+______ TestReviewAndCorrectHandlers.test_review_convert_with_corrections ______
+
+self = <tests.test_ui.TestReviewAndCorrectHandlers object at 0x00000247D79F06B0>
+
+    def test_review_convert_with_corrections(self):
+        import sys
+        sys.path.insert(0, str(ROOT_DIR))
+>       import app as app_module
+
+tests\test_ui.py:418: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+app.py:51: in <module>
+    import gradio as gr
+.venv\Lib\site-packages\gradio\__init__.py:3: in <module>
+    import gradio._simple_templates
+.venv\Lib\site-packages\gradio\_simple_templates\__init__.py:1: in <module>
+    from .simpledropdown import SimpleDropdown
+.venv\Lib\site-packages\gradio\_simple_templates\simpledropdown.py:6: in <module>
+    from gradio.components.base import Component, FormComponent
+.venv\Lib\site-packages\gradio\components\__init__.py:1: in <module>
+    from gradio.components.annotated_image import AnnotatedImage
+.venv\Lib\site-packages\gradio\components\annotated_image.py:14: in <module>
+    from gradio.components.base import Component
+.venv\Lib\site-packages\gradio\components\base.py:20: in <module>
+    from gradio.blocks import Block, BlockContext
+.venv\Lib\site-packages\gradio\blocks.py:39: in <module>
+    from gradio import (
+.venv\Lib\site-packages\gradio\networking.py:15: in <module>
+    from gradio.routes import App  # HACK: to avoid circular import # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv\Lib\site-packages\gradio\routes.py:69: in <module>
+    from gradio import ranged_response, route_utils, utils, wasm_utils
+.venv\Lib\site-packages\gradio\route_utils.py:53: in <module>
+    from gradio.helpers import EventData
+.venv\Lib\site-packages\gradio\helpers.py:26: in <module>
+    from gradio import components, oauth, processing_utils, routes, utils, wasm_utils
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    from __future__ import annotations
+    
+    import hashlib
+    import os
+    import time
+    import typing
+    import urllib.parse
+    import warnings
+    from dataclasses import dataclass, field
+    
+    import fastapi
+    from fastapi.responses import RedirectResponse
+>   from huggingface_hub import HfFolder, whoami
+E   ImportError: cannot import name 'HfFolder' from 'huggingface_hub' (C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\huggingface_hub\__init__.py)
+
+.venv\Lib\site-packages\gradio\oauth.py:13: ImportError
+________ TestReviewAndCorrectHandlers.test_review_no_pdf_returns_error ________
+
+self = <tests.test_ui.TestReviewAndCorrectHandlers object at 0x00000247D79F0050>
+
+    def test_review_no_pdf_returns_error(self):
+        import sys
+        sys.path.insert(0, str(ROOT_DIR))
+>       import app as app_module
+
+tests\test_ui.py:432: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+app.py:51: in <module>
+    import gradio as gr
+.venv\Lib\site-packages\gradio\__init__.py:3: in <module>
+    import gradio._simple_templates
+.venv\Lib\site-packages\gradio\_simple_templates\__init__.py:1: in <module>
+    from .simpledropdown import SimpleDropdown
+.venv\Lib\site-packages\gradio\_simple_templates\simpledropdown.py:6: in <module>
+    from gradio.components.base import Component, FormComponent
+.venv\Lib\site-packages\gradio\components\__init__.py:1: in <module>
+    from gradio.components.annotated_image import AnnotatedImage
+.venv\Lib\site-packages\gradio\components\annotated_image.py:14: in <module>
+    from gradio.components.base import Component
+.venv\Lib\site-packages\gradio\components\base.py:20: in <module>
+    from gradio.blocks import Block, BlockContext
+.venv\Lib\site-packages\gradio\blocks.py:39: in <module>
+    from gradio import (
+.venv\Lib\site-packages\gradio\networking.py:15: in <module>
+    from gradio.routes import App  # HACK: to avoid circular import # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv\Lib\site-packages\gradio\routes.py:69: in <module>
+    from gradio import ranged_response, route_utils, utils, wasm_utils
+.venv\Lib\site-packages\gradio\route_utils.py:53: in <module>
+    from gradio.helpers import EventData
+.venv\Lib\site-packages\gradio\helpers.py:26: in <module>
+    from gradio import components, oauth, processing_utils, routes, utils, wasm_utils
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    from __future__ import annotations
+    
+    import hashlib
+    import os
+    import time
+    import typing
+    import urllib.parse
+    import warnings
+    from dataclasses import dataclass, field
+    
+    import fastapi
+    from fastapi.responses import RedirectResponse
+>   from huggingface_hub import HfFolder, whoami
+E   ImportError: cannot import name 'HfFolder' from 'huggingface_hub' (C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\huggingface_hub\__init__.py)
+
+.venv\Lib\site-packages\gradio\oauth.py:13: ImportError
+_________________ TestTrainingStats.test_correction_stats_md __________________
+
+self = <tests.test_ui.TestTrainingStats object at 0x00000247D79F2270>
+
+    def test_correction_stats_md(self):
+        import sys
+        sys.path.insert(0, str(ROOT_DIR))
+>       import app as app_module
+
+tests\test_ui.py:449: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+app.py:51: in <module>
+    import gradio as gr
+.venv\Lib\site-packages\gradio\__init__.py:3: in <module>
+    import gradio._simple_templates
+.venv\Lib\site-packages\gradio\_simple_templates\__init__.py:1: in <module>
+    from .simpledropdown import SimpleDropdown
+.venv\Lib\site-packages\gradio\_simple_templates\simpledropdown.py:6: in <module>
+    from gradio.components.base import Component, FormComponent
+.venv\Lib\site-packages\gradio\components\__init__.py:1: in <module>
+    from gradio.components.annotated_image import AnnotatedImage
+.venv\Lib\site-packages\gradio\components\annotated_image.py:14: in <module>
+    from gradio.components.base import Component
+.venv\Lib\site-packages\gradio\components\base.py:20: in <module>
+    from gradio.blocks import Block, BlockContext
+.venv\Lib\site-packages\gradio\blocks.py:39: in <module>
+    from gradio import (
+.venv\Lib\site-packages\gradio\networking.py:15: in <module>
+    from gradio.routes import App  # HACK: to avoid circular import # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv\Lib\site-packages\gradio\routes.py:69: in <module>
+    from gradio import ranged_response, route_utils, utils, wasm_utils
+.venv\Lib\site-packages\gradio\route_utils.py:53: in <module>
+    from gradio.helpers import EventData
+.venv\Lib\site-packages\gradio\helpers.py:26: in <module>
+    from gradio import components, oauth, processing_utils, routes, utils, wasm_utils
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    from __future__ import annotations
+    
+    import hashlib
+    import os
+    import time
+    import typing
+    import urllib.parse
+    import warnings
+    from dataclasses import dataclass, field
+    
+    import fastapi
+    from fastapi.responses import RedirectResponse
+>   from huggingface_hub import HfFolder, whoami
+E   ImportError: cannot import name 'HfFolder' from 'huggingface_hub' (C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\huggingface_hub\__init__.py)
+
+.venv\Lib\site-packages\gradio\oauth.py:13: ImportError
+__________________ TestTrainingStats.test_corrections_log_md __________________
+
+self = <tests.test_ui.TestTrainingStats object at 0x00000247D79F2540>
+
+    def test_corrections_log_md(self):
+        import sys
+        sys.path.insert(0, str(ROOT_DIR))
+>       import app as app_module
+
+tests\test_ui.py:458: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+app.py:51: in <module>
+    import gradio as gr
+.venv\Lib\site-packages\gradio\__init__.py:3: in <module>
+    import gradio._simple_templates
+.venv\Lib\site-packages\gradio\_simple_templates\__init__.py:1: in <module>
+    from .simpledropdown import SimpleDropdown
+.venv\Lib\site-packages\gradio\_simple_templates\simpledropdown.py:6: in <module>
+    from gradio.components.base import Component, FormComponent
+.venv\Lib\site-packages\gradio\components\__init__.py:1: in <module>
+    from gradio.components.annotated_image import AnnotatedImage
+.venv\Lib\site-packages\gradio\components\annotated_image.py:14: in <module>
+    from gradio.components.base import Component
+.venv\Lib\site-packages\gradio\components\base.py:20: in <module>
+    from gradio.blocks import Block, BlockContext
+.venv\Lib\site-packages\gradio\blocks.py:39: in <module>
+    from gradio import (
+.venv\Lib\site-packages\gradio\networking.py:15: in <module>
+    from gradio.routes import App  # HACK: to avoid circular import # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv\Lib\site-packages\gradio\routes.py:69: in <module>
+    from gradio import ranged_response, route_utils, utils, wasm_utils
+.venv\Lib\site-packages\gradio\route_utils.py:53: in <module>
+    from gradio.helpers import EventData
+.venv\Lib\site-packages\gradio\helpers.py:26: in <module>
+    from gradio import components, oauth, processing_utils, routes, utils, wasm_utils
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    from __future__ import annotations
+    
+    import hashlib
+    import os
+    import time
+    import typing
+    import urllib.parse
+    import warnings
+    from dataclasses import dataclass, field
+    
+    import fastapi
+    from fastapi.responses import RedirectResponse
+>   from huggingface_hub import HfFolder, whoami
+E   ImportError: cannot import name 'HfFolder' from 'huggingface_hub' (C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\huggingface_hub\__init__.py)
+
+.venv\Lib\site-packages\gradio\oauth.py:13: ImportError
+___________________ TestTrainingStats.test_draw_detections ____________________
+
+self = <tests.test_ui.TestTrainingStats object at 0x00000247D79F2810>
+
+    def test_draw_detections(self):
+        import sys
+        import numpy as np
+        sys.path.insert(0, str(ROOT_DIR))
+>       import app as app_module
+
+tests\test_ui.py:466: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+app.py:51: in <module>
+    import gradio as gr
+.venv\Lib\site-packages\gradio\__init__.py:3: in <module>
+    import gradio._simple_templates
+.venv\Lib\site-packages\gradio\_simple_templates\__init__.py:1: in <module>
+    from .simpledropdown import SimpleDropdown
+.venv\Lib\site-packages\gradio\_simple_templates\simpledropdown.py:6: in <module>
+    from gradio.components.base import Component, FormComponent
+.venv\Lib\site-packages\gradio\components\__init__.py:1: in <module>
+    from gradio.components.annotated_image import AnnotatedImage
+.venv\Lib\site-packages\gradio\components\annotated_image.py:14: in <module>
+    from gradio.components.base import Component
+.venv\Lib\site-packages\gradio\components\base.py:20: in <module>
+    from gradio.blocks import Block, BlockContext
+.venv\Lib\site-packages\gradio\blocks.py:39: in <module>
+    from gradio import (
+.venv\Lib\site-packages\gradio\networking.py:15: in <module>
+    from gradio.routes import App  # HACK: to avoid circular import # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv\Lib\site-packages\gradio\routes.py:69: in <module>
+    from gradio import ranged_response, route_utils, utils, wasm_utils
+.venv\Lib\site-packages\gradio\route_utils.py:53: in <module>
+    from gradio.helpers import EventData
+.venv\Lib\site-packages\gradio\helpers.py:26: in <module>
+    from gradio import components, oauth, processing_utils, routes, utils, wasm_utils
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    from __future__ import annotations
+    
+    import hashlib
+    import os
+    import time
+    import typing
+    import urllib.parse
+    import warnings
+    from dataclasses import dataclass, field
+    
+    import fastapi
+    from fastapi.responses import RedirectResponse
+>   from huggingface_hub import HfFolder, whoami
+E   ImportError: cannot import name 'HfFolder' from 'huggingface_hub' (C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\huggingface_hub\__init__.py)
+
+.venv\Lib\site-packages\gradio\oauth.py:13: ImportError
+_________ TestDockerDeployment.test_container_pipeline_processes_pdf __________
+
+self = <tests.test_ui.TestDockerDeployment object at 0x00000247D79F2E70>
+docker_container = 'http://127.0.0.1:7875/'
+
+    def test_container_pipeline_processes_pdf(self, docker_container):
+>       result = _docker_exec([
+            "python", "-c",
+            f"from src.pipeline import OCRPipeline; p=OCRPipeline();"
+            f"r=p.process_pdf('{_CONTAINER_TEST_PDF}', quality='fast');"
+            f"print('SUCCESS' if r['success'] else 'FAILED:'+str(r.get('error','')));"
+            f"print('CHARS:', len(r['text']))"
+        ], timeout=180)
+
+tests\test_ui.py:575: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_ui.py:506: in _docker_exec
+    return subprocess.run(
+B:\Python312\Lib\subprocess.py:550: in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+B:\Python312\Lib\subprocess.py:1209: in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <Popen: returncode: 1 args: ['docker', 'exec', 'pdf-ocr-test-container', 'py...>
+input = None, endtime = 148216.625, orig_timeout = 180
+
+    def _communicate(self, input, endtime, orig_timeout):
+        # Start reader threads feeding into a list hanging off of this
+        # object, unless they've already been started.
+        if self.stdout and not hasattr(self, "_stdout_buff"):
+            self._stdout_buff = []
+            self.stdout_thread = \
+                    threading.Thread(target=self._readerthread,
+                                     args=(self.stdout, self._stdout_buff))
+            self.stdout_thread.daemon = True
+            self.stdout_thread.start()
+        if self.stderr and not hasattr(self, "_stderr_buff"):
+            self._stderr_buff = []
+            self.stderr_thread = \
+                    threading.Thread(target=self._readerthread,
+                                     args=(self.stderr, self._stderr_buff))
+            self.stderr_thread.daemon = True
+            self.stderr_thread.start()
+    
+        if self.stdin:
+            self._stdin_write(input)
+    
+        # Wait for the reader threads, or time out.  If we time out, the
+        # threads remain reading and the fds left open in case the user
+        # calls communicate again.
+        if self.stdout is not None:
+            self.stdout_thread.join(self._remaining_time(endtime))
+            if self.stdout_thread.is_alive():
+>               raise TimeoutExpired(self.args, orig_timeout)
+E               subprocess.TimeoutExpired: Command '['docker', 'exec', 'pdf-ocr-test-container', 'python', '-c', "from src.pipeline import OCRPipeline; p=OCRPipeline();r=p.process_pdf('/app/tests/testocrtor.pdf', quality='fast');print('SUCCESS' if r['success'] else 'FAILED:'+str(r.get('error','')));print('CHARS:', len(r['text']))"]' timed out after 180 seconds
+
+B:\Python312\Lib\subprocess.py:1630: TimeoutExpired
+_________ TestDockerDeployment.test_container_pipeline_with_language __________
+
+self = <tests.test_ui.TestDockerDeployment object at 0x00000247D79F3140>
+docker_container = 'http://127.0.0.1:7875/'
+
+    def test_container_pipeline_with_language(self, docker_container):
+>       result = _docker_exec([
+            "python", "-c",
+            f"from src.pipeline import OCRPipeline; p=OCRPipeline();"
+            f"r=p.process_pdf('{_CONTAINER_TEST_PDF}', quality='fast', languages='eng');"
+            f"print('SUCCESS' if r['success'] else 'FAILED:'+str(r.get('error','')));"
+            f"print('LANG:', r['metadata'].get('languages','?'))"
+        ], timeout=180)
+
+tests\test_ui.py:586: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_ui.py:506: in _docker_exec
+    return subprocess.run(
+B:\Python312\Lib\subprocess.py:550: in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+B:\Python312\Lib\subprocess.py:1209: in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <Popen: returncode: 1 args: ['docker', 'exec', 'pdf-ocr-test-container', 'py...>
+input = None, endtime = 148397.093, orig_timeout = 180
+
+    def _communicate(self, input, endtime, orig_timeout):
+        # Start reader threads feeding into a list hanging off of this
+        # object, unless they've already been started.
+        if self.stdout and not hasattr(self, "_stdout_buff"):
+            self._stdout_buff = []
+            self.stdout_thread = \
+                    threading.Thread(target=self._readerthread,
+                                     args=(self.stdout, self._stdout_buff))
+            self.stdout_thread.daemon = True
+            self.stdout_thread.start()
+        if self.stderr and not hasattr(self, "_stderr_buff"):
+            self._stderr_buff = []
+            self.stderr_thread = \
+                    threading.Thread(target=self._readerthread,
+                                     args=(self.stderr, self._stderr_buff))
+            self.stderr_thread.daemon = True
+            self.stderr_thread.start()
+    
+        if self.stdin:
+            self._stdin_write(input)
+    
+        # Wait for the reader threads, or time out.  If we time out, the
+        # threads remain reading and the fds left open in case the user
+        # calls communicate again.
+        if self.stdout is not None:
+            self.stdout_thread.join(self._remaining_time(endtime))
+            if self.stdout_thread.is_alive():
+>               raise TimeoutExpired(self.args, orig_timeout)
+E               subprocess.TimeoutExpired: Command '['docker', 'exec', 'pdf-ocr-test-container', 'python', '-c', "from src.pipeline import OCRPipeline; p=OCRPipeline();r=p.process_pdf('/app/tests/testocrtor.pdf', quality='fast', languages='eng');print('SUCCESS' if r['success'] else 'FAILED:'+str(r.get('error','')));print('LANG:', r['metadata'].get('languages','?'))"]' timed out after 180 seconds
+
+B:\Python312\Lib\subprocess.py:1630: TimeoutExpired
 ============================== warnings summary ===============================
+tests/test_ui.py::TestPDFConversionActions::test_conversion_succeeds
+  C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\requests\__init__.py:113: RequestsDependencyWarning: urllib3 (2.6.3) or chardet (6.0.0.post1)/charset_normalizer (3.4.4) doesn't match a supported version!
+    warnings.warn(
+
 tests/test_ui.py::TestPDFConversionActions::test_conversion_succeeds
 tests/test_ui.py::TestPDFConversionActions::test_conversion_succeeds
   C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\thop\profile.py:12: DeprecationWarning: distutils Version classes are deprecated. Use packaging.version instead.
@@ -309,32 +1152,48 @@ tests/test_ui.py::TestGradioInterfaceConstruction::test_create_interface_no_erro
   C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\gradio\routes.py:63: PendingDeprecationWarning: Please use `import python_multipart` instead.
     from multipart.multipart import parse_options_header
 
-tests/test_ui.py::TestGradioInterfaceConstruction::test_create_interface_no_error
-  C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\gradio\utils.py:98: DeprecationWarning: There is no current event loop
-    asyncio.get_event_loop()
-
-tests/test_ui.py: 14 warnings
-  C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\gradio\routes.py:1215: DeprecationWarning: 
-          on_event is deprecated, use lifespan event handlers instead.
+tests/test_ui.py::TestDockerDeployment::test_container_pipeline_processes_pdf
+  C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\_pytest\threadexception.py:58: PytestUnhandledThreadExceptionWarning: Exception in thread Thread-14 (_readerthread)
   
-          Read more about it in the
-          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
-          
-    @app.on_event("startup")
-
-tests/test_ui.py: 14 warnings
-  C:\Users\chira\Documents\visualstudiocode\Work\Local_PDFtoDocx-OCR-V0.1\.venv\Lib\site-packages\fastapi\applications.py:4573: DeprecationWarning: 
-          on_event is deprecated, use lifespan event handlers instead.
+  Traceback (most recent call last):
+    File "B:\Python312\Lib\threading.py", line 1075, in _bootstrap_inner
+      self.run()
+    File "B:\Python312\Lib\threading.py", line 1012, in run
+      self._target(*self._args, **self._kwargs)
+    File "B:\Python312\Lib\subprocess.py", line 1599, in _readerthread
+      buffer.append(fh.read())
+                    ^^^^^^^^^
+    File "B:\Python312\Lib\encodings\cp1252.py", line 23, in decode
+      return codecs.charmap_decode(input,self.errors,decoding_table)[0]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  UnicodeDecodeError: 'charmap' codec can't decode byte 0x8f in position 3170: character maps to <undefined>
   
-          Read more about it in the
-          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
-          
-    return self.router.on_event(event_type)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+    warnings.warn(pytest.PytestUnhandledThreadExceptionWarning(msg))
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
 =========================== short test summary info ===========================
-ERROR tests/test_ui.py::TestDockerDeployment::test_http_root_returns_200 - As...
-ERROR tests/test_ui.py::TestDockerDeployment::test_container_pipeline_processes_pdf
-ERROR tests/test_ui.py::TestDockerDeployment::test_container_pipeline_with_language
-ERROR tests/test_ui.py::TestDockerDeployment::test_container_gradio_interface_builds
-============ 39 passed, 34 warnings, 4 errors in 708.38s (0:11:48) ============
+FAILED tests/test_ui.py::TestGradioInterfaceConstruction::test_create_interface_no_error
+FAILED tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_language_dropdown
+FAILED tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_engine_dropdown
+FAILED tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_convert_button
+FAILED tests/test_ui.py::TestGradioInterfaceConstruction::test_no_login_section
+FAILED tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_settings_tab
+FAILED tests/test_ui.py::TestGradioInterfaceConstruction::test_interface_has_review_tab
+FAILED tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_load_pdf
+FAILED tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_add_region
+FAILED tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_add_region_invalid_bbox
+FAILED tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_clear_manual
+FAILED tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_convert_with_corrections
+FAILED tests/test_ui.py::TestReviewAndCorrectHandlers::test_review_no_pdf_returns_error
+FAILED tests/test_ui.py::TestTrainingStats::test_correction_stats_md - Import...
+FAILED tests/test_ui.py::TestTrainingStats::test_corrections_log_md - ImportE...
+FAILED tests/test_ui.py::TestTrainingStats::test_draw_detections - ImportErro...
+FAILED tests/test_ui.py::TestDockerDeployment::test_container_pipeline_processes_pdf
+FAILED tests/test_ui.py::TestDockerDeployment::test_container_pipeline_with_language
+ERROR tests/test_ui.py::TestServerHealth::test_server_returns_200 - Failed: Server did not start:   from gradio import ranged_response, route_utils, utils, wasm_utils
+
+ERROR tests/test_ui.py::TestServerHealth::test_server_serves_html - Failed: Server did not start:   from gradio import ranged_response, route_utils, utils, wasm_utils
+
+====== 18 failed, 23 passed, 7 warnings, 2 errors in 2390.50s (0:39:50) =======

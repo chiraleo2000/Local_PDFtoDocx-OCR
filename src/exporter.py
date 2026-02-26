@@ -1,8 +1,14 @@
 """
-Document Exporter + Image Extractor — v1.0
+Document Exporter + Image Extractor — v2.0
 HTML-first export: Build positioned HTML → convert to DOCX & TXT.
 Images embedded as base64 in HTML, properly transferred to DOCX via htmldocx.
 Figure numbering: 1-based.
+
+v2.0 improvements:
+    - Better table-to-DOCX conversion with proper cell alignment
+    - Colspan/rowspan handling in fallback DOCX builder
+    - Style preservation (tabs, indentation) in text blocks
+    - Improved HTML table structure with col-width hints
 
 Security:
     - All user text is escaped via ``html.escape()`` before HTML insertion (XSS)
@@ -243,6 +249,35 @@ class DocumentExporter:
         return path
 
     # ── HTML -> DOCX ─────────────────────────────────────────────────────────
+    @staticmethod
+    def _extract_base64_images_to_tempfiles(html_content: str) -> str:
+        """Replace base64 data URIs in <img> src with temp file paths.
+
+        htmldocx tries to use the src attribute as a filename, which fails
+        when the src is a data URI (filename too long).  This pre-processes
+        the HTML so that base64 images are saved as temp files and the src
+        attributes point to those files instead.
+        """
+        _DATA_URI_RE = re.compile(
+            r"""src\s*=\s*['"]data:image/(png|jpe?g|gif|webp);base64,([A-Za-z0-9+/\n\r=]+)['"]""",
+            re.IGNORECASE,
+        )
+
+        def _replacer(match):
+            fmt = match.group(1).lower()
+            b64_data = match.group(2)
+            suffix = f".{fmt}" if fmt != "jpeg" else ".jpg"
+            try:
+                img_bytes = base64.b64decode(b64_data)
+                fd, tmp_path = tempfile.mkstemp(suffix=suffix, prefix="ocr_img_")
+                with os.fdopen(fd, "wb") as f:
+                    f.write(img_bytes)
+                return f"src='{tmp_path}'"
+            except Exception:
+                return match.group(0)  # leave unchanged on error
+
+        return _DATA_URI_RE.sub(_replacer, html_content)
+
     def _html_to_docx(self, html_content: str) -> Optional[str]:
         if not DOCX_AVAILABLE:
             logger.error("python-docx not installed")
@@ -251,8 +286,12 @@ class DocumentExporter:
         # Try htmldocx first — handles images, tables, alignment
         if HTMLDOCX_AVAILABLE:
             try:
+                # Pre-process: extract base64 images to temp files
+                # to avoid "filename too long" errors in htmldocx
+                processed_html = self._extract_base64_images_to_tempfiles(
+                    html_content)
                 parser = HtmlToDocx()
-                doc = parser.parse_html_string(html_content)
+                doc = parser.parse_html_string(processed_html)
                 fd, path = tempfile.mkstemp(suffix=".docx", prefix="ocr_")
                 os.close(fd)
                 doc.save(path)
@@ -327,23 +366,61 @@ class DocumentExporter:
         rows_el = table_el.find_all("tr")
         if not rows_el:
             return
-        max_cols = max(len(r.find_all(["td", "th"])) for r in rows_el)
+
+        # Calculate the true column count considering colspan
+        max_cols = 0
+        for r in rows_el:
+            cols_in_row = 0
+            for cell in r.find_all(["td", "th"]):
+                cs = int(cell.get("colspan", 1))
+                cols_in_row += cs
+            max_cols = max(max_cols, cols_in_row)
+
         if max_cols == 0:
             return
+
         tbl = doc.add_table(rows=len(rows_el), cols=max_cols)
         tbl.style = "Table Grid"
+
         for ri, row_el in enumerate(rows_el):
             cells = row_el.find_all(["td", "th"])
-            for ci, cell_el in enumerate(cells):
-                if ci < max_cols:
-                    cell = tbl.cell(ri, ci)
-                    cell.text = cell_el.get_text(strip=True)
-                    for p in cell.paragraphs:
-                        for run in p.runs:
-                            run.font.name = self.FONT_NAME
-                            run.font.size = Pt(self.FONT_SIZE_TABLE)
-                            if cell_el.name == "th":
-                                run.bold = True
+            col_idx = 0
+            for cell_el in cells:
+                if col_idx >= max_cols:
+                    break
+
+                colspan = int(cell_el.get("colspan", 1))
+                rowspan = int(cell_el.get("rowspan", 1))
+
+                cell = tbl.cell(ri, col_idx)
+                cell_text = cell_el.get_text(strip=True)
+                cell.text = cell_text
+
+                # Merge cells for colspan
+                if colspan > 1 and col_idx + colspan - 1 < max_cols:
+                    try:
+                        merge_cell = tbl.cell(ri, col_idx + colspan - 1)
+                        cell.merge(merge_cell)
+                    except Exception:
+                        pass
+
+                # Merge cells for rowspan
+                if rowspan > 1 and ri + rowspan - 1 < len(rows_el):
+                    try:
+                        merge_cell = tbl.cell(ri + rowspan - 1, col_idx)
+                        cell.merge(merge_cell)
+                    except Exception:
+                        pass
+
+                # Style the cell
+                for p in cell.paragraphs:
+                    for run in p.runs:
+                        run.font.name = self.FONT_NAME
+                        run.font.size = Pt(self.FONT_SIZE_TABLE)
+                        if cell_el.name == "th":
+                            run.bold = True
+
+                col_idx += colspan
 
     def _figure_el_to_docx(self, doc, figure_el) -> None:
         img_el = figure_el.find("img")
