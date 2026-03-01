@@ -489,7 +489,7 @@ class OCRApp(tk.Tk):
     """Desktop GUI for the PDF-to-DOCX OCR Pipeline with modern dark theme."""
 
     APP_TITLE = "LocalOCR — PDF to DOCX Converter"
-    VERSION   = "v0.3.0"
+    VERSION   = "v0.3.1"
     WINDOW_SIZE = "1280x860"
 
     def __init__(self):
@@ -949,7 +949,7 @@ class OCRApp(tk.Tk):
             font=("Segoe UI", 10), anchor="w")
         self._lbl_status.pack(side="left", fill="x", expand=True)
 
-        tk.Label(bar, text="LocalOCR v0.3.0",
+        tk.Label(bar, text="LocalOCR v0.3.1",
                  bg=Theme.BG_MID, fg=Theme.TEXT_MUTED,
                  font=("Segoe UI", 9)).pack(side="right")
 
@@ -1028,20 +1028,54 @@ class OCRApp(tk.Tk):
                         values=(f"{size_kb:.1f} KB",))
 
     # ══════════════════════════════════════════════════════════════════════
-    # Pipeline warm-up
+    # Pipeline warm-up  — staged with progress updates
     # ══════════════════════════════════════════════════════════════════════
     def _warmup_pipeline(self):
+        steps = [
+            ("📦 Importing core modules (fitz, cv2, numpy)...",
+             lambda: (__import__("fitz"), __import__("cv2"), __import__("numpy"))),
+            ("📦 Loading YOLO layout detector...",
+             lambda: __import__("doclayout_yolo")),
+            ("📦 Loading OCR engines (EasyOCR, PaddleOCR)...",
+             lambda: (__import__("easyocr"), __import__("paddleocr"))),
+            ("📦 Loading transformers & ONNX runtime...",
+             lambda: (__import__("transformers"), __import__("onnxruntime"))),
+            ("🔧 Initializing OCR pipeline...",
+             lambda: _get_pipeline()),
+        ]
+        total = len(steps)
         try:
-            self.after(0, lambda: self._log(
-                "🔄 Loading OCR pipeline (this may take a moment)...",
-                Theme.TEXT_MUTED))
-            _get_pipeline()
+            self.after(0, lambda: self._set_progress_determinate(total))
+            for i, (msg, fn) in enumerate(steps):
+                self.after(0, lambda m=msg: self._log(m, Theme.TEXT_MUTED))
+                self.after(0, lambda v=i: self._set_progress_value(v))
+                t0 = time.time()
+                try:
+                    fn()
+                except Exception:
+                    pass  # optional modules may fail
+                dt = time.time() - t0
+                done_msg = f"   ✓ done ({dt:.1f}s)"
+                self.after(0, lambda m=done_msg: self._log(m, Theme.TEXT_MUTED))
+            self.after(0, lambda: self._set_progress_value(total))
             self.after(0, lambda: self._log(
                 "✅ OCR pipeline loaded successfully.", Theme.SUCCESS))
         except Exception as exc:
             err_msg = str(exc)
             self.after(0, lambda: self._log(
                 f"⚠ Pipeline load warning: {err_msg}", Theme.WARNING))
+        finally:
+            self.after(0, self._reset_progress)
+
+    def _set_progress_determinate(self, maximum):
+        self._progress.stop()
+        self._progress.configure(mode="determinate", maximum=maximum, value=0)
+
+    def _set_progress_value(self, value):
+        self._progress.configure(value=value)
+
+    def _reset_progress(self):
+        self._progress.configure(mode="indeterminate", value=0)
 
     # ══════════════════════════════════════════════════════════════════════
     # File browsing
@@ -1111,6 +1145,8 @@ class OCRApp(tk.Tk):
 
     def _run_convert(self):
         try:
+            self.after(0, lambda: self._log(
+                "  Step 1/4: Loading pipeline...", Theme.TEXT_MUTED))
             pipeline = _get_pipeline()
 
             quality = QUALITY_OPTIONS.get(
@@ -1128,23 +1164,70 @@ class OCRApp(tk.Tk):
 
             pipeline.ocr.primary_engine = engine
 
-            result = pipeline.process_pdf(
-                self._pdf_path,
-                quality=quality,
-                header_trim=header_pct,
-                footer_trim=footer_pct,
-                languages=languages,
-                yolo_confidence=yolo_conf,
-                page_size=page_size,
-                margin_preset=margin_preset,
-            )
+            self.after(0, lambda: self._log(
+                "  Step 2/4: Rendering & detecting layout...", Theme.TEXT_MUTED))
+
+            # Count pages first for progress
+            import fitz as _fitz
+            _doc = _fitz.open(self._pdf_path)
+            n_pages = len(_doc)
+            _doc.close()
+            self.after(0, lambda: self._set_progress_determinate(n_pages + 2))
+            self.after(0, lambda: self._set_progress_value(1))
+
+            # Hook into pipeline's logger to capture per-page progress
+            import logging as _logging
+            _pipe_logger = _logging.getLogger("Pipeline")
+            _orig_level = _pipe_logger.level
+
+            class _PageHandler(_logging.Handler):
+                def __init__(self, app):
+                    super().__init__()
+                    self.app = app
+                    self._page_count = 0
+                def emit(self, record):
+                    msg = record.getMessage()
+                    if "Processing page" in msg:
+                        self._page_count += 1
+                        pc = self._page_count
+                        self.app.after(0, lambda m=msg: self.app._log(
+                            f"  📄 {m}", Theme.TEXT_MUTED))
+                        self.app.after(0, lambda v=pc: self.app._set_progress_value(v + 1))
+
+            _handler = _PageHandler(self)
+            _pipe_logger.addHandler(_handler)
+
+            try:
+                result = pipeline.process_pdf(
+                    self._pdf_path,
+                    quality=quality,
+                    header_trim=header_pct,
+                    footer_trim=footer_pct,
+                    languages=languages,
+                    yolo_confidence=yolo_conf,
+                    page_size=page_size,
+                    margin_preset=margin_preset,
+                )
+            finally:
+                _pipe_logger.removeHandler(_handler)
+
+            self.after(0, lambda: self._log(
+                "  Step 3/4: Exporting documents...", Theme.TEXT_MUTED))
+            self.after(0, lambda: self._set_progress_value(n_pages + 1))
+            time.sleep(0.1)  # let UI update
+
+            self.after(0, lambda: self._log(
+                "  Step 4/4: Finalising output files...", Theme.TEXT_MUTED))
+            self.after(0, lambda: self._set_progress_value(n_pages + 2))
 
             self._last_result = result
             self.after(0, lambda: self._on_convert_done(result))
+            self.after(0, self._reset_progress)
 
         except Exception as exc:
             err_msg = str(exc)
             self.after(0, lambda: self._on_convert_error(err_msg))
+            self.after(0, self._reset_progress)
 
     def _on_convert_done(self, result: dict):
         self._set_busy(False)
