@@ -58,7 +58,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # ── Python dependencies ───────────────────────────────────────────────────
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir dill
 
 # ── Pre-download EasyOCR models (Thai + English) ──────────────────────────
 RUN python -c "\
