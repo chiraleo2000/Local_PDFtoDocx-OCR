@@ -1,12 +1,17 @@
 """
 LocalOCR Installer v0.3.0
 =========================
-A proper GUI installer for Windows/Linux/Mac.
+Proper GUI installer: finds real Python, creates venv, installs into venv.
 
-Buttons: Install | Update | Uninstall | Cancel
-Creates desktop shortcut, launcher bat, uninstaller.
-Cancellable at any time — kills running subprocess.
-Does NOT auto-launch or auto-close.
+Flow:
+  1. Find real system Python 3.10+
+  2. Download source (git clone or ZIP)
+  3. Create venv inside install dir
+  4. pip install everything into venv
+  5. Create launcher, desktop shortcut, uninstaller
+  6. Verify packages inside the venv
+
+Buttons: Install | Update | Uninstall | Launch | Cancel | Close
 
 Build:  py -3 build_installer.py
 """
@@ -21,12 +26,15 @@ import threading
 import urllib.request
 import zipfile
 import tempfile
+import re
 
 APP_NAME    = "LocalOCR"
 APP_VERSION = "0.3.0"
 REPO_URL    = "https://github.com/chiraleo2000/Local_PDFtoDocx-OCR/archive/refs/tags/v0.3.0.zip"
 REPO_CLONE  = "https://github.com/chiraleo2000/Local_PDFtoDocx-OCR.git"
 MARKER      = ".installed_ok"
+VENV_DIR    = "venv"                    # relative to install dir
+MIN_PY      = (3, 10)
 
 if os.name == "nt":
     DEFAULT_DIR = os.path.join(os.environ.get("USERPROFILE", "C:\\"), APP_NAME)
@@ -52,14 +60,105 @@ ORANGE    = "#f39c12"
 ORANGE_H  = "#f1c40f"
 
 
-def _python():
-    """Best python executable."""
-    if getattr(sys, "frozen", False):
-        for c in ("python3", "python", "py"):
-            p = shutil.which(c)
-            if p:
-                return p
-    return sys.executable
+# ══════════════════════════════════════════════════════════════════════
+#  FIND REAL PYTHON — the critical fix
+# ══════════════════════════════════════════════════════════════════════
+def _find_system_python():
+    """
+    Find a real Python 3.10+ executable on this system.
+    Returns (path, version_string) or (None, None).
+
+    Strategy on Windows:
+      1. Try 'py -3' (Python Launcher — most reliable on Windows)
+      2. Search common install locations
+      3. Try 'python3', 'python' from PATH (but verify not MS Store alias)
+    """
+    def _check(exe_args):
+        """Run python --version, return (full_path, '3.x.y') or None."""
+        try:
+            r = subprocess.run(
+                exe_args + ["--version"],
+                capture_output=True, text=True, timeout=10,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            if r.returncode != 0:
+                return None
+            m = re.search(r"Python (\d+)\.(\d+)\.(\d+)", r.stdout + r.stderr)
+            if not m:
+                return None
+            major, minor, micro = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if (major, minor) < MIN_PY:
+                return None
+            # Get the actual full path
+            r2 = subprocess.run(
+                exe_args + ["-c", "import sys; print(sys.executable)"],
+                capture_output=True, text=True, timeout=10,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            if r2.returncode == 0 and r2.stdout.strip():
+                full = r2.stdout.strip()
+                # On Windows, reject MS Store WindowsApps stubs
+                if os.name == "nt" and "WindowsApps" in full:
+                    return None
+                return (full, f"{major}.{minor}.{micro}")
+            return None
+        except Exception:
+            return None
+
+    # 1. Python Launcher (Windows)
+    if os.name == "nt":
+        result = _check(["py", "-3"])
+        if result:
+            return result
+
+    # 2. Not frozen? Use our own interpreter
+    if not getattr(sys, "frozen", False):
+        exe = sys.executable
+        if exe and os.path.isfile(exe):
+            result = _check([exe])
+            if result:
+                return result
+
+    # 3. Common Windows install paths
+    if os.name == "nt":
+        for base in [os.environ.get("LOCALAPPDATA", ""),
+                     os.environ.get("APPDATA", ""),
+                     "C:\\Python312", "C:\\Python311", "C:\\Python310",
+                     "B:\\Python312", "B:\\Python311", "B:\\Python310"]:
+            if not base:
+                continue
+            for sub in ["", "Programs\\Python\\Python312",
+                        "Programs\\Python\\Python311",
+                        "Programs\\Python\\Python310"]:
+                d = os.path.join(base, sub) if sub else base
+                exe = os.path.join(d, "python.exe")
+                if os.path.isfile(exe):
+                    result = _check([exe])
+                    if result:
+                        return result
+
+    # 4. PATH search
+    for name in (["python3", "python"] if os.name != "nt"
+                 else ["python3", "python"]):
+        p = shutil.which(name)
+        if p:
+            result = _check([p])
+            if result:
+                return result
+
+    return (None, None)
+
+
+def _venv_python(dest):
+    """Return the python exe inside the venv."""
+    if os.name == "nt":
+        return os.path.join(dest, VENV_DIR, "Scripts", "python.exe")
+    return os.path.join(dest, VENV_DIR, "bin", "python")
+
+
+def _venv_pip(dest):
+    """Return the pip exe inside the venv."""
+    if os.name == "nt":
+        return os.path.join(dest, VENV_DIR, "Scripts", "pip.exe")
+    return os.path.join(dest, VENV_DIR, "bin", "pip")
 
 
 def _installed(path):
@@ -71,15 +170,19 @@ class InstallerApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"{APP_NAME} Installer v{APP_VERSION}")
-        self.geometry("740x660")
-        self.minsize(640, 560)
+        self.geometry("740x680")
+        self.minsize(640, 580)
         self.configure(bg=BG)
-        self._cancelled  = False
-        self._running    = False
-        self._proc       = None          # active subprocess
+        self._cancelled = False
+        self._running   = False
+        self._proc      = None
+        self._sys_py    = None          # system Python path
+        self._sys_pyver = None          # system Python version
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._close)
-        self.after(150, self._refresh_buttons)
+        # Detect Python in background so UI appears instantly
+        self.after(100, self._detect_python)
+        self.after(200, self._refresh_buttons)
 
     # ── build UI ──────────────────────────────────────────────────
     def _build_ui(self):
@@ -119,11 +222,13 @@ class InstallerApp(tk.Tk):
         self._lbl.pack(fill="x", padx=20, pady=(2, 0))
 
         # python info
-        inf = tk.Frame(self, bg=BG_MID, padx=16, pady=4)
-        inf.pack(fill="x", padx=16, pady=2)
-        v = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-        tk.Label(inf, text=f"Python {v}  |  {_python()}",
-                 bg=BG_MID, fg=TXT_DIM, font=("Consolas", 9)).pack(anchor="w")
+        self._py_frame = tk.Frame(self, bg=BG_MID, padx=16, pady=4)
+        self._py_frame.pack(fill="x", padx=16, pady=2)
+        self._py_label = tk.Label(self._py_frame,
+                                  text="Detecting Python...",
+                                  bg=BG_MID, fg=YELLOW,
+                                  font=("Consolas", 9))
+        self._py_label.pack(anchor="w")
 
         # log
         lf = tk.Frame(self, bg=BG); lf.pack(fill="both", expand=True, padx=16, pady=4)
@@ -134,7 +239,8 @@ class InstallerApp(tk.Tk):
             bg=LOG_BG, fg=GREEN, insertbackground=GREEN,
             selectbackground=ACCENT, relief="flat", bd=0)
         self._log_w.pack(fill="both", expand=True)
-        for t, clr in [("info",CYAN),("warn",YELLOW),("err",RED),("dim",TXT_DIM),("ok",GREEN)]:
+        for t, clr in [("info",CYAN),("warn",YELLOW),("err",RED),
+                        ("dim",TXT_DIM),("ok",GREEN)]:
             self._log_w.tag_configure(t, foreground=clr)
 
         # progress
@@ -149,34 +255,44 @@ class InstallerApp(tk.Tk):
         # button bar
         bf = tk.Frame(self, bg=BG, pady=10); bf.pack(fill="x", padx=16)
         self._bf = bf
-
         self._btn_cancel = tk.Button(bf, text="  Cancel  ", command=self._cancel,
             bg=BG_LIGHT, fg=TXT_DIM, activebackground=RED, activeforeground="white",
             font=("Segoe UI", 10), relief="flat", cursor="hand2")
-
         self._btn_close = tk.Button(bf, text="  Close  ", command=self._close,
             bg=BG_LIGHT, fg=TXT_DIM, activebackground=RED, activeforeground="white",
             font=("Segoe UI", 10), relief="flat", cursor="hand2")
-
         self._btn_uninstall = tk.Button(bf, text="  Uninstall  ",
             command=self._do_uninstall_start, bg=DANGER, fg="white",
             activebackground=DANGER_H, activeforeground="white",
             font=("Segoe UI", 10, "bold"), relief="flat", cursor="hand2", padx=10)
-
         self._btn_update = tk.Button(bf, text="  Update  ",
             command=self._do_update_start, bg=ORANGE, fg="white",
             activebackground=ORANGE_H, activeforeground="white",
             font=("Segoe UI", 11, "bold"), relief="flat", cursor="hand2", padx=14)
-
         self._btn_install = tk.Button(bf, text="  Install  ",
             command=self._do_install_start, bg=ACCENT, fg="white",
             activebackground=ACCENT_H, activeforeground="white",
             font=("Segoe UI", 12, "bold"), relief="flat", cursor="hand2", padx=20, pady=3)
-
         self._btn_launch = tk.Button(bf, text="  Launch App  ",
             command=self._launch, bg=GREEN, fg="white",
             activebackground="#00e89d", activeforeground="white",
             font=("Segoe UI", 12, "bold"), relief="flat", cursor="hand2", padx=20, pady=3)
+
+    # ── Python detection ──────────────────────────────────────────
+    def _detect_python(self):
+        def _work():
+            py, ver = _find_system_python()
+            self._sys_py = py
+            self._sys_pyver = ver
+            if py:
+                self.after(0, lambda: self._py_label.configure(
+                    text=f"Python {ver}  |  {py}", fg=GREEN))
+            else:
+                self.after(0, lambda: self._py_label.configure(
+                    text="ERROR: Python 3.10+ not found! Install Python first.",
+                    fg=RED))
+                self.after(0, lambda: self._btn_install.configure(state="disabled"))
+        threading.Thread(target=_work, daemon=True).start()
 
     # ── button layout ─────────────────────────────────────────────
     def _refresh_buttons(self):
@@ -253,7 +369,6 @@ class InstallerApp(tk.Tk):
         self._btn_browse.configure(state="normal")
         self.after(0, self._show_done_buttons)
 
-    # ── cancel / close ────────────────────────────────────────────
     def _cancel(self):
         if self._running:
             self._cancelled = True
@@ -313,6 +428,11 @@ class InstallerApp(tk.Tk):
     #  INSTALL
     # ══════════════════════════════════════════════════════════════
     def _do_install_start(self):
+        if not self._sys_py:
+            messagebox.showerror("Error",
+                "Python 3.10+ not found on this system.\n"
+                "Install Python from python.org first.")
+            return
         self._clear_log()
         self._lock()
         self._set_prog(0)
@@ -323,95 +443,123 @@ class InstallerApp(tk.Tk):
         if not dest:
             self._log("ERROR: Choose a path first.", "err")
             self.after(0, self._unlock); return
-        py = _python()
+        sys_py = self._sys_py
+        venv_py = _venv_python(dest)
+        venv_pip = _venv_pip(dest)
+
         try:
-            # 1 ─ directory
-            self._log("[1/8] Creating install directory...", "info")
-            self._set_prog(5)
+            # ── 1. Create directory ───────────────────────────────
+            self._log(f"[1/9] Creating install directory...", "info")
+            self._set_prog(3)
             os.makedirs(dest, exist_ok=True)
             self._log(f"  {dest}", "dim")
             if self._cancelled: return
 
-            # 2 ─ source
-            self._log("[2/8] Downloading source...", "info")
-            self._set_prog(8)
+            # ── 2. Download source ────────────────────────────────
+            self._log("[2/9] Downloading source...", "info")
+            self._set_prog(5)
             if not self._download(dest):
                 if not self._cancelled:
                     self._log("ERROR: Could not download source.", "err")
                 self.after(0, self._unlock); return
-            self._set_prog(25)
+            self._set_prog(20)
             if self._cancelled: return
 
-            # 3 ─ pip
-            self._log("[3/8] Upgrading pip...", "info")
-            self._run([py, "-m", "pip", "install", "--upgrade", "pip", "--quiet"])
-            self._set_prog(30)
+            # ── 3. Create venv ────────────────────────────────────
+            self._log("[3/9] Creating virtual environment...", "info")
+            self._set_prog(22)
+            venv_path = os.path.join(dest, VENV_DIR)
+            if os.path.isfile(venv_py):
+                self._log(f"  venv already exists at {venv_path}", "dim")
+            else:
+                self._log(f"  {sys_py} -m venv {venv_path}", "dim")
+                ok = self._run([sys_py, "-m", "venv", venv_path])
+                if not ok or not os.path.isfile(venv_py):
+                    self._log("ERROR: Failed to create venv!", "err")
+                    self._log(f"  Expected: {venv_py}", "err")
+                    self.after(0, self._unlock); return
+                self._log("  [OK] venv created", "ok")
+            self._set_prog(28)
             if self._cancelled: return
 
-            # 4 ─ pytorch
-            self._log("[4/8] PyTorch...", "info")
-            try:
-                __import__("torch")
-                self._log("  Already installed", "dim")
-            except ImportError:
-                self._log("  Installing PyTorch (~400 MB)...", "info")
-                self._run([py, "-m", "pip", "install",
+            # ── 4. Upgrade pip in venv ────────────────────────────
+            self._log("[4/9] Upgrading pip in venv...", "info")
+            self._run([venv_py, "-m", "pip", "install", "--upgrade", "pip", "--quiet"])
+            self._set_prog(32)
+            if self._cancelled: return
+
+            # ── 5. Install PyTorch in venv ────────────────────────
+            self._log("[5/9] Installing PyTorch...", "info")
+            # Check if already in venv
+            r = subprocess.run(
+                [venv_py, "-c", "import torch; print(torch.__version__)"],
+                capture_output=True, text=True, timeout=30,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            if r.returncode == 0:
+                self._log(f"  Already installed: torch {r.stdout.strip()}", "dim")
+            else:
+                self._log("  Installing PyTorch CPU (~400 MB)...", "info")
+                self._run([venv_pip, "install",
                            "torch", "torchvision",
                            "--index-url", "https://download.pytorch.org/whl/cpu"])
             self._set_prog(50)
             if self._cancelled: return
 
-            # 5 ─ core
-            self._log("[5/8] Core packages...", "info")
-            self._run([py, "-m", "pip", "install", "--quiet",
+            # ── 6. Core packages ──────────────────────────────────
+            self._log("[6/9] Installing core packages...", "info")
+            self._run([venv_pip, "install", "--quiet",
                        "PyMuPDF", "opencv-python-headless", "Pillow",
                        "numpy", "python-dotenv", "python-docx",
                        "beautifulsoup4", "lxml", "htmldocx", "requests"])
             self._set_prog(60)
             if self._cancelled: return
 
-            # 6 ─ OCR
-            self._log("[6/8] OCR engines...", "info")
-            self._run([py, "-m", "pip", "install", "--quiet",
-                       "easyocr", "paddleocr"])
+            # ── 7. OCR engines ────────────────────────────────────
+            self._log("[7/9] Installing OCR engines...", "info")
+            self._run([venv_pip, "install", "--quiet",
+                       "easyocr", "paddleocr", "paddlepaddle"])
             self._set_prog(75)
             if self._cancelled: return
 
-            # 7 ─ AI / requirements
-            self._log("[7/8] AI/ML packages...", "info")
+            # ── 8. AI/ML + requirements.txt ───────────────────────
+            self._log("[8/9] Installing AI/ML packages...", "info")
             req = os.path.join(dest, "requirements.txt")
             if os.path.isfile(req):
-                self._run([py, "-m", "pip", "install", "--quiet", "-r", req])
+                self._run([venv_pip, "install", "--quiet", "-r", req])
             else:
-                self._run([py, "-m", "pip", "install", "--quiet",
+                self._run([venv_pip, "install", "--quiet",
                            "transformers", "onnxruntime",
                            "doclayout-yolo", "huggingface_hub"])
             self._set_prog(85)
             if self._cancelled: return
 
-            # 8 ─ shortcuts
-            self._log("[8/8] Creating shortcuts...", "info")
-            self._write_marker(dest, py)
-            self._write_launcher(dest, py)
-            self._write_desktop_shortcut(dest, py)
+            # ── 9. Shortcuts & launchers ──────────────────────────
+            self._log("[9/9] Creating shortcuts & launchers...", "info")
+            self._write_marker(dest, venv_py)
+            self._write_launcher(dest, venv_py)
+            self._write_desktop_shortcut(dest, venv_py)
             self._write_uninstaller(dest)
             self._set_prog(95)
             if self._cancelled: return
 
-            # verify
+            # ── Verify inside venv ────────────────────────────────
             self._log("", "dim")
-            self._log("Verifying...", "info")
-            for m in ["fitz", "cv2", "PIL", "torch", "easyocr"]:
-                try:
-                    __import__(m)
-                    self._log(f"  [OK] {m}", "ok")
-                except Exception:
-                    self._log(f"  [WARN] {m} missing", "warn")
+            self._log("Verifying packages in venv...", "info")
+            for mod in ["fitz", "cv2", "PIL", "torch", "easyocr", "docx"]:
+                r = subprocess.run(
+                    [venv_py, "-c", f"import {mod}; print('{mod} OK')"],
+                    capture_output=True, text=True, timeout=30,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+                if r.returncode == 0:
+                    self._log(f"  [OK] {mod}", "ok")
+                else:
+                    self._log(f"  [WARN] {mod} not found in venv", "warn")
 
             self._set_prog(100)
             self._log("", "dim")
             self._log("=== Installation complete! ===", "ok")
             self._log(f"Installed to: {dest}", "ok")
+            self._log(f"Venv Python: {venv_py}", "ok")
             self._log("Click 'Launch App' to start, or 'Close' to exit.", "info")
 
         except Exception as exc:
@@ -433,7 +581,11 @@ class InstallerApp(tk.Tk):
 
     def _do_update(self):
         dest = self._var_path.get().strip()
-        py = _python()
+        venv_py = _venv_python(dest)
+        venv_pip = _venv_pip(dest)
+        # Fall back to system py if no venv
+        if not os.path.isfile(venv_pip):
+            venv_pip = None
         try:
             self._log("[1/3] Updating source...", "info")
             self._set_prog(10)
@@ -448,14 +600,18 @@ class InstallerApp(tk.Tk):
             if self._cancelled: return
 
             self._log("[2/3] Updating packages...", "info")
-            req = os.path.join(dest, "requirements.txt")
-            if os.path.isfile(req):
-                self._run([py, "-m", "pip", "install", "--upgrade", "--quiet", "-r", req])
+            if venv_pip:
+                req = os.path.join(dest, "requirements.txt")
+                if os.path.isfile(req):
+                    self._run([venv_pip, "install", "--upgrade", "--quiet", "-r", req])
+                self._log("  Packages updated in venv", "ok")
+            else:
+                self._log("  No venv found — skipping package update", "warn")
             self._set_prog(80)
             if self._cancelled: return
 
-            self._log("[3/3] Done.", "info")
-            self._write_marker(dest, py)
+            self._log("[3/3] Finalizing...", "info")
+            self._write_marker(dest, venv_py if os.path.isfile(venv_py) else self._sys_py or "python")
             self._set_prog(100)
             self._log("", "dim")
             self._log("=== Update complete! ===", "ok")
@@ -474,7 +630,7 @@ class InstallerApp(tk.Tk):
     def _do_uninstall_start(self):
         dest = self._var_path.get().strip()
         if not messagebox.askyesno("Confirm",
-                f"Remove LocalOCR from:\n{dest}\n\nDelete ALL files?",
+                f"Remove LocalOCR from:\n{dest}\n\nThis deletes ALL files including the venv.",
                 icon="warning"):
             return
         self._clear_log()
@@ -489,7 +645,7 @@ class InstallerApp(tk.Tk):
             self._set_prog(20)
             self._remove_shortcut()
 
-            self._log("[2/3] Removing files...", "info")
+            self._log("[2/3] Removing install directory...", "info")
             self._set_prog(50)
             if os.path.isdir(dest):
                 shutil.rmtree(dest, ignore_errors=True)
@@ -502,7 +658,7 @@ class InstallerApp(tk.Tk):
             if not os.path.exists(dest):
                 self._log("  Fully removed", "ok")
             else:
-                self._log("  Some files may remain", "warn")
+                self._log("  Some files may remain (in use?)", "warn")
 
             self._set_prog(100)
             self._log("", "dim")
@@ -513,16 +669,23 @@ class InstallerApp(tk.Tk):
             self.after(0, self._unlock)
 
     # ══════════════════════════════════════════════════════════════
-    #  LAUNCH
+    #  LAUNCH — uses venv Python
     # ══════════════════════════════════════════════════════════════
     def _launch(self):
         dest = self._var_path.get().strip()
-        gui = os.path.join(dest, "gui_app.py")
-        py  = _python()
+        gui  = os.path.join(dest, "gui_app.py")
+        # Prefer venv pythonw, then venv python, then system
+        vpy = _venv_python(dest)
+        if os.name == "nt":
+            vpyw = vpy.replace("python.exe", "pythonw.exe")
+            if os.path.isfile(vpyw):
+                vpy = vpyw
+        if not os.path.isfile(vpy):
+            vpy = self._sys_py or "python"
         if not os.path.isfile(gui):
             self._log(f"gui_app.py not found in {dest}", "err")
             return
-        self._log("Launching LocalOCR...", "ok")
+        self._log(f"Launching with: {vpy}", "ok")
         try:
             kw = {}
             if os.name == "nt":
@@ -530,7 +693,8 @@ class InstallerApp(tk.Tk):
                                        | subprocess.DETACHED_PROCESS)
             else:
                 kw["start_new_session"] = True
-            subprocess.Popen([py, gui], cwd=dest, **kw)
+            subprocess.Popen([vpy, gui], cwd=dest, **kw)
+            self._log("App launched!", "ok")
         except Exception as exc:
             self._log(f"Launch error: {exc}", "err")
 
@@ -590,31 +754,36 @@ class InstallerApp(tk.Tk):
                 shutil.copy2(s, d)
 
     # ══════════════════════════════════════════════════════════════
-    #  FILE HELPERS
+    #  FILE HELPERS — all use venv Python path
     # ══════════════════════════════════════════════════════════════
     def _write_marker(self, dest, py):
         with open(os.path.join(dest, MARKER), "w", encoding="utf-8") as f:
             f.write(f"version={APP_VERSION}\n")
             f.write(f"installed={time.strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write(f"python={py}\n")
+            f.write(f"venv={os.path.join(dest, VENV_DIR)}\n")
         self._log("  .installed_ok written", "dim")
 
-    def _write_launcher(self, dest, py):
+    def _write_launcher(self, dest, venv_py):
         if os.name == "nt":
             bat = os.path.join(dest, f"{APP_NAME}.bat")
             with open(bat, "w", encoding="utf-8") as f:
-                f.write(f'@echo off\ntitle {APP_NAME}\ncd /d "{dest}"\n"{py}" gui_app.py\n')
+                f.write('@echo off\n')
+                f.write(f'title {APP_NAME}\n')
+                f.write(f'cd /d "{dest}"\n')
+                f.write(f'"{venv_py}" gui_app.py\n')
             self._log("  LocalOCR.bat created", "dim")
         else:
             sh = os.path.join(dest, "localocr.sh")
             with open(sh, "w", encoding="utf-8") as f:
-                f.write(f'#!/usr/bin/env bash\ncd "{dest}"\n"{py}" gui_app.py\n')
+                f.write('#!/usr/bin/env bash\n')
+                f.write(f'cd "{dest}"\n')
+                f.write(f'"{venv_py}" gui_app.py\n')
             os.chmod(sh, 0o755)
             self._log("  localocr.sh created", "dim")
 
-    def _write_desktop_shortcut(self, dest, py):
+    def _write_desktop_shortcut(self, dest, venv_py):
         if os.name != "nt":
-            # Linux .desktop
             try:
                 desk = os.path.join(os.path.expanduser("~"), "Desktop")
                 if os.path.isdir(desk):
@@ -622,7 +791,7 @@ class InstallerApp(tk.Tk):
                     with open(df, "w") as f:
                         f.write("[Desktop Entry]\nType=Application\n")
                         f.write(f"Name={APP_NAME}\n")
-                        f.write(f'Exec="{py}" "{dest}/gui_app.py"\n')
+                        f.write(f'Exec="{venv_py}" "{dest}/gui_app.py"\n')
                         f.write(f"Path={dest}\nTerminal=false\n")
                     os.chmod(df, 0o755)
                     self._log(f"  Desktop shortcut: {df}", "ok")
@@ -630,7 +799,7 @@ class InstallerApp(tk.Tk):
                 self._log(f"  Desktop shortcut failed: {exc}", "warn")
             return
 
-        # Windows — use VBScript (reliable)
+        # Windows — VBScript for shortcut creation
         try:
             desktop = os.path.join(os.environ.get("USERPROFILE", ""), "Desktop")
             if not os.path.isdir(desktop):
@@ -638,9 +807,10 @@ class InstallerApp(tk.Tk):
                 return
             lnk = os.path.join(desktop, f"{APP_NAME}.lnk")
             gui = os.path.join(dest, "gui_app.py")
-            pyw = os.path.join(os.path.dirname(py), "pythonw.exe")
+            # Use pythonw from venv for windowless launch
+            pyw = venv_py.replace("python.exe", "pythonw.exe")
             if not os.path.isfile(pyw):
-                pyw = py
+                pyw = venv_py
             vbs = (
                 'Set ws = CreateObject("WScript.Shell")\n'
                 f'Set sc = ws.CreateShortcut("{lnk}")\n'
