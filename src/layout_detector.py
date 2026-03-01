@@ -34,13 +34,33 @@ _EMPTY_DETECTIONS = {
 # ── Optional heavy imports ────────────────────────────────────────────────────
 YOLO_AVAILABLE = False
 try:
+    import sys
+    import subprocess
     import torch
+
+    # ── Ensure dill is installed (required by the YOLO .pt checkpoint) ────────
+    try:
+        import dill  # noqa: F401
+    except ImportError:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "--quiet", "dill"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        import dill  # noqa: F401
+
+    # ── PyTorch ≥2.6 changed weights_only default to True — override it ───────
     _original_torch_load = torch.load
 
     def _safe_torch_load(*args, **kwargs):
         kwargs.setdefault("weights_only", False)
         return _original_torch_load(*args, **kwargs)
     torch.load = _safe_torch_load
+
+    # ── Also register safe globals for PyTorch 2.6+ serialization check ──────
+    try:
+        from doclayout_yolo.nn.tasks import YOLOv10DetectionModel
+        torch.serialization.add_safe_globals([YOLOv10DetectionModel])
+    except Exception:
+        pass
 
     from doclayout_yolo import YOLOv10
     YOLO_AVAILABLE = True

@@ -569,7 +569,9 @@ class InstallerApp(tk.Tk):
             else:
                 self._run([vpip, "install", "--quiet",
                            "transformers", "onnxruntime",
-                           "doclayout-yolo", "huggingface_hub"])
+                           "doclayout-yolo", "huggingface_hub", "dill"])
+            # ensure dill is always present (needed by YOLO .pt checkpoint)
+            self._run([vpip, "install", "--quiet", "dill"])
             self._set_prog(82)
             if self._cancelled: return
 

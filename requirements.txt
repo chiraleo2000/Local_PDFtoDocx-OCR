@@ -25,6 +25,7 @@ htmldocx>=0.0.6
 
 # Layout Detection (YOLO)
 doclayout-yolo>=0.0.2
+dill>=0.3.8
 
 # Network
 requests>=2.31.0

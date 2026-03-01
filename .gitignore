@@ -19,13 +19,6 @@ env/
 # Environment
 .env
 
-# Models cache
-models/
-*.pt
-*.pth
-*.onnx
-*.bin
-
 # Temp files
 *.tmp
 *.bak

@@ -158,8 +158,8 @@ echo   [OK] OCR engines done
 
 REM 6e: AI / ML packages
 echo.
-echo   [6e] Installing AI/ML packages (transformers, onnxruntime, YOLO)...
-py -3 -m pip install --quiet transformers onnxruntime doclayout-yolo huggingface_hub
+echo   [6e] Installing AI/ML packages (transformers, onnxruntime, YOLO, dill)...
+py -3 -m pip install --quiet transformers onnxruntime doclayout-yolo huggingface_hub dill
 echo   [OK] AI/ML packages done
 
 REM 6f: Remaining from requirements.txt
