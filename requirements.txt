@@ -1,0 +1,48 @@
+# ============================================
+# PDF-to-DOCX OCR Pipeline — Dependencies
+# v0.2.3  |  Thai-optimised, EasyOCR primary + Tesseract fallback
+# ============================================
+
+# Core
+gradio>=4.0.0
+huggingface_hub
+python-dotenv>=1.0.0
+easyocr>=1.7.0
+paddlepaddle>=2.6.0
+# Image Processing
+Pillow>=10.0.0
+numpy>=1.24.0
+opencv-python-headless>=4.8.0
+
+# PDF Rendering
+PyMuPDF>=1.23.0
+
+# Document Export
+python-docx>=0.8.11
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+htmldocx>=0.0.6
+
+# Layout Detection (YOLO)
+doclayout-yolo>=0.0.2
+
+# Network
+requests>=2.31.0
+
+# OCR Engines (v2.3 — EasyOCR primary, Tesseract fallback)
+easyocr>=1.7.0                  # Thai + multilingual OCR (primary for Thai)
+paddlepaddle>=2.6.0             # PaddlePaddle framework (required by paddleocr)
+paddleocr>=2.7.0,<3.0.0
+onnxruntime>=1.17.0
+transformers>=4.37.0
+pytesseract>=0.3.10             # Tesseract OCR fallback (requires tesseract-ocr system package)
+
+# Testing
+selenium>=4.15.0
+
+# ============================================
+# OPTIONAL — GPU acceleration
+# ============================================
+# onnxruntime-gpu>=1.17.0 # Thai-TrOCR ONNX GPU inference (replaces onnxruntime)
+# accelerate>=0.25.0      # Typhoon OCR GPU acceleration
+# torch>=2.0.0            # Auto-installed by doclayout-yolo

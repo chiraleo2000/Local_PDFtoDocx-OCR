@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env
+
+# Models cache
+models/
+*.pt
+*.pth
+*.onnx
+*.bin
+
+# Temp files
+*.tmp
+*.bak
+temp/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test outputs
+*.docx
+*.html
+test_output.txt
+test_results_full.txt
+test_*_results.txt
+results_*.txt
+*_results.txt
+*_stderr.txt
+conversion_test_result.txt
+
+# Correction / training data (user-generated)
+correction_data/
+
+# Build artifacts
+dist/
+build/
+*.spec
+
+# Installer outputs
+installer/output/
+
+!README.md
+!assets/
+!assets/**.installed_ok
