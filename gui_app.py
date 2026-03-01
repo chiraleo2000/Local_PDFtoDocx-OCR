@@ -50,42 +50,113 @@ _INSTALLED_MARKER = os.path.join(_PROJECT_ROOT, ".installed_ok")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Color palette — Dark theme with vibrant accents
+# Color palette — supports dark and light modes
 # ══════════════════════════════════════════════════════════════════════════════
 class Theme:
-    """Centralized colour constants for the entire UI."""
-    # Base surfaces
-    BG_DARK       = "#1a1b2e"    # deep navy
-    BG_MID        = "#232440"    # card / panel
-    BG_LIGHT      = "#2d2f52"    # inputs / hover
-    BG_SURFACE    = "#353764"    # elevated card
+    """Dynamic colour constants — call Theme.load('dark'|'light') to switch."""
 
-    # Accent colours
-    ACCENT        = "#6c63ff"    # primary purple
-    ACCENT_HOVER  = "#857dff"
-    ACCENT_GLOW   = "#7b73ff"
-    SUCCESS       = "#00d68f"    # green
-    WARNING       = "#ffaa00"    # amber
-    ERROR         = "#ff3d71"    # red/pink
-    INFO          = "#00b4d8"    # cyan
+    _DARK = {
+        "BG_DARK": "#1a1b2e", "BG_MID": "#232440", "BG_LIGHT": "#2d2f52",
+        "BG_SURFACE": "#353764", "ACCENT": "#6c63ff", "ACCENT_HOVER": "#857dff",
+        "ACCENT_GLOW": "#7b73ff", "SUCCESS": "#00d68f", "WARNING": "#ffaa00",
+        "ERROR": "#ff3d71", "INFO": "#00b4d8", "TEXT": "#eaeaff",
+        "TEXT_DIM": "#9899c2", "TEXT_MUTED": "#6b6d99", "BORDER": "#3d3f6e",
+        "BORDER_FOCUS": "#6c63ff", "CANVAS_BG": "#111225", "LOG_BG": "#12132a",
+        "SCROLLBAR": "#444677", "HEADER_LEFT": "#6c63ff", "HEADER_RIGHT": "#00b4d8",
+    }
+    _LIGHT = {
+        "BG_DARK": "#f0f0f7", "BG_MID": "#e2e2ef", "BG_LIGHT": "#d4d4e6",
+        "BG_SURFACE": "#c8c8dd", "ACCENT": "#6c63ff", "ACCENT_HOVER": "#857dff",
+        "ACCENT_GLOW": "#4a45c0", "SUCCESS": "#007a4e", "WARNING": "#b37700",
+        "ERROR": "#cc1144", "INFO": "#005f80", "TEXT": "#1a1b2e",
+        "TEXT_DIM": "#4a4b70", "TEXT_MUTED": "#7a7b9a", "BORDER": "#c0c0da",
+        "BORDER_FOCUS": "#6c63ff", "CANVAS_BG": "#ffffff", "LOG_BG": "#f8f8ff",
+        "SCROLLBAR": "#aaaacc", "HEADER_LEFT": "#6c63ff", "HEADER_RIGHT": "#00b4d8",
+    }
 
-    # Text
-    TEXT          = "#eaeaff"    # primary text
-    TEXT_DIM      = "#9899c2"    # secondary
-    TEXT_MUTED    = "#6b6d99"    # placeholders
+    name: str = "dark"
 
-    # Borders
-    BORDER        = "#3d3f6e"
-    BORDER_FOCUS  = "#6c63ff"
+    # Current active palette (dark defaults kept for import-time safety)
+    BG_DARK      = "#1a1b2e"
+    BG_MID       = "#232440"
+    BG_LIGHT     = "#2d2f52"
+    BG_SURFACE   = "#353764"
+    ACCENT       = "#6c63ff"
+    ACCENT_HOVER = "#857dff"
+    ACCENT_GLOW  = "#7b73ff"
+    SUCCESS      = "#00d68f"
+    WARNING      = "#ffaa00"
+    ERROR        = "#ff3d71"
+    INFO         = "#00b4d8"
+    TEXT         = "#eaeaff"
+    TEXT_DIM     = "#9899c2"
+    TEXT_MUTED   = "#6b6d99"
+    BORDER       = "#3d3f6e"
+    BORDER_FOCUS = "#6c63ff"
+    CANVAS_BG    = "#111225"
+    LOG_BG       = "#12132a"
+    SCROLLBAR    = "#444677"
+    HEADER_LEFT  = "#6c63ff"
+    HEADER_RIGHT = "#00b4d8"
 
-    # Special
-    CANVAS_BG     = "#111225"
-    LOG_BG        = "#12132a"
-    SCROLLBAR     = "#444677"
+    @classmethod
+    def load(cls, name: str) -> None:
+        """Switch active palette to 'dark' or 'light'."""
+        palette = cls._LIGHT if name == "light" else cls._DARK
+        cls.name = "light" if name == "light" else "dark"
+        for k, v in palette.items():
+            setattr(cls, k, v)
 
-    # Gradient simulation
-    HEADER_LEFT   = "#6c63ff"
-    HEADER_RIGHT  = "#00b4d8"
+    @classmethod
+    def palette(cls) -> dict:
+        """Return current palette as a dict."""
+        return (cls._LIGHT if cls.name == "light" else cls._DARK).copy()
+
+
+def _detect_system_theme() -> str:
+    """Return 'light' or 'dark' based on OS preference."""
+    try:
+        if os.name == "nt":
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+            val, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+            winreg.CloseKey(key)
+            return "light" if val == 1 else "dark"
+    except Exception:
+        pass
+    try:
+        # macOS
+        r = subprocess.run(
+            ["defaults", "read", "-g", "AppleInterfaceStyle"],
+            capture_output=True, text=True, timeout=3)
+        return "dark" if r.stdout.strip().lower() == "dark" else "light"
+    except Exception:
+        pass
+    return "dark"
+
+
+_THEME_PREF_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), ".theme_pref")
+
+
+def _load_theme_pref() -> str:
+    """Load saved theme preference; returns 'dark' or 'light'."""
+    try:
+        with open(_THEME_PREF_FILE, encoding="utf-8") as f:
+            v = f.read().strip()
+            return v if v in ("dark", "light") else None
+    except OSError:
+        return None
+
+
+def _save_theme_pref(name: str) -> None:
+    try:
+        with open(_THEME_PREF_FILE, "w", encoding="utf-8") as f:
+            f.write(name)
+    except OSError:
+        pass
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -506,6 +577,10 @@ class OCRApp(tk.Tk):
         self.title(self.APP_TITLE)
         self.geometry(self.WINDOW_SIZE)
         self.minsize(1000, 720)
+
+        # Load theme: saved pref → system default
+        _theme = _load_theme_pref() or _detect_system_theme()
+        Theme.load(_theme)
         self.configure(bg=Theme.BG_DARK)
 
         self._configure_styles()
@@ -717,6 +792,7 @@ class OCRApp(tk.Tk):
         hdr = tk.Canvas(self, height=64, bg=Theme.BG_DARK,
                         highlightthickness=0)
         hdr.pack(fill="x")
+        self._header_canvas = hdr  # keep ref for theme redraw
         # Gradient bar
         for i in range(64):
             frac = i / 64
@@ -747,6 +823,16 @@ class OCRApp(tk.Tk):
                                   bg=Theme.BG_MID, fg=Theme.TEXT_DIM,
                                   font=("Consolas", 10), anchor="w")
         self._lbl_file.pack(side="left", fill="x", expand=True, padx=4)
+
+        # Theme toggle button (far right of toolbar)
+        _icon = "☀  Light" if Theme.name == "dark" else "🌙  Dark"
+        self._btn_theme = tk.Button(
+            toolbar, text=_icon, command=self._toggle_theme,
+            bg=Theme.BG_SURFACE, fg=Theme.TEXT_DIM,
+            activebackground=Theme.ACCENT, activeforeground="white",
+            relief="flat", font=("Segoe UI", 10), cursor="hand2",
+            padx=10, pady=2)
+        self._btn_theme.pack(side="right", padx=(4, 6))
 
         # Main paned area
         paned = ttk.PanedWindow(self, orient="horizontal")
@@ -942,6 +1028,92 @@ class OCRApp(tk.Tk):
         self._txt_log.tag_configure("warning", foreground=Theme.WARNING)
         self._txt_log.tag_configure("error", foreground=Theme.ERROR)
         self._txt_log.tag_configure("dim", foreground=Theme.TEXT_MUTED)
+
+    # ── Theme switching ───────────────────────────────────────────────────
+    def _toggle_theme(self):
+        new_name = "light" if Theme.name == "dark" else "dark"
+        self._apply_theme(new_name)
+
+    def _apply_theme(self, name: str):
+        """Switch the UI between 'dark' and 'light' themes."""
+        old_palette = Theme.palette()  # snapshot BEFORE loading new theme
+        Theme.load(name)
+        _save_theme_pref(name)
+
+        # Build color remap: old hex → new hex
+        new_palette = Theme.palette()
+        remap = {}
+        for k in old_palette:
+            ov = old_palette[k].lower()
+            nv = new_palette[k].lower()
+            if ov != nv:
+                remap[ov] = nv
+
+        # Root window
+        self.configure(bg=Theme.BG_DARK)
+
+        # Re-apply ttk styles
+        self._configure_styles()
+
+        # Walk all tk widgets and remap colors
+        self._walk_update_colors(self, remap)
+
+        # Update combobox listbox option colors
+        self.option_add("*TCombobox*Listbox.background", Theme.BG_LIGHT)
+        self.option_add("*TCombobox*Listbox.foreground", Theme.TEXT)
+        self.option_add("*TCombobox*Listbox.selectBackground", Theme.ACCENT)
+        self.option_add("*TCombobox*Listbox.selectForeground", "white")
+
+        # Update log text tags
+        for w in (self._txt_log, self._txt_output):
+            try:
+                w.configure(bg=Theme.LOG_BG, fg=Theme.TEXT_DIM,
+                            insertbackground=Theme.TEXT,
+                            selectbackground=Theme.ACCENT)
+            except Exception:
+                pass
+        try:
+            self._txt_log.tag_configure("info",    foreground=Theme.INFO)
+            self._txt_log.tag_configure("success", foreground=Theme.SUCCESS)
+            self._txt_log.tag_configure("warning", foreground=Theme.WARNING)
+            self._txt_log.tag_configure("error",   foreground=Theme.ERROR)
+            self._txt_log.tag_configure("dim",     foreground=Theme.TEXT_MUTED)
+        except Exception:
+            pass
+
+        # Rebuild menu (quickest way to recolor it)
+        self._build_menu()
+
+        # Update theme toggle button label
+        try:
+            self._btn_theme.configure(
+                text="☀  Light" if name == "dark" else "🌙  Dark",
+                bg=Theme.BG_SURFACE, fg=Theme.TEXT_DIM)
+        except Exception:
+            pass
+
+    def _walk_update_colors(self, widget, remap: dict):
+        """Recursively remap background/foreground colors on tk widgets."""
+        # Attributes to try updating
+        attrs = [
+            ("background",),
+            ("foreground",),
+            ("insertbackground",),
+            ("selectbackground",),
+            ("activebackground",),
+            ("activeforeground",),
+            ("highlightbackground",),
+            ("troughcolor",),
+        ]
+        for (attr,) in attrs:
+            try:
+                current = str(widget.cget(attr)).lower()
+                if current in remap:
+                    widget.configure(**{attr: remap[current]})
+            except Exception:
+                pass
+        for child in widget.winfo_children():
+            self._walk_update_colors(child, remap)
 
     # ── Status Bar ────────────────────────────────────────────────────────
     def _build_status_bar(self):
@@ -1186,7 +1358,7 @@ class OCRApp(tk.Tk):
 
             # Hook into pipeline's logger to capture per-page progress
             import logging as _logging
-            _pipe_logger = _logging.getLogger("Pipeline")
+            _pipe_logger = _logging.getLogger("src.pipeline")
             _orig_level = _pipe_logger.level
 
             class _PageHandler(_logging.Handler):
@@ -1202,6 +1374,9 @@ class OCRApp(tk.Tk):
                         self.app.after(0, lambda m=msg: self.app._log(
                             f"  📄 {m}", Theme.TEXT_MUTED))
                         self.app.after(0, lambda v=pc: self.app._set_progress_value(v + 1))
+                    elif "Detected:" in msg or "YOLO" in msg or "Table" in msg or "Figure" in msg:
+                        self.app.after(0, lambda m=msg: self.app._log(
+                            f"  🔍 {m}", Theme.TEXT_MUTED))
 
             _handler = _PageHandler(self)
             _pipe_logger.addHandler(_handler)
