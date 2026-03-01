@@ -82,37 +82,52 @@ class LayoutDetector:
         if YOLO_AVAILABLE:
             self._try_load_model(model_path)
 
+    # ── Model path (also used by installer to verify model location) ──────────
+    @staticmethod
+    def default_model_path() -> str:
+        """Return the expected local model .pt path (may not exist yet)."""
+        return os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "models", "DocLayout-YOLO-DocStructBench",
+            "doclayout_yolo_docstructbench_imgsz1280_2501.pt",
+        )
+
     def _try_load_model(self, model_path: Optional[str] = None) -> None:
-        """Attempt to load the YOLO model from disk or HuggingFace."""
+        """Attempt to load the YOLO model from disk. Raises on failure."""
+        chosen = model_path if (model_path and os.path.exists(model_path)) \
+            else self.default_model_path()
+        if not os.path.exists(chosen):
+            logger.error(
+                "DocLayout-YOLO model NOT FOUND at %s — "
+                "run the installer to download it.", chosen)
+            return
         try:
-            if model_path and os.path.exists(model_path):
-                self.model = YOLOv10(model_path)
-            else:
-                local_pt = os.path.join(
-                    os.path.dirname(os.path.dirname(__file__)),
-                    "models", "DocLayout-YOLO-DocStructBench",
-                    "doclayout_yolo_docstructbench_imgsz1280_2501.pt",
-                )
-                if os.path.exists(local_pt):
-                    self.model = YOLOv10(local_pt)
-                else:
-                    self.model = YOLOv10.from_pretrained(
-                        "juliozhao/DocLayout-YOLO-DocStructBench-imgsz1280-2501"
-                    )
+            self.model = YOLOv10(chosen)
             self.model_loaded = True
-            logger.info("DocLayout-YOLO model loaded")
+            logger.info("DocLayout-YOLO model loaded from %s", chosen)
         except Exception as exc:
-            logger.warning("Failed to load YOLO (%s: %s) \u2014 using OpenCV fallback",
-                           type(exc).__name__, exc)
+            logger.error(
+                "DocLayout-YOLO model load FAILED (%s: %s) — "
+                "reinstall or re-download the model.",
+                type(exc).__name__, exc)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def detect_layout(self, image: np.ndarray, page_number: int = 0,
                       confidence: Optional[float] = None) -> Dict[str, Any]:
-        """Detect layout elements in a page image."""
-        if self.model_loaded:
-            return self._detect_yolo(image, page_number, confidence)
-        return self._detect_opencv_fallback(image, page_number)
+        """Detect layout elements in a page image using DocLayout-YOLO.
+
+        Raises RuntimeError if the YOLO model is not loaded — install the
+        model via the installer or install.sh before launching the app.
+        """
+        if not self.model_loaded:
+            model_path = self.default_model_path()
+            raise RuntimeError(
+                f"DocLayout-YOLO model is required but not loaded.\n"
+                f"Expected model at: {model_path}\n"
+                f"Run the LocalOCR installer or install.sh to download it."
+            )
+        return self._detect_yolo(image, page_number, confidence)
 
     # ── YOLO detection ────────────────────────────────────────────────────────
 
@@ -168,7 +183,9 @@ class LayoutDetector:
             }
         except Exception as exc:
             logger.error("YOLO detection failed: %s — %s", type(exc).__name__, exc)
-            return self._detect_opencv_fallback(image, page_number)
+            raise RuntimeError(
+                f"DocLayout-YOLO inference failed: {type(exc).__name__}: {exc}"
+            ) from exc
 
     def _reclassify_figures_as_tables(self, image: np.ndarray,
                                       detections: Dict[str, List]) -> None:

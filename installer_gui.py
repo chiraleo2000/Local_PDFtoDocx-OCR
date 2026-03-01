@@ -27,9 +27,15 @@ import re
 import glob
 
 APP_NAME    = "LocalOCR"
-APP_VERSION = "0.3.0"
-REPO_URL    = "https://github.com/chiraleo2000/Local_PDFtoDocx-OCR/archive/refs/tags/v0.3.0.zip"
+APP_VERSION = "0.3.2"
+REPO_URL    = "https://github.com/chiraleo2000/Local_PDFtoDocx-OCR/archive/refs/tags/v0.3.2.zip"
 REPO_CLONE  = "https://github.com/chiraleo2000/Local_PDFtoDocx-OCR.git"
+YOLO_MODEL_REPO   = "juliozhao/DocLayout-YOLO-DocStructBench-imgsz1280-2501"
+YOLO_MODEL_FILE   = "doclayout_yolo_docstructbench_imgsz1280_2501.pt"
+YOLO_MODEL_DIRECT = (
+    "https://huggingface.co/juliozhao/DocLayout-YOLO-DocStructBench-imgsz1280-2501"
+    "/resolve/main/doclayout_yolo_docstructbench_imgsz1280_2501.pt"
+)
 MARKER      = ".installed_ok"
 VENV_DIR    = "venv"
 MIN_PY      = (3, 10)
@@ -556,7 +562,7 @@ class InstallerApp(tk.Tk):
             if self._cancelled: return
 
             # 8 — requirements.txt
-            self._log("[8/9] Remaining packages...", "info")
+            self._log("[8/10] Remaining packages...", "info")
             req = os.path.join(dest, "requirements.txt")
             if os.path.isfile(req):
                 self._run([vpip, "install", "--quiet", "-r", req])
@@ -564,26 +570,44 @@ class InstallerApp(tk.Tk):
                 self._run([vpip, "install", "--quiet",
                            "transformers", "onnxruntime",
                            "doclayout-yolo", "huggingface_hub"])
-            self._set_prog(88)
+            self._set_prog(82)
             if self._cancelled: return
 
-            # 9 — shortcuts
-            self._log("[9/9] Creating shortcuts...", "info")
+            # 9 — DocLayout-YOLO model
+            self._log("[9/10] Downloading DocLayout-YOLO model (~30 MB)...", "info")
+            model_dir = os.path.join(dest, "models", "DocLayout-YOLO-DocStructBench")
+            model_pt  = os.path.join(model_dir, YOLO_MODEL_FILE)
+            if os.path.isfile(model_pt):
+                self._log(f"  [OK] Model already present: {model_pt}", "ok")
+            else:
+                if not self._download_yolo_model(dest, vpy, model_dir, model_pt):
+                    self._log("  [WARN] Model download failed — app will error on first run.", "warn")
+                    self._log("  Re-run installer (Update) or run from the app's Help menu.", "warn")
+            self._set_prog(92)
+            if self._cancelled: return
+
+            # 10 — shortcuts
+            self._log("[10/10] Creating shortcuts...", "info")
             self._write_marker(dest, vpy)
             self._write_launcher(dest, vpy)
             self._write_desktop_shortcut(dest, vpy)
             self._write_uninstaller(dest)
-            self._set_prog(95)
+            self._set_prog(96)
             if self._cancelled: return
 
             # verify
             self._log("", "dim")
-            self._log("Verifying in venv...", "info")
+            self._log("Verifying install...", "info")
             for mod in ["fitz", "cv2", "PIL", "torch", "easyocr", "docx"]:
                 if self._check([vpy, "-c", f"import {mod}"]):
                     self._log(f"  [OK] {mod}", "ok")
                 else:
-                    self._log(f"  [WARN] {mod} not in venv", "warn")
+                    self._log(f"  [WARN] {mod} not found in venv", "warn")
+            # Verify YOLO model
+            if os.path.isfile(model_pt):
+                self._log(f"  [OK] YOLO model: {model_pt}", "ok")
+            else:
+                self._log("  [WARN] YOLO model missing — run Update to retry.", "warn")
 
             self._set_prog(100)
             self._log("", "dim")
@@ -745,8 +769,57 @@ class InstallerApp(tk.Tk):
             self._log(f"Launch error: {err}", "err")
             messagebox.showerror("Launch Failed", err)
 
-    # ══════════════════════════════════════════════════════════════
-    #  DOWNLOAD
+    # ══════════════════════════════════════════════════════════════    #  YOLO MODEL DOWNLOAD
+    # ════════════════════════════════════════════════════════════
+    def _download_yolo_model(self, dest, vpy, model_dir, model_pt):
+        """Download the DocLayout-YOLO model. Returns True on success."""
+        os.makedirs(model_dir, exist_ok=True)
+        # Write temp helper script
+        script = f'''
+import os, sys, shutil, urllib.request
+model_dir = r"{model_dir}"
+model_pt  = r"{model_pt}"
+model_file = "{YOLO_MODEL_FILE}"
+hf_repo    = "{YOLO_MODEL_REPO}"
+direct_url = "{YOLO_MODEL_DIRECT}"
+os.makedirs(model_dir, exist_ok=True)
+if os.path.isfile(model_pt):
+    print("Model already present:", model_pt); sys.exit(0)
+# Try huggingface_hub first
+try:
+    from huggingface_hub import hf_hub_download
+    print("Downloading via huggingface_hub...")
+    cached = hf_hub_download(hf_repo, model_file)
+    shutil.copy2(cached, model_pt)
+    print("Downloaded:", model_pt); sys.exit(0)
+except Exception as e:
+    print("huggingface_hub failed:", e)
+# Direct URL fallback
+try:
+    print("Trying direct URL download...")
+    def _progress(block, block_size, total):
+        if total > 0:
+            pct = min(100, block * block_size * 100 // total)
+            print(f"  {{pct}}%", flush=True) if pct % 10 == 0 else None
+    urllib.request.urlretrieve(direct_url, model_pt, reporthook=_progress)
+    print("Downloaded:", model_pt); sys.exit(0)
+except Exception as e:
+    print("Direct download failed:", e); sys.exit(1)
+'''
+        tmp_script = os.path.join(tempfile.gettempdir(), "_localocr_dl_model.py")
+        try:
+            with open(tmp_script, "w", encoding="utf-8") as f:
+                f.write(script)
+            ok = self._run([vpy, tmp_script])
+            return ok and os.path.isfile(model_pt)
+        except Exception as exc:
+            self._log(f"  Model download error: {exc}", "err")
+            return False
+        finally:
+            try: os.remove(tmp_script)
+            except OSError: pass
+
+    # ════════════════════════════════════════════════════════════    #  DOWNLOAD
     # ══════════════════════════════════════════════════════════════
     def _download(self, dest):
         # git

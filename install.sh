@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ══════════════════════════════════════════════════════════════════════════════
-#  LocalOCR — Installer for Linux & macOS  (v0.3.1)
+#  LocalOCR — Installer for Linux & macOS  (v0.3.2)
 #
 #  Usage:
 #    bash install.sh                # Interactive install
@@ -24,8 +24,7 @@ header()  { echo -e "\n${BOLD}${CYAN}══  $*  ${RESET}"; }
 # ── Banner ────────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}${CYAN}╔══════════════════════════════════════════════════════╗${RESET}"
-echo -e "${BOLD}${CYAN}║   LocalOCR — PDF to DOCX Converter                  ║${RESET}"
-echo -e "${BOLD}${CYAN}║   Installer v0.3.1  |  Linux & macOS                ║${RESET}"
+echo -e "${BOLD}${CYAN}║   LocalOCR v0.3.2  |  Linux & macOS                ║${RESET}"
 echo -e "${BOLD}${CYAN}╚══════════════════════════════════════════════════════╝${RESET}"
 echo ""
 
@@ -251,9 +250,61 @@ $APP_PIP install -r "$INSTALL_DIR/requirements.txt" --quiet 2>&1 | grep -v "^$" 
 ok "Dependencies installed."
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 5/6  LAUNCHERS & DESKTOP INTEGRATION
+# 5/7  DOCLAYOUT-YOLO MODEL
 # ══════════════════════════════════════════════════════════════════════════════
-header "5/6  Creating Launchers"
+header "5/7  DocLayout-YOLO Model"
+
+export YOLO_MODEL_DIR="$INSTALL_DIR/models/DocLayout-YOLO-DocStructBench"
+export YOLO_MODEL_PT="$YOLO_MODEL_DIR/doclayout_yolo_docstructbench_imgsz1280_2501.pt"
+export YOLO_HF_REPO="juliozhao/DocLayout-YOLO-DocStructBench-imgsz1280-2501"
+export YOLO_HF_FILE="doclayout_yolo_docstructbench_imgsz1280_2501.pt"
+export YOLO_DIRECT_URL="https://huggingface.co/juliozhao/DocLayout-YOLO-DocStructBench-imgsz1280-2501/resolve/main/doclayout_yolo_docstructbench_imgsz1280_2501.pt"
+
+mkdir -p "$YOLO_MODEL_DIR"
+
+if [ -f "$YOLO_MODEL_PT" ]; then
+    ok "YOLO model already present: $YOLO_MODEL_PT"
+else
+    info "Downloading DocLayout-YOLO model (~30 MB)..."
+    $APP_PYTHON - << 'PYEOF'
+import sys, os, shutil
+model_dir = os.environ.get("YOLO_MODEL_DIR", "")
+model_pt  = os.environ.get("YOLO_MODEL_PT", "")
+hf_repo   = os.environ.get("YOLO_HF_REPO", "juliozhao/DocLayout-YOLO-DocStructBench-imgsz1280-2501")
+hf_file   = os.environ.get("YOLO_HF_FILE", "doclayout_yolo_docstructbench_imgsz1280_2501.pt")
+direct    = os.environ.get("YOLO_DIRECT_URL", "")
+os.makedirs(model_dir, exist_ok=True)
+if os.path.isfile(model_pt):
+    print("Already present:", model_pt); sys.exit(0)
+try:
+    from huggingface_hub import hf_hub_download
+    print("Downloading via huggingface_hub...")
+    cached = hf_hub_download(hf_repo, hf_file)
+    shutil.copy2(cached, model_pt)
+    print("Saved:", model_pt); sys.exit(0)
+except Exception as e:
+    print("huggingface_hub failed:", e)
+try:
+    import urllib.request
+    print("Falling back to direct URL download...")
+    urllib.request.urlretrieve(direct, model_pt)
+    print("Saved:", model_pt); sys.exit(0)
+except Exception as e:
+    print("Direct download failed:", e); sys.exit(1)
+PYEOF
+
+    if [ -f "$YOLO_MODEL_PT" ]; then
+        ok "YOLO model downloaded: $YOLO_MODEL_PT"
+    else
+        warn "Model download failed. Run 'bash install.sh --update' to retry."
+        warn "Without the model the app cannot detect tables or layout."
+    fi
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 6/7  LAUNCHERS & DESKTOP INTEGRATION
+# ══════════════════════════════════════════════════════════════════════════════
+header "6/7  Creating Launchers"
 
 # ── Shell launcher script ─────────────────────────────────────────────────────
 LAUNCHER="$INSTALL_DIR/localocr.sh"
@@ -400,12 +451,12 @@ UNINSTALL_EOF
 chmod +x "$UNINSTALL_SCRIPT"
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 6/6  SUMMARY & LAUNCH
+# 7/7  SUMMARY & LAUNCH
 # ══════════════════════════════════════════════════════════════════════════════
-header "6/6  Complete"
+header "7/7  Complete"
 echo ""
 echo -e "${BOLD}${GREEN}╔══════════════════════════════════════════════════════════╗${RESET}"
-echo -e "${BOLD}${GREEN}║  LocalOCR v0.3.1 installed successfully!                 ║${RESET}"
+echo -e "${BOLD}${GREEN}║  LocalOCR v0.3.2 installed successfully!                 ║${RESET}"
 echo -e "${BOLD}${GREEN}║                                                          ║${RESET}"
 printf  "${BOLD}${GREEN}║  Location : %-43s║${RESET}\n" "$INSTALL_DIR"
 printf  "${BOLD}${GREEN}║  Run      : %-43s║${RESET}\n" "bash $LAUNCHER"

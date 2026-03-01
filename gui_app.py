@@ -568,7 +568,7 @@ class OCRApp(tk.Tk):
     """Desktop GUI for the PDF-to-DOCX OCR Pipeline with modern dark theme."""
 
     APP_TITLE = "LocalOCR — PDF to DOCX Converter"
-    VERSION   = "v0.3.1"
+    VERSION   = "v0.3.2"
     WINDOW_SIZE = "1280x860"
 
     def __init__(self):
@@ -1205,7 +1205,7 @@ class OCRApp(tk.Tk):
             font=("Segoe UI", 10), anchor="w")
         self._lbl_status.pack(side="left", fill="x", expand=True)
 
-        tk.Label(bar, text="LocalOCR v0.3.1",
+        tk.Label(bar, text="LocalOCR v0.3.2",
                  bg=Theme.BG_MID, fg=Theme.TEXT_MUTED,
                  font=("Segoe UI", 9)).pack(side="right")
 
@@ -1373,7 +1373,7 @@ class OCRApp(tk.Tk):
         steps = [
             ("📦 Importing core modules (fitz, cv2, numpy)...",
              lambda: (__import__("fitz"), __import__("cv2"), __import__("numpy"))),
-            ("📦 Loading YOLO layout detector...",
+            ("📦 Loading YOLO package (doclayout_yolo)...",
              lambda: __import__("doclayout_yolo")),
             ("📦 Loading OCR engines (EasyOCR, PaddleOCR)...",
              lambda: (__import__("easyocr"), __import__("paddleocr"))),
@@ -1391,18 +1391,48 @@ class OCRApp(tk.Tk):
                 t0 = time.time()
                 try:
                     fn()
-                except Exception:
-                    pass  # optional modules may fail
+                except Exception as step_exc:
+                    # OCR engines / transformers are optional; log but continue
+                    self.after(0, lambda e=str(step_exc): self._log(
+                        f"   ⚠ {e}", Theme.WARNING))
                 dt = time.time() - t0
                 done_msg = f"   ✓ done ({dt:.1f}s)"
                 self.after(0, lambda m=done_msg: self._log(m, Theme.TEXT_MUTED))
+
+            # ── Critical: verify YOLO model is actually loaded ────────────────
+            pipeline = _get_pipeline()
+            if not pipeline.layout.model_loaded:
+                model_path = None
+                try:
+                    from src.layout_detector import LayoutDetector
+                    model_path = LayoutDetector.default_model_path()
+                except Exception:
+                    pass
+                err_lines = [
+                    "❌ DocLayout-YOLO model NOT LOADED — conversion is disabled.",
+                    "   Table and layout detection require the YOLO model.",
+                    f"   Expected: {model_path or 'models/DocLayout-YOLO-DocStructBench/doclayout_yolo_docstructbench_imgsz1280_2501.pt'}",
+                    "   → Run the LocalOCR installer (Update mode) or install.sh to download the model.",
+                ]
+                for line in err_lines:
+                    self.after(0, lambda m=line: self._log(m, Theme.ERROR))
+                self.after(0, lambda: self._btn_convert.configure(state="disabled"))
+                return
+
             self.after(0, lambda: self._set_progress_value(total))
+            try:
+                from src.layout_detector import LayoutDetector
+                model_pt = LayoutDetector.default_model_path()
+                self.after(0, lambda p=model_pt: self._log(
+                    f"   Model: {p}", Theme.TEXT_MUTED))
+            except Exception:
+                pass
             self.after(0, lambda: self._log(
-                "✅ OCR pipeline loaded successfully.", Theme.SUCCESS))
+                "✅ DocLayout-YOLO model loaded. OCR pipeline ready.", Theme.SUCCESS))
         except Exception as exc:
             err_msg = str(exc)
             self.after(0, lambda: self._log(
-                f"⚠ Pipeline load warning: {err_msg}", Theme.WARNING))
+                f"❌ Pipeline load error: {err_msg}", Theme.ERROR))
         finally:
             self.after(0, self._reset_progress)
 
