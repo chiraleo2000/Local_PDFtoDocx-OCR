@@ -57,7 +57,6 @@ def handlers(app_module):
         "EasyOCR (Thai+English)": "easyocr",
         "Thai-TrOCR (Line-level)": "thai_trocr",
         "PaddleOCR (Multilingual)": "paddleocr",
-        "Typhoon OCR 3B (GPU LLM)": "typhoon",
     }
     _LOCAL_USER = "local"
 

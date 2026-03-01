@@ -8,7 +8,7 @@
 
 ## Features
 
-- **Multi-engine OCR**: EasyOCR, PaddleOCR, Tesseract, Thai-TrOCR, Typhoon OCR
+- **Multi-engine OCR**: EasyOCR, PaddleOCR, Tesseract, Thai-TrOCR
 - **YOLO Layout Detection**: Tables, figures, titles, and text regions via DocLayout-YOLO
 - **Multiple Output Formats**: DOCX, TXT, HTML with preserved structure
 - **Dark-themed Desktop GUI**: Modern tkinter interface with live PDF preview

@@ -5,7 +5,7 @@ PDF -> Render -> Layout Detect -> GROUP (text/table/figure)
   -> Build HTML -> HTML->DOCX + HTML->TXT
 
 v2.0 changes:
-    - Tesseract removed; Thai-optimised cascade (Typhoon/TrOCR/PaddleOCR)
+    - Tesseract removed; Thai-optimised cascade (TrOCR/PaddleOCR/EasyOCR)
     - Improved table extraction with grid-aware cell alignment
     - OCR engine shared with table extractor for consistent results
 
@@ -139,7 +139,7 @@ class OCRPipeline:
       1. Render page
       2. Layout detection (YOLO / OpenCV)
       3. Group regions: text, table, figure
-      4. OCR text regions (Typhoon/TrOCR/PaddleOCR cascade)
+      4. OCR text regions (EasyOCR/TrOCR/PaddleOCR cascade)
       5. Extract tables (grid + cell OCR, improved alignment)
       6. Extract figures as images
       7. Sort reading order
@@ -281,6 +281,14 @@ class OCRPipeline:
         caption_dets  = detections.get("captions", [])
         formula_dets  = detections.get("formulas", [])
 
+        logger.info(
+            "Detected: page %d — text=%d, tables=%d, figures=%d, captions=%d"
+            " (method=%s)",
+            page_num + 1, len(text_regions), len(table_dets),
+            len(figure_dets), len(caption_dets),
+            "YOLO" if self.layout.model_loaded else "OpenCV",
+        )
+
         # ── Step 1b: Merge manual corrections ────────────────────────
         self._merge_manual_regions(
             extra_regions, text_regions, table_dets, figure_dets, page_num)
@@ -303,12 +311,26 @@ class OCRPipeline:
             "text", languages, page_blocks)
 
         # ── Step 5: Extract tables ───────────────────────────────────
-        n_tables = self._extract_table_blocks(
-            img, table_dets, page_num, languages, page_blocks)
+        try:
+            n_tables = self._extract_table_blocks(
+                img, table_dets, page_num, languages, page_blocks)
+        except Exception as exc:
+            logger.error("Table extraction failed on page %d: %s", page_num + 1, exc)
+            n_tables = 0
 
         # ── Step 6: Extract figures ──────────────────────────────────
-        n_figures = self._extract_figure_blocks(
-            img, figure_dets, page_num, page_blocks)
+        try:
+            n_figures = self._extract_figure_blocks(
+                img, figure_dets, page_num, page_blocks)
+        except Exception as exc:
+            logger.error("Figure extraction failed on page %d: %s", page_num + 1, exc)
+            n_figures = 0
+
+        logger.info(
+            "Page %d result: text_blocks=%d, tables=%d, figures=%d",
+            page_num + 1, len([b for b in page_blocks if b.block_type == "text"]),
+            n_tables, n_figures,
+        )
 
         # ── Step 7: Sort into reading order ──────────────────────────
         page_blocks = _sort_reading_order(page_blocks, w)

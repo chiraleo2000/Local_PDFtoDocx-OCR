@@ -1,13 +1,13 @@
 """
-Multi-Engine OCR Module — v2.1
+Multi-Engine OCR Module — v2.2
 Thai-optimised cascade: EasyOCR (Thai+English) → Thai-TrOCR (line-level)
-  → PaddleOCR (non-Thai fallback) → Typhoon (optional GPU LLM).
+  → PaddleOCR (non-Thai fallback) → Tesseract.
 
 Engine priority for Thai text:
     EasyOCR          → Best Thai+English accuracy, built-in line detection
     Thai-TrOCR       → Line-level Thai OCR (ONNX or transformers)
     PaddleOCR        → General multilingual fallback (NO Thai support)
-    Typhoon OCR 3B   → GPU LLM OCR (optional, needs model weights)
+    Tesseract        → Last-resort fallback
 
 Security:
     - Image inputs validated before processing
@@ -16,9 +16,7 @@ Security:
 import os
 import sys
 import re
-import base64
 import logging
-from io import BytesIO
 from typing import Optional, List, Dict, Any
 
 # Guard stdout/stderr — PaddlePaddle & EasyOCR read sys.stdout.encoding
@@ -59,76 +57,6 @@ def _validate_image(image: np.ndarray) -> bool:
 
 
 # ── Optional imports ──────────────────────────────────────────────────────────
-
-# --- Typhoon OCR (via Ollama or transformers) ---
-TYPHOON_AVAILABLE = False
-_typhoon_model = None
-_typhoon_processor = None
-_typhoon_device = None
-
-
-def _check_typhoon():
-    """Try to initialise Typhoon OCR 3B via transformers (local weights)."""
-    global TYPHOON_AVAILABLE, _typhoon_model, _typhoon_processor, _typhoon_device
-    if _typhoon_model is not None:
-        return
-    try:
-        import torch
-        from transformers import AutoModelForVision2Seq, AutoProcessor
-        model_path = os.getenv("TYPHOON_MODEL_PATH",
-                               os.path.join(os.path.dirname(os.path.dirname(__file__)),
-                                            "models", "typhoon-ocr-3b"))
-        if os.path.isdir(model_path):
-            _typhoon_processor = AutoProcessor.from_pretrained(
-                model_path, trust_remote_code=True)
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            _typhoon_model = AutoModelForVision2Seq.from_pretrained(
-                model_path, trust_remote_code=True,
-                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-            ).to(device)
-            _typhoon_device = device
-            TYPHOON_AVAILABLE = True
-            logger.info("Typhoon OCR 3B loaded on %s", device)
-        else:
-            logger.info("Typhoon model path not found: %s", model_path)
-    except Exception as exc:
-        logger.warning("Typhoon OCR init failed: %s — %s", type(exc).__name__, exc)
-        TYPHOON_AVAILABLE = False
-
-
-# --- Typhoon OCR via Ollama (7B or 3B) ---
-OLLAMA_AVAILABLE = False
-_ollama_model_name = None
-
-
-def _check_ollama():
-    """Check if Ollama is running and a Typhoon model is available."""
-    global OLLAMA_AVAILABLE, _ollama_model_name
-    if _ollama_model_name is not None:
-        return
-    try:
-        import requests
-        resp = requests.get("http://localhost:11434/api/tags", timeout=3)
-        if resp.status_code == 200:
-            models = resp.json().get("models", [])
-            model_names = [m.get("name", "") for m in models]
-            for candidate in ["typhoon-ocr:3b", "scb10x/typhoon-ocr-3b",
-                              "typhoon-ocr:7b", "scb10x/typhoon-ocr-7b"]:
-                if any(candidate in n for n in model_names):
-                    _ollama_model_name = candidate
-                    OLLAMA_AVAILABLE = True
-                    logger.info("Ollama Typhoon OCR model: %s", candidate)
-                    return
-            for n in model_names:
-                if "typhoon" in n.lower():
-                    _ollama_model_name = n
-                    OLLAMA_AVAILABLE = True
-                    logger.info("Ollama Typhoon OCR model: %s", n)
-                    return
-    except Exception:
-        pass
-    OLLAMA_AVAILABLE = False
-
 
 # --- Thai-TrOCR ONNX ---
 THAI_TROCR_AVAILABLE = False
@@ -219,14 +147,13 @@ except Exception:
 
 
 class OCREngine:
-    """Unified multi-engine OCR — Thai-optimised cascade (v2.1).
+    """Unified multi-engine OCR — Thai-optimised cascade (v2.2).
 
     Engine priority for Thai text:
-        1. easyocr        — EasyOCR Thai+English (best Thai full-page)
-        2. thai_trocr      — Thai-TrOCR (line-level Thai)
-        3. paddleocr       — PaddleOCR multilingual (no Thai, general fallback)
-        4. typhoon_3b      — Typhoon OCR 3B LLM (optional GPU)
-        5. typhoon_ollama  — via Ollama API (if running)
+        1. easyocr    — EasyOCR Thai+English (best Thai full-page)
+        2. thai_trocr  — Thai-TrOCR (line-level Thai)
+        3. paddleocr   — PaddleOCR multilingual (no Thai, general fallback)
+        4. tesseract   — Last-resort fallback
     """
 
     def __init__(self) -> None:
@@ -247,8 +174,6 @@ class OCREngine:
         if self._engines_checked:
             return
         _check_thai_trocr()
-        _check_typhoon()
-        _check_ollama()
         self._engines_checked = True
 
     # ── Lazy loaders ──
@@ -314,7 +239,7 @@ class OCREngine:
     def _build_cascade(self, requested: str) -> List[str]:
         """Build ordered list of engines to try.
 
-        Thai-optimised: EasyOCR (Thai native) → Thai-TrOCR → PaddleOCR → Typhoon.
+        Thai-optimised: EasyOCR (Thai native) → Thai-TrOCR → PaddleOCR → Tesseract.
         """
         if requested in ("tesseract", "pytesseract"):
             return ["tesseract", "easyocr", "thai_trocr", "paddleocr"]
@@ -324,10 +249,6 @@ class OCREngine:
             return ["thai_trocr", "easyocr", "paddleocr", "tesseract"]
         elif requested in ("paddleocr", "paddle"):
             return ["paddleocr", "easyocr", "thai_trocr", "tesseract"]
-        elif requested in ("typhoon", "typhoon_3b"):
-            return ["typhoon_3b", "typhoon_ollama", "easyocr", "thai_trocr", "paddleocr", "tesseract"]
-        elif requested == "typhoon_ollama":
-            return ["typhoon_ollama", "typhoon_3b", "easyocr", "thai_trocr", "paddleocr", "tesseract"]
         else:
             # Default: EasyOCR first (best Thai), then Thai-TrOCR, then PaddleOCR, then tesseract
             return ["easyocr", "thai_trocr", "paddleocr", "tesseract"]
@@ -345,10 +266,6 @@ class OCREngine:
                 return self._run_thai_trocr(image, lang)
             if engine == "paddleocr":
                 return self._run_paddle_engine(image, lang)
-            if engine == "typhoon_3b":
-                return self._run_typhoon_local(image, lang)
-            if engine == "typhoon_ollama":
-                return self._run_typhoon_ollama(image, lang)
             if engine == "tesseract":
                 return self._run_tesseract(image, lang)
             logger.debug("Unknown engine: %s", engine)
@@ -388,91 +305,6 @@ class OCREngine:
         except Exception as exc:
             logger.warning("EasyOCR error: %s — %s", type(exc).__name__, exc)
             return None
-
-    # ── Typhoon OCR 3B (local transformers) ──
-
-    def _run_typhoon_local(self, image: np.ndarray,
-                           _languages: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        if not TYPHOON_AVAILABLE or _typhoon_model is None:
-            return None
-        try:
-            from PIL import Image as PILImage
-            import torch
-
-            if len(image.shape) == 2:
-                pil_img = PILImage.fromarray(image)
-            else:
-                pil_img = PILImage.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-
-            prompt = ("Extract all text from this image accurately. "
-                      "Preserve layout, tabs, table structure, and line breaks.")
-            inputs = _typhoon_processor(
-                images=pil_img, text=prompt, return_tensors="pt"
-            ).to(_typhoon_device)
-
-            with torch.no_grad():
-                outputs = _typhoon_model.generate(
-                    **inputs, max_new_tokens=2048, do_sample=False)
-            text = _typhoon_processor.decode(outputs[0], skip_special_tokens=True)
-            if prompt in text:
-                text = text.split(prompt, 1)[-1].strip()
-
-            return {
-                "text": text.strip(),
-                "confidence": 0.9,
-                "engine_used": "typhoon_3b",
-                "lines": [{"text": line, "confidence": 0.9}
-                          for line in text.strip().split("\n") if line.strip()],
-            }
-        except Exception as exc:
-            logger.warning("Typhoon local error: %s", exc)
-            return None
-
-    # ── Typhoon OCR via Ollama API ──
-
-    def _run_typhoon_ollama(self, image: np.ndarray,
-                            _languages: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        _check_ollama()
-        if not OLLAMA_AVAILABLE or not _ollama_model_name:
-            return None
-        try:
-            import requests
-            from PIL import Image as PILImage
-
-            if len(image.shape) == 2:
-                pil_img = PILImage.fromarray(image)
-            else:
-                pil_img = PILImage.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-
-            buf = BytesIO()
-            pil_img.save(buf, format="PNG")
-            b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-
-            payload = {
-                "model": _ollama_model_name,
-                "prompt": ("Extract all text from this image. Preserve layout, "
-                           "tabs, table structure, and line breaks exactly as "
-                           "they appear."),
-                "images": [b64],
-                "stream": False,
-            }
-            resp = requests.post(
-                "http://localhost:11434/api/generate",
-                json=payload, timeout=120,
-            )
-            if resp.status_code == 200:
-                text = resp.json().get("response", "").strip()
-                if text:
-                    return {
-                        "text": text,
-                        "confidence": 0.88,
-                        "engine_used": "typhoon_ollama",
-                        "lines": [{"text": l, "confidence": 0.88}
-                                  for l in text.split("\n") if l.strip()],
-                    }
-        except Exception as exc:
-            logger.warning("Ollama Typhoon error: %s", exc)
-        return None
 
     # ── Thai-TrOCR ONNX ──
 
@@ -692,8 +524,6 @@ class OCREngine:
             "easyocr": EASYOCR_AVAILABLE,
             "thai_trocr": THAI_TROCR_AVAILABLE,
             "paddleocr": PADDLE_AVAILABLE,
-            "typhoon_3b": TYPHOON_AVAILABLE,
-            "typhoon_ollama": OLLAMA_AVAILABLE,
         }
 
     def is_available(self) -> bool:

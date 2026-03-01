@@ -101,9 +101,9 @@ class LayoutDetector:
                     )
             self.model_loaded = True
             logger.info("DocLayout-YOLO model loaded")
-        except (ImportError, OSError, RuntimeError) as exc:
-            logger.warning("Failed to load YOLO (%s) — using OpenCV fallback",
-                           type(exc).__name__)
+        except Exception as exc:
+            logger.warning("Failed to load YOLO (%s: %s) \u2014 using OpenCV fallback",
+                           type(exc).__name__, exc)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -166,8 +166,8 @@ class LayoutDetector:
                 "detections": detections,
                 "total": sum(len(v) for v in detections.values()),
             }
-        except (OSError, RuntimeError, ValueError) as exc:
-            logger.error("YOLO detection failed: %s", type(exc).__name__)
+        except Exception as exc:
+            logger.error("YOLO detection failed: %s — %s", type(exc).__name__, exc)
             return self._detect_opencv_fallback(image, page_number)
 
     def _reclassify_figures_as_tables(self, image: np.ndarray,

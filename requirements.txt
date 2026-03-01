@@ -44,5 +44,4 @@ selenium>=4.15.0
 # OPTIONAL — GPU acceleration
 # ============================================
 # onnxruntime-gpu>=1.17.0 # Thai-TrOCR ONNX GPU inference (replaces onnxruntime)
-# accelerate>=0.25.0      # Typhoon OCR GPU acceleration
 # torch>=2.0.0            # Auto-installed by doclayout-yolo

@@ -278,7 +278,7 @@ class SeleniumTestRunner:
             page_src = self.driver.page_source
             has_title = "PDF OCR Pipeline" in page_src
             has_version = "v0.2.0" in page_src
-            has_engines = "Typhoon OCR" in page_src
+            has_engines = "EasyOCR" in page_src or "Thai-TrOCR" in page_src
             self._record(
                 "Hero Bar Content",
                 has_title and has_version and has_engines,
@@ -482,17 +482,16 @@ class SeleniumTestRunner:
             time.sleep(2)
             page_src = self.driver.page_source
 
-            has_typhoon = "Typhoon OCR 3B" in page_src
+            has_easyocr = "EasyOCR" in page_src
             has_trocr = "Thai-TrOCR" in page_src
             has_paddle = "PaddleOCR" in page_src
-            no_tesseract = "Tesseract" not in page_src
-            no_easyocr = "EasyOCR" not in page_src
+            has_tesseract = "Tesseract" in page_src
 
-            all_ok = has_typhoon and has_trocr and has_paddle and no_tesseract and no_easyocr
+            all_ok = has_easyocr and has_trocr and has_paddle
             self._record(
                 "Engine Dropdown Options", all_ok,
-                f"Typhoon: {has_typhoon}, TrOCR: {has_trocr}, Paddle: {has_paddle}, "
-                f"NoTesseract: {no_tesseract}, NoEasyOCR: {no_easyocr}",
+                f"EasyOCR: {has_easyocr}, TrOCR: {has_trocr}, Paddle: {has_paddle}, "
+                f"Tesseract: {has_tesseract}",
                 time.time() - t0, self._screenshot("engine_options"))
         except Exception as exc:
             self._record("Engine Dropdown Options", False, str(exc), time.time() - t0)

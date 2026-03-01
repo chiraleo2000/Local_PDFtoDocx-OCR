@@ -5,7 +5,7 @@ v0.2.3  |  Thai-optimised OCR  |  Manual correction + auto-retrain
 Convert tab: Upload → detect → manual add tables/figures → convert
 Review tab: See detected regions, draw new ones, re-convert
 
-OCR engines: EasyOCR (Thai+English primary) → Thai-TrOCR → PaddleOCR → Typhoon
+OCR engines: EasyOCR (Thai+English primary) → Thai-TrOCR → PaddleOCR → Tesseract
 
 Security:
     - show_error gated on DEBUG_MODE env var
@@ -91,7 +91,6 @@ ENGINE_OPTIONS = {
     _DEFAULT_ENGINE: "easyocr",
     "Thai-TrOCR (Line-level)": "thai_trocr",
     "PaddleOCR (Multilingual)": "paddleocr",
-    "Typhoon OCR 3B (GPU LLM)": "typhoon",
 }
 
 CLASS_OPTIONS = ["table", "figure"]
@@ -562,7 +561,7 @@ def create_interface():
             <div class="hero-bar">
                 <div>
                     <h1>PDF OCR Pipeline</h1>
-                    <p>Typhoon OCR | Thai-TrOCR | PaddleOCR | DocLayout-YOLO | HTML-first Export</p>
+                    <p>EasyOCR | Thai-TrOCR | PaddleOCR | DocLayout-YOLO | HTML-first Export</p>
                 </div>
                 <div class="hero-badge">v0.2.3 &middot; Thai-Optimised</div>
             </div>

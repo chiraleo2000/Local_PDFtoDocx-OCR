@@ -187,7 +187,6 @@ ENGINE_OPTIONS = {
     "EasyOCR (Thai+English)": "easyocr",
     "Thai-TrOCR (Line-level)": "thai_trocr",
     "PaddleOCR (Multilingual)": "paddleocr",
-    "Typhoon OCR 3B (GPU LLM)": "typhoon",
 }
 
 PAGE_SIZE_OPTIONS = ["A4", "Letter", "Legal", "A3", "B5"]
