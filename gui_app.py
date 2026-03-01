@@ -756,32 +756,69 @@ class OCRApp(tk.Tk):
                           relief="flat", bd=0)
         self.config(menu=menubar)
 
-        file_menu = tk.Menu(menubar, tearoff=0,
-                            bg=Theme.BG_MID, fg=Theme.TEXT,
-                            activebackground=Theme.ACCENT,
-                            activeforeground="white")
-        file_menu.add_command(label="  📂  Open PDF…", command=self._browse_pdf,
-                              accelerator="Ctrl+O")
+        _mk = lambda parent: tk.Menu(parent, tearoff=0,
+                                     bg=Theme.BG_MID, fg=Theme.TEXT,
+                                     activebackground=Theme.ACCENT,
+                                     activeforeground="white")
+
+        file_menu = _mk(menubar)
+        file_menu.add_command(label="  📂  Open PDF…",
+                              command=self._browse_pdf, accelerator="Ctrl+O")
+        file_menu.add_command(label="  🔄  Convert",
+                              command=self._start_convert, accelerator="Ctrl+Return")
+        file_menu.add_separator()
+        save_menu = _mk(file_menu)
+        save_menu.add_command(label="  💾  Save DOCX",
+                              command=self._save_docx, accelerator="Ctrl+S")
+        save_menu.add_command(label="  📄  Save TXT",
+                              command=self._save_txt,  accelerator="Ctrl+T")
+        save_menu.add_command(label="  🌐  Save HTML",
+                              command=self._save_html)
+        file_menu.add_cascade(label="  💾  Save As…", menu=save_menu)
+        file_menu.add_command(label="  📁  Open Output Folder",
+                              command=self._open_output_folder)
         file_menu.add_separator()
         file_menu.add_command(label="  ❌  Exit", command=self.destroy)
         menubar.add_cascade(label="  File  ", menu=file_menu)
 
-        help_menu = tk.Menu(menubar, tearoff=0,
-                            bg=Theme.BG_MID, fg=Theme.TEXT,
-                            activebackground=Theme.ACCENT,
-                            activeforeground="white")
+        view_menu = _mk(menubar)
+        view_menu.add_command(label="  ☀  Toggle Light/Dark",
+                              command=self._toggle_theme, accelerator="Ctrl+D")
+        view_menu.add_command(label="  🔍  Find in Output",
+                              command=self._show_find_bar, accelerator="Ctrl+F")
+        menubar.add_cascade(label="  View  ", menu=view_menu)
+
+        help_menu = _mk(menubar)
         help_menu.add_command(label="  ℹ  About", command=self._show_about)
         menubar.add_cascade(label="  Help  ", menu=help_menu)
 
         self.bind_all("<Control-o>", lambda e: self._browse_pdf())
+        self.bind_all("<Control-Return>", lambda e: self._start_convert())
+        self.bind_all("<Control-s>", lambda e: self._save_docx())
+        self.bind_all("<Control-t>", lambda e: self._save_txt())
+        self.bind_all("<Control-d>", lambda e: self._toggle_theme())
+        self.bind_all("<Control-f>", lambda e: self._show_find_bar())
 
     def _show_about(self):
+        from src.ocr_engine import EASYOCR_AVAILABLE, PADDLE_AVAILABLE
+        from src.ocr_engine import THAI_TROCR_AVAILABLE, TESSERACT_AVAILABLE
+        engines = [
+            ("EasyOCR",    EASYOCR_AVAILABLE),
+            ("PaddleOCR",  PADDLE_AVAILABLE),
+            ("Thai-TrOCR", THAI_TROCR_AVAILABLE),
+            ("Tesseract",  TESSERACT_AVAILABLE),
+        ]
+        eng_lines = "\n".join(
+            f"  {'\u2705' if ok else '\u274c'}  {name}" for name, ok in engines)
         messagebox.showinfo(
             "About LocalOCR",
             f"LocalOCR — PDF to DOCX Converter\n"
             f"{self.VERSION}\n\n"
-            "Thai-optimised OCR pipeline\n"
-            "EasyOCR + PaddleOCR + YOLO layout detection\n\n"
+            f"OCR Engines:\n{eng_lines}\n\n"
+            "YOLO layout detection (DocLayout-YOLO)\n"
+            "Shortcuts: Ctrl+O Open | Ctrl+Return Convert\n"
+            "           Ctrl+S Save DOCX | Ctrl+F Find\n"
+            "           Ctrl+D Toggle Theme\n\n"
             "Apache-2.0 License\n"
             "github.com/chiraleo2000/Local_PDFtoDocx-OCR"
         )
@@ -955,6 +992,43 @@ class OCRApp(tk.Tk):
         text_tab = tk.Frame(nb, bg=Theme.BG_DARK, padx=4, pady=4)
         nb.add(text_tab, text="  📝 OCR Output  ")
 
+        # Output toolbar
+        out_toolbar = tk.Frame(text_tab, bg=Theme.BG_MID, pady=3, padx=4)
+        out_toolbar.pack(fill="x")
+        ttk.Button(out_toolbar, text="📋 Copy All",
+                   command=self._copy_output_text).pack(side="left", padx=(0, 6))
+        ttk.Button(out_toolbar, text="🔍 Find…",
+                   command=self._show_find_bar).pack(side="left", padx=(0, 6))
+        ttk.Button(out_toolbar, text="🔄 Clear",
+                   command=lambda: self._set_output_text("")).pack(side="left")
+        self._lbl_word_count = tk.Label(
+            out_toolbar, text="", bg=Theme.BG_MID, fg=Theme.TEXT_MUTED,
+            font=("Segoe UI", 9))
+        self._lbl_word_count.pack(side="right", padx=6)
+
+        # Find bar (hidden by default)
+        self._find_frame = tk.Frame(text_tab, bg=Theme.BG_SURFACE, pady=3, padx=4)
+        tk.Label(self._find_frame, text="Find:", bg=Theme.BG_SURFACE,
+                 fg=Theme.TEXT, font=("Segoe UI", 10)).pack(side="left")
+        self._find_var = tk.StringVar()
+        self._find_entry = ttk.Entry(self._find_frame,
+                                     textvariable=self._find_var, width=24)
+        self._find_entry.pack(side="left", padx=(4, 2))
+        ttk.Button(self._find_frame, text="▼ Next",
+                   command=self._find_next).pack(side="left", padx=2)
+        ttk.Button(self._find_frame, text="▲ Prev",
+                   command=self._find_prev).pack(side="left", padx=2)
+        self._lbl_find_count = tk.Label(
+            self._find_frame, text="", bg=Theme.BG_SURFACE,
+            fg=Theme.TEXT_MUTED, font=("Segoe UI", 9))
+        self._lbl_find_count.pack(side="left", padx=6)
+        ttk.Button(self._find_frame, text="✕",
+                   command=self._hide_find_bar, width=3).pack(side="right")
+        self._find_var.trace_add("write", lambda *_: self._find_highlight())
+        self._find_entry.bind("<Return>", lambda e: self._find_next())
+        self._find_entry.bind("<Escape>", lambda e: self._hide_find_bar())
+        self._find_index = "1.0"  # current search position
+
         self._txt_output = scrolledtext.ScrolledText(
             text_tab, wrap="word", font=("Consolas", 10), state="disabled",
             bg=Theme.LOG_BG, fg=Theme.TEXT,
@@ -962,6 +1036,8 @@ class OCRApp(tk.Tk):
             selectbackground=Theme.ACCENT,
             selectforeground="white",
             relief="flat", bd=0)
+        self._txt_output.tag_configure("found", background=Theme.WARNING,
+                                        foreground=Theme.BG_DARK)
         self._txt_output.pack(fill="both", expand=True)
 
         # ── Tab 2: Conversion Info ───────────────────────────────────────
@@ -1161,6 +1237,89 @@ class OCRApp(tk.Tk):
         self._txt_output.delete("1.0", "end")
         self._txt_output.insert("1.0", text)
         self._txt_output.configure(state="disabled")
+        # Update word count
+        words = len(text.split()) if text.strip() else 0
+        chars = len(text)
+        self._lbl_word_count.configure(
+            text=f"{words:,} words  {chars:,} chars" if words else "")
+        # Clear find state
+        self._find_index = "1.0"
+        self._lbl_find_count.configure(text="")
+
+    def _copy_output_text(self):
+        text = self._txt_output.get("1.0", "end").strip()
+        if text:
+            self.clipboard_clear()
+            self.clipboard_append(text)
+            self._log("📋 Output text copied to clipboard", Theme.SUCCESS)
+        else:
+            messagebox.showinfo("Nothing to copy", "Run a conversion first.")
+
+    def _show_find_bar(self):
+        self._find_frame.pack(fill="x", before=self._txt_output)
+        self._find_entry.focus_set()
+        self._find_entry.select_range(0, "end")
+
+    def _hide_find_bar(self):
+        self._find_frame.pack_forget()
+        self._txt_output.tag_remove("found", "1.0", "end")
+        self._lbl_find_count.configure(text="")
+        self._txt_output.focus_set()
+
+    def _find_highlight(self):
+        """Highlight all occurrences of search term."""
+        self._txt_output.tag_remove("found", "1.0", "end")
+        query = self._find_var.get()
+        if not query:
+            self._lbl_find_count.configure(text="")
+            return
+        count = 0
+        start = "1.0"
+        while True:
+            pos = self._txt_output.search(
+                query, start, stopindex="end", nocase=True)
+            if not pos:
+                break
+            end = f"{pos}+{len(query)}c"
+            self._txt_output.tag_add("found", pos, end)
+            start = end
+            count += 1
+        self._lbl_find_count.configure(
+            text=f"{count} match{'es' if count != 1 else ''}" if count else "Not found")
+        self._find_index = "1.0"
+
+    def _find_next(self):
+        query = self._find_var.get()
+        if not query:
+            return
+        pos = self._txt_output.search(
+            query, self._find_index, stopindex="end", nocase=True)
+        if not pos:
+            self._find_index = "1.0"  # wrap around
+            pos = self._txt_output.search(
+                query, self._find_index, stopindex="end", nocase=True)
+        if pos:
+            end = f"{pos}+{len(query)}c"
+            self._txt_output.mark_set("insert", pos)
+            self._txt_output.see(pos)
+            self._txt_output.tag_remove("sel", "1.0", "end")
+            self._txt_output.tag_add("sel", pos, end)
+            self._find_index = end
+
+    def _find_prev(self):
+        query = self._find_var.get()
+        if not query:
+            return
+        pos = self._txt_output.search(
+            query, "1.0", stopindex=self._find_index or "end",
+            nocase=True, backwards=True)
+        if pos:
+            end = f"{pos}+{len(query)}c"
+            self._txt_output.mark_set("insert", pos)
+            self._txt_output.see(pos)
+            self._txt_output.tag_remove("sel", "1.0", "end")
+            self._txt_output.tag_add("sel", pos, end)
+            self._find_index = pos
 
     def _set_busy(self, busy: bool):
         state = "disabled" if busy else "normal"

@@ -35,7 +35,7 @@ temp/
 .DS_Store
 Thumbs.db
 
-# Test outputs
+# Test outputs & temp scripts
 *.docx
 *.html
 test_output.txt
@@ -45,6 +45,12 @@ results_*.txt
 *_results.txt
 *_stderr.txt
 conversion_test_result.txt
+_test.py
+_diag*.py
+_run_test.py
+*.log
+.installed_ok
+.theme_pref
 
 # Correction / training data (user-generated)
 correction_data/
