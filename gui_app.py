@@ -9,6 +9,15 @@ Usage:
 """
 import os
 import sys
+
+# ── Guard against pythonw.exe / frozen exe where stdout/stderr are None ──
+# PaddleOCR, EasyOCR and other libs access sys.stdout.encoding at import time;
+# if stdout is None they crash with "'NoneType' has no attribute 'encoding'".
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext

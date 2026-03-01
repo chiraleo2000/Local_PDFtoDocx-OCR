@@ -14,11 +14,18 @@ Security:
     - Error messages do not expose internal paths
 """
 import os
+import sys
 import re
 import base64
 import logging
 from io import BytesIO
 from typing import Optional, List, Dict, Any
+
+# Guard stdout/stderr — PaddlePaddle & EasyOCR read sys.stdout.encoding
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
 import numpy as np
 import cv2
