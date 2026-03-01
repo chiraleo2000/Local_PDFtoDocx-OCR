@@ -568,7 +568,7 @@ class OCRApp(tk.Tk):
     """Desktop GUI for the PDF-to-DOCX OCR Pipeline with modern dark theme."""
 
     APP_TITLE = "LocalOCR — PDF to DOCX Converter"
-    VERSION   = "v0.3.2"
+    VERSION   = "v1.0.0-beta"
     WINDOW_SIZE = "1280x860"
 
     def __init__(self):
@@ -1205,7 +1205,7 @@ class OCRApp(tk.Tk):
             font=("Segoe UI", 10), anchor="w")
         self._lbl_status.pack(side="left", fill="x", expand=True)
 
-        tk.Label(bar, text="LocalOCR v0.3.2",
+        tk.Label(bar, text="LocalOCR v1.0.0-beta",
                  bg=Theme.BG_MID, fg=Theme.TEXT_MUTED,
                  font=("Segoe UI", 9)).pack(side="right")
 

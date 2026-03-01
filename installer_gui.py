@@ -1,6 +1,6 @@
 """
-LocalOCR Installer v0.3.2
-=========================
+LocalOCR Installer v1.0.0-beta
+==============================
 Proper GUI installer for Windows / Linux / macOS.
 
 Modes (radio selection):
@@ -27,8 +27,8 @@ import re
 import glob
 
 APP_NAME    = "LocalOCR"
-APP_VERSION = "0.3.2"
-REPO_URL    = "https://github.com/chiraleo2000/Local_PDFtoDocx-OCR/archive/refs/tags/v0.3.2.zip"
+APP_VERSION = "1.0.0-beta"
+REPO_URL    = "https://github.com/chiraleo2000/Local_PDFtoDocx-OCR/archive/refs/tags/v1.0.0-beta.zip"
 REPO_CLONE  = "https://github.com/chiraleo2000/Local_PDFtoDocx-OCR.git"
 YOLO_MODEL_REPO   = "juliozhao/DocLayout-YOLO-DocStructBench-imgsz1280-2501"
 YOLO_MODEL_FILE   = "doclayout_yolo_docstructbench_imgsz1280_2501.pt"
