@@ -1402,22 +1402,69 @@ class OCRApp(tk.Tk):
             # ── Critical: verify YOLO model is actually loaded ────────────────
             pipeline = _get_pipeline()
             if not pipeline.layout.model_loaded:
-                model_path = None
-                try:
-                    from src.layout_detector import LayoutDetector
-                    model_path = LayoutDetector.default_model_path()
-                except Exception:
-                    pass
-                err_lines = [
-                    "❌ DocLayout-YOLO model NOT LOADED — conversion is disabled.",
-                    "   Table and layout detection require the YOLO model.",
-                    f"   Expected: {model_path or 'models/DocLayout-YOLO-DocStructBench/doclayout_yolo_docstructbench_imgsz1280_2501.pt'}",
-                    "   → Run the LocalOCR installer (Update mode) or install.sh to download the model.",
-                ]
-                for line in err_lines:
-                    self.after(0, lambda m=line: self._log(m, Theme.ERROR))
-                self.after(0, lambda: self._btn_convert.configure(state="disabled"))
-                return
+                from src.layout_detector import LayoutDetector
+                model_path = LayoutDetector.default_model_path()
+
+                # ── Auto-download the model if the .pt file is missing ────────
+                if not os.path.isfile(model_path):
+                    self.after(0, lambda: self._log(
+                        "⬇  DocLayout-YOLO model not found — downloading automatically (~30 MB)...",
+                        Theme.WARNING))
+                    os.makedirs(os.path.dirname(model_path), exist_ok=True)
+                    downloaded = False
+
+                    # Try huggingface_hub first
+                    try:
+                        import shutil
+                        from huggingface_hub import hf_hub_download
+                        self.after(0, lambda: self._log(
+                            "   Downloading via huggingface_hub...", Theme.TEXT_MUTED))
+                        cached = hf_hub_download(
+                            "juliozhao/DocLayout-YOLO-DocStructBench-imgsz1280-2501",
+                            "doclayout_yolo_docstructbench_imgsz1280_2501.pt")
+                        shutil.copy2(cached, model_path)
+                        downloaded = True
+                        self.after(0, lambda: self._log(
+                            "   ✓ Download complete.", Theme.TEXT_MUTED))
+                    except Exception as dl_exc:
+                        self.after(0, lambda e=str(dl_exc): self._log(
+                            f"   huggingface_hub failed: {e} — trying direct URL...",
+                            Theme.TEXT_MUTED))
+
+                    # Fallback: direct URL
+                    if not downloaded:
+                        try:
+                            import urllib.request
+                            url = ("https://huggingface.co/juliozhao/"
+                                   "DocLayout-YOLO-DocStructBench-imgsz1280-2501"
+                                   "/resolve/main/"
+                                   "doclayout_yolo_docstructbench_imgsz1280_2501.pt")
+                            urllib.request.urlretrieve(url, model_path)
+                            downloaded = True
+                            self.after(0, lambda: self._log(
+                                "   ✓ Download complete.", Theme.TEXT_MUTED))
+                        except Exception as dl2_exc:
+                            self.after(0, lambda e=str(dl2_exc): self._log(
+                                f"   Direct download failed: {e}", Theme.ERROR))
+
+                    if downloaded and os.path.isfile(model_path):
+                        # Reload the pipeline so it picks up the new model
+                        global _pipeline
+                        _pipeline = None
+                        pipeline = _get_pipeline()
+
+                # ── Still not loaded after download attempt ───────────────────
+                if not pipeline.layout.model_loaded:
+                    err_lines = [
+                        "❌ DocLayout-YOLO model NOT LOADED — conversion is disabled.",
+                        "   Table and layout detection require the YOLO model.",
+                        f"   Expected: {model_path}",
+                        "   Check your internet connection and restart the app to retry.",
+                    ]
+                    for line in err_lines:
+                        self.after(0, lambda m=line: self._log(m, Theme.ERROR))
+                    self.after(0, lambda: self._btn_convert.configure(state="disabled"))
+                    return
 
             self.after(0, lambda: self._set_progress_value(total))
             try:

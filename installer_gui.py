@@ -1,5 +1,5 @@
 """
-LocalOCR Installer v0.3.0
+LocalOCR Installer v0.3.2
 =========================
 Proper GUI installer for Windows / Linux / macOS.
 
@@ -672,8 +672,23 @@ class InstallerApp(tk.Tk):
             self._set_prog(80)
             if self._cancelled: return
 
-            # 4 — refresh marker
-            self._log("[4/4] Finalizing...", "info")
+            # 4 — YOLO model
+            self._log("[4/5] Checking DocLayout-YOLO model...", "info")
+            model_dir = os.path.join(dest, "models", "DocLayout-YOLO-DocStructBench")
+            model_pt  = os.path.join(model_dir, YOLO_MODEL_FILE)
+            if os.path.isfile(model_pt):
+                self._log(f"  [OK] Model already present: {model_pt}", "ok")
+            else:
+                self._log("  Model missing — downloading (~30 MB)...", "warn")
+                if not self._download_yolo_model(dest, vpy, model_dir, model_pt):
+                    self._log("  [WARN] Model download failed — re-run Update to retry.", "warn")
+                else:
+                    self._log(f"  [OK] Model downloaded: {model_pt}", "ok")
+            self._set_prog(90)
+            if self._cancelled: return
+
+            # 5 — refresh marker
+            self._log("[5/5] Finalizing...", "info")
             self._write_marker(dest, vpy)
             self._write_launcher(dest, vpy)
             self._set_prog(100)

@@ -1,17 +1,17 @@
 @echo off
 REM ══════════════════════════════════════════════════════════════════════════
-REM  LocalOCR Installer for Windows  v0.3.1
+REM  LocalOCR Installer for Windows  v0.3.2
 REM  Detailed progress reporting during installation.
 REM ══════════════════════════════════════════════════════════════════════════
 setlocal enabledelayedexpansion
-title LocalOCR Installer v0.3.1
+title LocalOCR Installer v0.3.2
 color 0B
 
 echo.
 echo  ╔══════════════════════════════════════════════════════════════╗
 echo  ║                                                              ║
 echo  ║      LocalOCR — PDF to DOCX Converter                       ║
-echo  ║      Installer v0.3.1                                        ║
+echo  ║      Installer v0.3.2                                        ║
 echo  ║                                                              ║
 echo  ╚══════════════════════════════════════════════════════════════╝
 echo.
@@ -19,7 +19,7 @@ echo.
 set "SRC_DIR=%~dp0"
 set "SRC_DIR=%SRC_DIR:~0,-1%"
 set "STEP=0"
-set "TOTAL_STEPS=8"
+set "TOTAL_STEPS=9"
 
 REM ── Helper: print step ─────────────────────────────────────────────────
 :step1
@@ -189,7 +189,59 @@ py -3 -c "import easyocr; print('   [OK] EasyOCR')"
 py -3 -c "import doclayout_yolo; print('   [OK] DocLayout-YOLO')"
 py -3 -c "import transformers; print('   [OK] Transformers')"
 
-REM ── Step 8: Create shortcuts & launchers ──────────────────────────────
+REM ── Step 8: Download DocLayout-YOLO model weights ──────────────────────
+set /a STEP+=1
+echo.
+echo  ════════════════════════════════════════════════════════════
+echo   [%STEP%/%TOTAL_STEPS%] Downloading DocLayout-YOLO model (~30 MB)...
+echo  ════════════════════════════════════════════════════════════
+
+set "MODEL_DIR=%INSTALL_DIR%\models\DocLayout-YOLO-DocStructBench"
+set "MODEL_FILE=doclayout_yolo_docstructbench_imgsz1280_2501.pt"
+set "MODEL_PT=%MODEL_DIR%\%MODEL_FILE%"
+
+if exist "%MODEL_PT%" (
+    echo   [OK] Model already present: %MODEL_PT%
+) else (
+    echo   Writing download helper...
+    set "DL_SCRIPT=%TEMP%\_localocr_dl_model.py"
+    (
+        echo import os, sys, shutil, urllib.request
+        echo model_dir = r"%MODEL_DIR%"
+        echo model_pt  = r"%MODEL_PT%"
+        echo hf_repo   = "juliozhao/DocLayout-YOLO-DocStructBench-imgsz1280-2501"
+        echo hf_file   = "%MODEL_FILE%"
+        echo direct    = "https://huggingface.co/juliozhao/DocLayout-YOLO-DocStructBench-imgsz1280-2501/resolve/main/%MODEL_FILE%"
+        echo os.makedirs(model_dir, exist_ok=True^)
+        echo if os.path.isfile(model_pt^):
+        echo     print("Already present:", model_pt^); sys.exit(0^)
+        echo try:
+        echo     from huggingface_hub import hf_hub_download
+        echo     print("Downloading via huggingface_hub..."^)
+        echo     cached = hf_hub_download(hf_repo, hf_file^)
+        echo     shutil.copy2(cached, model_pt^)
+        echo     print("Done:", model_pt^); sys.exit(0^)
+        echo except Exception as e:
+        echo     print("huggingface_hub failed:", e^)
+        echo try:
+        echo     print("Trying direct URL..."^)
+        echo     urllib.request.urlretrieve(direct, model_pt^)
+        echo     print("Done:", model_pt^); sys.exit(0^)
+        echo except Exception as e:
+        echo     print("Direct download failed:", e^); sys.exit(1^)
+    ) > "%DL_SCRIPT%"
+    py -3 "%DL_SCRIPT%"
+    if %errorlevel% equ 0 (
+        echo   [OK] Model downloaded: %MODEL_PT%
+    ) else (
+        echo   [WARN] Model download failed. The app will auto-retry on first launch.
+        echo   Or download manually from:
+        echo   https://huggingface.co/juliozhao/DocLayout-YOLO-DocStructBench-imgsz1280-2501
+    )
+    if exist "%DL_SCRIPT%" del "%DL_SCRIPT%" >nul 2>&1
+)
+
+REM ── Step 9: Create shortcuts & launchers ──────────────────────────────
 set /a STEP+=1
 echo.
 echo  ────────────────────────────────────────────────────────────
