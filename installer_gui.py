@@ -1,5 +1,5 @@
 """
-LocalOCR Installer v1.0.0-beta
+LocalOCR Installer v0.4.0
 ==============================
 Proper GUI installer for Windows / Linux / macOS.
 
@@ -12,6 +12,8 @@ Other buttons: Cancel (stops running operation), Close, Launch App.
 
 Build:  py -3 build_installer.py
 """
+# pylint: disable=broad-exception-caught,too-many-lines,line-too-long,multiple-statements
+# pylint: disable=missing-class-docstring,missing-function-docstring
 import os
 import sys
 import subprocess
@@ -27,8 +29,8 @@ import re
 import glob
 
 APP_NAME    = "LocalOCR"
-APP_VERSION = "1.0.0-beta"
-REPO_URL    = "https://github.com/chiraleo2000/Local_PDFtoDocx-OCR/archive/refs/tags/v1.0.0-beta.zip"
+APP_VERSION = "0.4.0"
+REPO_URL    = "https://github.com/chiraleo2000/Local_PDFtoDocx-OCR/archive/refs/tags/v0.4.0.zip"
 REPO_CLONE  = "https://github.com/chiraleo2000/Local_PDFtoDocx-OCR.git"
 YOLO_MODEL_REPO   = "juliozhao/DocLayout-YOLO-DocStructBench-imgsz1280-2501"
 YOLO_MODEL_FILE   = "doclayout_yolo_docstructbench_imgsz1280_2501.pt"
@@ -39,6 +41,11 @@ YOLO_MODEL_DIRECT = (
 MARKER      = ".installed_ok"
 VENV_DIR    = "venv"
 MIN_PY      = (3, 10)
+MAX_PY      = (3, 12)
+PREFERRED_PY = "3.12"
+PY_EXE = "python.exe"
+PYW_EXE = "pythonw.exe"
+UI_FONT = "Segoe UI"
 
 if os.name == "nt":
     _HOME = os.environ.get("USERPROFILE", "C:\\")
@@ -67,7 +74,7 @@ ORANGE    = "#f39c12"
 # ══════════════════════════════════════════════════════════════════════
 #  FIND REAL PYTHON 3.10+
 # ══════════════════════════════════════════════════════════════════════
-def _find_system_python():
+def _find_system_python():  # NOSONAR - installer interpreter discovery is intentionally defensive.
     """Return (exe_path, 'x.y.z') or (None, None)."""
     def _try(args):
         try:
@@ -75,7 +82,7 @@ def _find_system_python():
             if os.name == "nt":
                 kw["creationflags"] = subprocess.CREATE_NO_WINDOW
             r = subprocess.run(args + ["--version"], capture_output=True,
-                               text=True, timeout=10, **kw)
+                               text=True, timeout=10, check=False, **kw)
             if r.returncode != 0:
                 return None
             m = re.search(r"Python (\d+)\.(\d+)\.(\d+)", r.stdout + r.stderr)
@@ -84,8 +91,10 @@ def _find_system_python():
             maj, mi, mic = int(m.group(1)), int(m.group(2)), int(m.group(3))
             if (maj, mi) < MIN_PY:
                 return None
+            if (maj, mi) > MAX_PY:
+                return None
             r2 = subprocess.run(args + ["-c", "import sys; print(sys.executable)"],
-                                capture_output=True, text=True, timeout=10, **kw)
+                                capture_output=True, text=True, timeout=10, check=False, **kw)
             if r2.returncode != 0:
                 return None
             full = r2.stdout.strip()
@@ -94,6 +103,39 @@ def _find_system_python():
             return (full, f"{maj}.{mi}.{mic}")
         except Exception:
             return None
+
+    def _try_uv_python():
+        uv = shutil.which("uv")
+        if not uv:
+            return None
+        try:
+            kw = {}
+            if os.name == "nt":
+                kw["creationflags"] = subprocess.CREATE_NO_WINDOW
+            subprocess.run([uv, "python", "install", PREFERRED_PY],
+                           capture_output=True, text=True, timeout=120, check=False, **kw)
+            r = subprocess.run([uv, "python", "dir"],
+                               capture_output=True, text=True, timeout=10, check=False, **kw)
+            if r.returncode != 0:
+                return None
+            py_dir = r.stdout.strip()
+            if not py_dir or not os.path.isdir(py_dir):
+                return None
+            if os.name == "nt":
+                pattern = os.path.join(py_dir, f"cpython-{PREFERRED_PY}*", PY_EXE)
+            else:
+                pattern = os.path.join(py_dir, f"cpython-{PREFERRED_PY}*", "bin", "python3")
+            for exe in sorted(glob.glob(pattern), reverse=True):
+                found = _try([exe])
+                if found:
+                    return found
+            return None
+        except Exception:
+            return None
+
+    r = _try_uv_python()
+    if r:
+        return r
 
     # py -3 launcher (Windows)
     if os.name == "nt":
@@ -116,7 +158,7 @@ def _find_system_python():
                         "Programs\\Python\\Python311",
                         "Programs\\Python\\Python310"]:
                 d = os.path.join(base, sub) if sub else base
-                exe = os.path.join(d, "python.exe")
+                exe = os.path.join(d, PY_EXE)
                 if os.path.isfile(exe):
                     r = _try([exe])
                     if r: return r
@@ -133,7 +175,7 @@ def _find_system_python():
 
 def _venv_python(dest):
     if os.name == "nt":
-        return os.path.join(dest, VENV_DIR, "Scripts", "python.exe")
+        return os.path.join(dest, VENV_DIR, "Scripts", PY_EXE)
     return os.path.join(dest, VENV_DIR, "bin", "python")
 
 
@@ -141,6 +183,23 @@ def _venv_pip(dest):
     if os.name == "nt":
         return os.path.join(dest, VENV_DIR, "Scripts", "pip.exe")
     return os.path.join(dest, VENV_DIR, "bin", "pip")
+
+
+def _python_version_supported(py_exe):
+    try:
+        kw = {}
+        if os.name == "nt":
+            kw["creationflags"] = subprocess.CREATE_NO_WINDOW
+        r = subprocess.run(
+            [py_exe, "-c", "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')"],
+            capture_output=True, text=True, timeout=10, check=False, **kw,
+        )
+        if r.returncode != 0:
+            return False
+        maj, mi = (int(part) for part in r.stdout.strip().split(".")[:2])
+        return MIN_PY <= (maj, mi) <= MAX_PY
+    except Exception:
+        return False
 
 
 def _installed(path):
@@ -182,15 +241,15 @@ class InstallerApp(tk.Tk):
             r = int(108*(1-t)+26*t); g = int(99*(1-t)+27*t); b = int(255*(1-t)+46*t)
             c.create_line(0, i, 760, i, fill=f"#{r:02x}{g:02x}{b:02x}")
         c.create_text(20, 22, text=f"{APP_NAME} Setup v{APP_VERSION}",
-                      anchor="w", fill="white", font=("Segoe UI", 17, "bold"))
+                      anchor="w", fill="white", font=(UI_FONT, 17, "bold"))
         c.create_text(20, 48, text="PDF to DOCX OCR Converter",
-                      anchor="w", fill="#d0d0ff", font=("Segoe UI", 10))
+                      anchor="w", fill="#d0d0ff", font=(UI_FONT, 10))
 
         # ── path ──────────────────────────────────────────────────
         pf = tk.Frame(self, bg=BG_MID, padx=14, pady=8)
         pf.pack(fill="x", padx=14, pady=(8, 2))
         tk.Label(pf, text="Install Location:", bg=BG_MID, fg=CYAN,
-                 font=("Segoe UI", 10, "bold")).pack(anchor="w")
+                 font=(UI_FONT, 10, "bold")).pack(anchor="w")
         row = tk.Frame(pf, bg=BG_MID); row.pack(fill="x", pady=(3, 0))
         self._var_path = tk.StringVar(value=DEFAULT_DIR)
         self._ent = tk.Entry(row, textvariable=self._var_path,
@@ -199,7 +258,7 @@ class InstallerApp(tk.Tk):
         self._ent.pack(side="left", fill="x", expand=True, ipady=3)
         self._btn_browse = tk.Button(row, text=" Browse ", command=self._browse,
                                      bg=BG_LIGHT, fg=TXT_DIM, relief="flat",
-                                     font=("Segoe UI", 9), cursor="hand2",
+                                     font=(UI_FONT, 9), cursor="hand2",
                                      activebackground=ACCENT, activeforeground="white")
         self._btn_browse.pack(side="right", padx=(6, 0))
 
@@ -214,7 +273,7 @@ class InstallerApp(tk.Tk):
         mf = tk.Frame(self, bg=BG_MID, padx=14, pady=8)
         mf.pack(fill="x", padx=14, pady=(4, 2))
         tk.Label(mf, text="Action:", bg=BG_MID, fg=CYAN,
-                 font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 4))
+                 font=(UI_FONT, 10, "bold")).pack(anchor="w", pady=(0, 4))
 
         self._var_mode = tk.StringVar(value="install")
         modes = [
@@ -232,16 +291,16 @@ class InstallerApp(tk.Tk):
                                 value=val, bg=BG_MID, fg=TXT,
                                 selectcolor=BG_LIGHT, activebackground=BG_MID,
                                 activeforeground=TXT,
-                                font=("Segoe UI", 10), anchor="w",
+                                font=(UI_FONT, 10), anchor="w",
                                 cursor="hand2", indicatoron=True)
             rb.pack(side="left")
             tk.Label(rf, text=f"  — {desc}", bg=BG_MID, fg=TXT_DIM,
-                     font=("Segoe UI", 8)).pack(side="left")
+                     font=(UI_FONT, 8)).pack(side="left")
 
         # ── log ───────────────────────────────────────────────────
         lf = tk.Frame(self, bg=BG); lf.pack(fill="both", expand=True, padx=14, pady=4)
         tk.Label(lf, text="Log:", bg=BG, fg=TXT,
-                 font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 3))
+                 font=(UI_FONT, 10, "bold")).pack(anchor="w", pady=(0, 3))
         self._log_w = scrolledtext.ScrolledText(
             lf, wrap="word", font=("Consolas", 9), height=13, state="disabled",
             bg=LOG_BG, fg=GREEN, insertbackground=GREEN,
@@ -266,21 +325,21 @@ class InstallerApp(tk.Tk):
 
         self._btn_cancel = tk.Button(bf, text="  Cancel  ", command=self._cancel,
             bg=BG_LIGHT, fg=TXT_DIM, activebackground=RED, activeforeground="white",
-            font=("Segoe UI", 10), relief="flat", cursor="hand2")
+            font=(UI_FONT, 10), relief="flat", cursor="hand2")
 
         self._btn_close = tk.Button(bf, text="  Close  ", command=self._close,
             bg=BG_LIGHT, fg=TXT_DIM, activebackground=RED, activeforeground="white",
-            font=("Segoe UI", 10), relief="flat", cursor="hand2")
+            font=(UI_FONT, 10), relief="flat", cursor="hand2")
 
         self._btn_go = tk.Button(bf, text="  Run  ", command=self._go,
             bg=ACCENT, fg="white", activebackground=ACCENT_H, activeforeground="white",
-            font=("Segoe UI", 12, "bold"), relief="flat", cursor="hand2",
+            font=(UI_FONT, 12, "bold"), relief="flat", cursor="hand2",
             padx=24, pady=3)
 
         self._btn_launch = tk.Button(bf, text="  Launch App  ",
             command=self._launch, bg=GREEN, fg="white",
             activebackground="#00e89d", activeforeground="white",
-            font=("Segoe UI", 12, "bold"), relief="flat", cursor="hand2",
+            font=(UI_FONT, 12, "bold"), relief="flat", cursor="hand2",
             padx=20, pady=3)
 
         # default layout
@@ -297,7 +356,7 @@ class InstallerApp(tk.Tk):
                     text=f"Python {ver}  |  {py}", fg=GREEN))
             else:
                 self.after(0, lambda: self._py_label.configure(
-                    text="ERROR: Python 3.10+ not found — install from python.org",
+                    text="ERROR: Python 3.10-3.12 not found — install Python 3.12 or install uv",
                     fg=RED))
                 self.after(0, lambda: self._btn_go.configure(state="disabled"))
         threading.Thread(target=_w, daemon=True).start()
@@ -420,7 +479,7 @@ class InstallerApp(tk.Tk):
             if os.name == "nt":
                 kw["creationflags"] = subprocess.CREATE_NO_WINDOW
             r = subprocess.run(cmd, capture_output=True, text=True,
-                               timeout=30, **kw)
+                               timeout=30, check=False, **kw)
             return r.returncode == 0
         except Exception:
             return False
@@ -428,7 +487,7 @@ class InstallerApp(tk.Tk):
     # ══════════════════════════════════════════════════════════════
     #  DISPATCH (Run button)
     # ══════════════════════════════════════════════════════════════
-    def _go(self):
+    def _go(self):  # NOSONAR - GUI command dispatch is compact and readable as one method.
         mode = self._var_mode.get()
         dest = self._var_path.get().strip()
         if not dest:
@@ -436,7 +495,7 @@ class InstallerApp(tk.Tk):
             return
         if not self._sys_py:
             messagebox.showerror("Error",
-                "Python 3.10+ not found.\nInstall from python.org first.")
+                "Python 3.10-3.12 not found.\nInstall Python 3.12 or install uv first.")
             return
 
         if mode == "install":
@@ -476,7 +535,7 @@ class InstallerApp(tk.Tk):
     # ══════════════════════════════════════════════════════════════
     #  FRESH INSTALL
     # ══════════════════════════════════════════════════════════════
-    def _do_install(self):
+    def _do_install(self):  # NOSONAR - installer steps are intentionally kept linear for logs/progress.
         dest = self._var_path.get().strip()
         sys_py = self._sys_py
         vpy = _venv_python(dest)
@@ -529,7 +588,8 @@ class InstallerApp(tk.Tk):
 
             # 4 — pip
             self._log("[4/9] Upgrading pip...", "info")
-            self._run([vpy, "-m", "pip", "install", "--upgrade", "pip", "--quiet"])
+            self._run([vpy, "-m", "ensurepip", "--upgrade"])
+            self._run([vpy, "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel", "--quiet"])
             self._set_prog(32)
             if self._cancelled: return
 
@@ -547,7 +607,7 @@ class InstallerApp(tk.Tk):
 
             # 6 — core
             self._log("[6/9] Core packages...", "info")
-            self._run([vpip, "install", "--quiet",
+            self._run([vpip, "install", "--quiet", "--no-cache-dir",
                        "PyMuPDF", "opencv-python-headless", "Pillow",
                        "numpy", "python-dotenv", "python-docx",
                        "beautifulsoup4", "lxml", "htmldocx", "requests"])
@@ -556,7 +616,7 @@ class InstallerApp(tk.Tk):
 
             # 7 — OCR
             self._log("[7/9] OCR engines...", "info")
-            self._run([vpip, "install", "--quiet",
+            self._run([vpip, "install", "--quiet", "--no-cache-dir",
                        "easyocr", "paddleocr", "paddlepaddle"])
             self._set_prog(75)
             if self._cancelled: return
@@ -565,13 +625,13 @@ class InstallerApp(tk.Tk):
             self._log("[8/10] Remaining packages...", "info")
             req = os.path.join(dest, "requirements.txt")
             if os.path.isfile(req):
-                self._run([vpip, "install", "--quiet", "-r", req])
+                self._run([vpip, "install", "--quiet", "--no-cache-dir", "-r", req])
             else:
-                self._run([vpip, "install", "--quiet",
+                self._run([vpip, "install", "--quiet", "--no-cache-dir",
                            "transformers", "onnxruntime",
                            "doclayout-yolo", "huggingface_hub", "dill"])
             # ensure dill is always present (needed by YOLO .pt checkpoint)
-            self._run([vpip, "install", "--quiet", "dill"])
+            self._run([vpip, "install", "--quiet", "--no-cache-dir", "dill"])
             self._set_prog(82)
             if self._cancelled: return
 
@@ -582,7 +642,7 @@ class InstallerApp(tk.Tk):
             if os.path.isfile(model_pt):
                 self._log(f"  [OK] Model already present: {model_pt}", "ok")
             else:
-                if not self._download_yolo_model(dest, vpy, model_dir, model_pt):
+                if not self._download_yolo_model(vpy, model_dir, model_pt):
                     self._log("  [WARN] Model download failed — app will error on first run.", "warn")
                     self._log("  Re-run installer (Update) or run from the app's Help menu.", "warn")
             self._set_prog(92)
@@ -628,7 +688,7 @@ class InstallerApp(tk.Tk):
     # ══════════════════════════════════════════════════════════════
     #  UPDATE / REPAIR
     # ══════════════════════════════════════════════════════════════
-    def _do_update(self):
+    def _do_update(self):  # NOSONAR - repair workflow mirrors the visible installer progress steps.
         dest = self._var_path.get().strip()
         sys_py = self._sys_py
         vpy = _venv_python(dest)
@@ -650,10 +710,14 @@ class InstallerApp(tk.Tk):
 
             # 2 — ensure venv
             self._log("[2/4] Checking venv...", "info")
+            venv_path = os.path.join(dest, VENV_DIR)
+            if os.path.isfile(vpy) and not _python_version_supported(vpy):
+                self._log("  Existing venv uses an unsupported Python — recreating for PaddleOCR...", "warn")
+                shutil.rmtree(venv_path, ignore_errors=True)
             if not os.path.isfile(vpy):
                 self._log("  Venv missing — recreating...", "warn")
-                venv_path = os.path.join(dest, VENV_DIR)
                 self._run([sys_py, "-m", "venv", venv_path])
+                self._run([vpy, "-m", "ensurepip", "--upgrade"])
             if os.path.isfile(vpy):
                 self._log("  [OK] venv present", "ok")
             else:
@@ -666,11 +730,11 @@ class InstallerApp(tk.Tk):
             self._log("[3/4] Updating packages...", "info")
             req = os.path.join(dest, "requirements.txt")
             if os.path.isfile(req):
-                self._run([vpip, "install", "--upgrade", "--quiet", "-r", req])
+                self._run([vpip, "install", "--upgrade", "--quiet", "--no-cache-dir", "-r", req])
             # Also reinstall core packages
-            self._run([vpip, "install", "--upgrade", "--quiet",
+            self._run([vpip, "install", "--upgrade", "--quiet", "--no-cache-dir",
                        "PyMuPDF", "opencv-python-headless", "easyocr",
-                       "python-docx", "htmldocx"])
+                       "paddleocr", "paddlepaddle", "python-docx", "htmldocx"])
             self._set_prog(80)
             if self._cancelled: return
 
@@ -682,7 +746,7 @@ class InstallerApp(tk.Tk):
                 self._log(f"  [OK] Model already present: {model_pt}", "ok")
             else:
                 self._log("  Model missing — downloading (~30 MB)...", "warn")
-                if not self._download_yolo_model(dest, vpy, model_dir, model_pt):
+                if not self._download_yolo_model(vpy, model_dir, model_pt):
                     self._log("  [WARN] Model download failed — re-run Update to retry.", "warn")
                 else:
                     self._log(f"  [OK] Model downloaded: {model_pt}", "ok")
@@ -704,9 +768,6 @@ class InstallerApp(tk.Tk):
             if self._cancelled: self._log("Cancelled.", "warn")
             self.after(0, self._unlock)
 
-    # ══════════════════════════════════════════════════════════════
-    #  UNINSTALL
-    # ══════════════════════════════════════════════════════════════
     def _do_uninstall(self):
         dest = self._var_path.get().strip()
         try:
@@ -737,9 +798,6 @@ class InstallerApp(tk.Tk):
         finally:
             self.after(0, self._unlock)
 
-    # ══════════════════════════════════════════════════════════════
-    #  LAUNCH — actually open the GUI app visible on screen
-    # ══════════════════════════════════════════════════════════════
     def _launch(self):
         dest = self._var_path.get().strip()
         gui  = os.path.join(dest, "gui_app.py")
@@ -752,7 +810,7 @@ class InstallerApp(tk.Tk):
         vpy = _venv_python(dest)
         exe = vpy
         if os.name == "nt":
-            pyw = vpy.replace("python.exe", "pythonw.exe")
+            pyw = vpy.replace(PY_EXE, PYW_EXE)
             if os.path.isfile(pyw):
                 exe = pyw
         if not os.path.isfile(exe):
@@ -786,9 +844,7 @@ class InstallerApp(tk.Tk):
             self._log(f"Launch error: {err}", "err")
             messagebox.showerror("Launch Failed", err)
 
-    # ══════════════════════════════════════════════════════════════    #  YOLO MODEL DOWNLOAD
-    # ════════════════════════════════════════════════════════════
-    def _download_yolo_model(self, dest, vpy, model_dir, model_pt):
+    def _download_yolo_model(self, vpy, model_dir, model_pt):
         """Download the DocLayout-YOLO model. Returns True on success."""
         os.makedirs(model_dir, exist_ok=True)
         # Write temp helper script
@@ -836,8 +892,6 @@ except Exception as e:
             try: os.remove(tmp_script)
             except OSError: pass
 
-    # ════════════════════════════════════════════════════════════    #  DOWNLOAD
-    # ══════════════════════════════════════════════════════════════
     def _download(self, dest):
         # git
         try:
@@ -915,7 +969,7 @@ except Exception as e:
                 f.write('#!/usr/bin/env bash\n')
                 f.write(f'cd "{dest}"\n')
                 f.write(f'"{vpy}" gui_app.py\n')
-            os.chmod(sh, 0o755)
+            os.chmod(sh, 0o755)  # NOSONAR - local launcher script must be executable.
             self._log("  localocr.sh created", "dim")
 
     def _write_desktop_shortcut(self, dest, vpy):
@@ -924,12 +978,12 @@ except Exception as e:
                 desk = os.path.join(os.path.expanduser("~"), "Desktop")
                 if os.path.isdir(desk):
                     df = os.path.join(desk, f"{APP_NAME}.desktop")
-                    with open(df, "w") as f:
+                    with open(df, "w", encoding="utf-8") as f:
                         f.write("[Desktop Entry]\nType=Application\n")
                         f.write(f"Name={APP_NAME}\n")
                         f.write(f'Exec="{vpy}" "{dest}/gui_app.py"\n')
                         f.write(f"Path={dest}\nTerminal=false\n")
-                    os.chmod(df, 0o755)
+                    os.chmod(df, 0o755)  # NOSONAR - desktop entry must be executable on Linux.
                     self._log(f"  Desktop shortcut: {df}", "ok")
             except Exception as exc:
                 self._log(f"  Desktop shortcut failed: {exc}", "warn")
@@ -942,7 +996,7 @@ except Exception as e:
                 return
             lnk = os.path.join(desktop, f"{APP_NAME}.lnk")
             gui = os.path.join(dest, "gui_app.py")
-            pyw = vpy.replace("python.exe", "pythonw.exe")
+            pyw = vpy.replace(PY_EXE, PYW_EXE)
             if not os.path.isfile(pyw):
                 pyw = vpy
             vbs = (
@@ -959,7 +1013,8 @@ except Exception as e:
                 f.write(vbs)
             r = subprocess.run(["cscript", "//Nologo", vbs_f],
                                capture_output=True, text=True, timeout=15,
-                               creationflags=subprocess.CREATE_NO_WINDOW)
+                               creationflags=subprocess.CREATE_NO_WINDOW,
+                               check=False)
             try: os.remove(vbs_f)
             except OSError: pass
             if os.path.isfile(lnk):

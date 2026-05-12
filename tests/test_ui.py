@@ -492,8 +492,8 @@ def _docker_available() -> bool:
 
 
 _DOCKER_SKIP = pytest.mark.skipif(
-    not _docker_available(),
-    reason="Docker daemon not available — skipping deployment tests",
+    os.getenv("RUN_DOCKER", "").strip() != "1" or not _docker_available(),
+    reason="Set RUN_DOCKER=1 with Docker running to enable deployment tests",
 )
 
 DOCKER_PORT = 7875

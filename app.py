@@ -1,6 +1,9 @@
+# pylint: disable=no-member,protected-access,broad-exception-caught,wrong-import-position
+# pylint: disable=too-many-lines,missing-function-docstring,line-too-long,unused-argument
+# pylint: disable=catching-non-exception
 """
 PDF to DOCX OCR Service — Gradio Web Application
-v0.2.3  |  Thai-optimised OCR  |  Manual correction + auto-retrain
+v0.4.0  |  Thai-optimised OCR  |  Manual correction + auto-retrain
 
 Convert tab: Upload → detect → manual add tables/figures → convert
 Review tab: See detected regions, draw new ones, re-convert
@@ -13,9 +16,21 @@ Security:
     - No internal paths leaked in error messages
 """
 import os
+
+_CPU_WORKERS = max(1, min(os.cpu_count() or 1, 8))
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", str(_CPU_WORKERS))
+os.environ.setdefault("NUMEXPR_NUM_THREADS", str(_CPU_WORKERS))
+os.environ.setdefault("USE_GPU", "false")
+os.environ.setdefault("ACCELERATOR", "cpu")
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
+os.environ.setdefault("DISABLE_TROCR_PRELOAD", "1")
+os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+
 import json
 import logging
-from pathlib import Path
 
 import cv2
 import numpy as np
@@ -181,8 +196,8 @@ def render_page_preview(pdf_path: str, page_num: int = 0, scale: float = 1.5,
 
         total = len(doc)
         return img, total
-    except (OSError, RuntimeError, ValueError) as exc:
-        logger.error("Preview error: %s", type(exc).__name__)
+    except (OSError, RuntimeError, ValueError):
+        logger.exception("Preview error")
         return None, 0
     finally:
         if doc:
@@ -213,11 +228,17 @@ def change_page(pdf_file, direction, current, total, header_pct, footer_pct):
 
 def process_document(pdf_file, quality_label, header_pct, footer_pct,
                      language_label, engine_label, yolo_conf,
-                     page_size_label, margin_label):
+                     page_size_label=None, margin_label=None,
+                     progress=gr.Progress(track_tqdm=False)):
     """Convert a PDF — no authentication required in local mode."""
     if pdf_file is None:
         return ("", "Please upload a PDF file first.",
                 None, None, gr.update(visible=False), gr.update())
+
+    progress(0, desc="Preparing PDF")
+
+    def _page_progress(current, total, message):
+        progress((current, total), desc=message)
 
     pdf_path = str(pdf_file)
     quality = QUALITY_OPTIONS.get(quality_label, "balanced")
@@ -233,6 +254,7 @@ def process_document(pdf_file, quality_label, header_pct, footer_pct,
         header_trim=header_pct, footer_trim=footer_pct,
         languages=languages, yolo_confidence=yolo_conf,
         page_size=page_size, margin_preset=margin_preset,
+        progress_callback=_page_progress,
     )
 
     if result["success"]:
@@ -367,12 +389,19 @@ def review_clear_manual(pdf_file, current_page, yolo_conf, manual_regions_state)
 
 def review_convert_with_corrections(pdf_file, quality_label, header_pct, footer_pct,
                                     language_label, engine_label, yolo_conf,
-                                    manual_regions_state, page_size_label,
-                                    margin_label):
+                                    manual_regions_state, page_size_label=None,
+                                    margin_label=None,
+                                    progress=gr.Progress(track_tqdm=False)):
     """Convert the PDF merging manual corrections with auto-detections."""
     if pdf_file is None:
         return ("", _MSG_UPLOAD_PDF_FIRST, None, None,
                 gr.update(visible=False), gr.update())
+
+    progress(0, desc="Preparing PDF with corrections")
+
+    def _page_progress(current, total, message):
+        progress((current, total), desc=message)
+
     pdf_path = str(pdf_file)
     quality = QUALITY_OPTIONS.get(quality_label, "balanced")
     languages = LANGUAGE_OPTIONS.get(language_label, _DEFAULT_LANGUAGE_CODE)
@@ -394,6 +423,7 @@ def review_convert_with_corrections(pdf_file, quality_label, header_pct, footer_
         header_trim=header_pct, footer_trim=footer_pct,
         languages=languages, yolo_confidence=yolo_conf,
         page_size=page_size, margin_preset=margin_preset,
+        progress_callback=_page_progress,
     )
 
     if result["success"]:
@@ -503,12 +533,7 @@ def refresh_history():
 # Gradio UI
 # ══════════════════════════════════════════════════════════════════════════════
 def create_interface():
-    theme = gr.themes.Soft(
-        primary_hue="violet", secondary_hue="purple", neutral_hue="slate",
-        font=gr.themes.GoogleFont("Inter"),
-    )
-
-    with gr.Blocks(title="PDF OCR Pipeline", theme=theme) as app:
+    with gr.Blocks(title="PDF OCR Pipeline") as app:
 
         gr.HTML("""
         <style>
@@ -563,7 +588,7 @@ def create_interface():
                     <h1>PDF OCR Pipeline</h1>
                     <p>EasyOCR | Thai-TrOCR | PaddleOCR | DocLayout-YOLO | HTML-first Export</p>
                 </div>
-                <div class="hero-badge">v0.2.3 &middot; Thai-Optimised</div>
+                <div class="hero-badge">v0.4.0 &middot; Thai-Optimised</div>
             </div>
             """)
 
@@ -901,7 +926,7 @@ def create_interface():
         gr.HTML("""
         <div style="text-align:center;padding:20px;margin-top:20px;
                     border-top:1px solid #e2e8f0;color:#94a3b8;font-size:0.85rem;">
-            PDF OCR Pipeline v0.2.3 — Apache-2.0 License — Thai-optimised OCR
+            PDF OCR Pipeline v0.4.0 — Apache-2.0 License — Thai-optimised OCR
         </div>
         """)
 
@@ -1030,11 +1055,16 @@ def create_interface():
 # --- Launch ---
 def main():
     app = create_interface()
+    theme = gr.themes.Soft(
+        primary_hue="violet", secondary_hue="purple", neutral_hue="slate",
+        font=gr.themes.GoogleFont("Inter"),
+    )
     port = int(os.getenv("SERVER_PORT", "7870"))
     host = os.getenv("SERVER_HOST", "127.0.0.1")
     share = os.getenv("SHARE_GRADIO", "false").lower() == "true"
+    app.queue()
     app.launch(server_name=host, server_port=port, share=share,
-               show_error=_DEBUG_MODE)
+               show_error=_DEBUG_MODE, theme=theme)
 
 
 if __name__ == "__main__":

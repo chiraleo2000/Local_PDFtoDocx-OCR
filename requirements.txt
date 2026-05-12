@@ -26,6 +26,8 @@ htmldocx>=0.0.6
 # Layout Detection (YOLO)
 doclayout-yolo>=0.0.2
 dill>=0.3.8
+lapx>=0.9.4
+shapely>=2.0.0
 
 # Network
 requests>=2.31.0
@@ -39,6 +41,7 @@ transformers>=4.37.0
 pytesseract>=0.3.10             # Tesseract OCR fallback (requires tesseract-ocr system package)
 
 # Testing
+pytest>=8.0.0
 selenium>=4.15.0
 
 # ============================================

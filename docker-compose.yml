@@ -1,0 +1,99 @@
+services:
+  localocr:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        ACCELERATOR: cpu
+    image: localocr:cpu
+    container_name: localocr-cpu
+    restart: unless-stopped
+    environment:
+      ACCELERATOR: cpu
+      USE_GPU: "false"
+      ONNX_PROVIDERS: CPUExecutionProvider
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: "7870"
+      QUALITY_PRESET: accurate
+      OCR_ENGINE: easyocr
+      DISABLE_TROCR_PRELOAD: "1"
+      LANGUAGES: tha+eng
+      CORRECTION_DATA_DIR: /app/correction_data
+    ports:
+      - "7870:7870"
+    volumes:
+      - localocr_correction_data:/app/correction_data
+      - localocr_history:/tmp/pdf_ocr_history
+
+  localocr-gpu:
+    profiles: ["gpu"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        ACCELERATOR: cuda
+    image: localocr:cuda
+    container_name: localocr-gpu
+    restart: unless-stopped
+    environment:
+      ACCELERATOR: cuda
+      USE_GPU: "true"
+      ONNX_PROVIDERS: CUDAExecutionProvider,CPUExecutionProvider
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: "7870"
+      QUALITY_PRESET: accurate
+      OCR_ENGINE: easyocr
+      DISABLE_TROCR_PRELOAD: "1"
+      LANGUAGES: tha+eng
+      CORRECTION_DATA_DIR: /app/correction_data
+    ports:
+      - "7870:7870"
+    volumes:
+      - localocr_correction_data:/app/correction_data
+      - localocr_history:/tmp/pdf_ocr_history
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  localocr-npu:
+    profiles: ["npu"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        ACCELERATOR: npu
+    image: localocr:npu-openvino
+    container_name: localocr-npu
+    restart: unless-stopped
+    environment:
+      ACCELERATOR: npu
+      USE_GPU: "false"
+      ONNX_PROVIDERS: OpenVINOExecutionProvider,CPUExecutionProvider
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: "7870"
+      QUALITY_PRESET: balanced
+      OCR_ENGINE: easyocr
+      DISABLE_TROCR_PRELOAD: "1"
+      LANGUAGES: tha+eng
+      CORRECTION_DATA_DIR: /app/correction_data
+    ports:
+      - "7870:7870"
+    volumes:
+      - localocr_correction_data:/app/correction_data
+      - localocr_history:/tmp/pdf_ocr_history
+    devices:
+      - /dev/dri:/dev/dri
+      - /dev/accel:/dev/accel
+    group_add:
+      - video
+      - render
+
+volumes:
+  localocr_correction_data:
+  localocr_history:

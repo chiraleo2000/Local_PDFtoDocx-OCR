@@ -1,3 +1,4 @@
+# pylint: disable=too-many-lines,broad-exception-caught,global-statement,import-outside-toplevel,wrong-import-position,import-error
 """
 PDF to DOCX OCR — Desktop GUI Application  (v3.0)
 Modern dark-themed Tkinter GUI (no Docker required).
@@ -9,6 +10,7 @@ Usage:
 """
 import os
 import sys
+import importlib
 
 # ── Guard against pythonw.exe / frozen exe where stdout/stderr are None ──
 # PaddleOCR, EasyOCR and other libs access sys.stdout.encoding at import time;
@@ -25,11 +27,15 @@ from pathlib import Path
 import logging
 import shutil
 import subprocess
-import importlib
 import time
 
 # ── Ensure project root is on sys.path ────────────────────────────────────────
-_PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+# When running as a PyInstaller frozen exe, __file__ resolves to the temp
+# extraction directory (sys._MEIPASS); use the exe's actual directory instead.
+if getattr(sys, 'frozen', False):
+    _PROJECT_ROOT = os.path.dirname(sys.executable)
+else:
+    _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
@@ -47,6 +53,11 @@ logging.basicConfig(
 logger = logging.getLogger("GUI")
 
 _INSTALLED_MARKER = os.path.join(_PROJECT_ROOT, ".installed_ok")
+
+FONT_FAMILY = 'Segoe UI'
+STYLE_CARD_LABEL = 'Card.TLabel'
+STYLE_ACCENT_BUTTON = 'Accent.TButton'
+STYLE_SUCCESS_BUTTON = 'Success.TButton'
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -130,15 +141,14 @@ def _detect_system_theme() -> str:
         # macOS
         r = subprocess.run(
             ["defaults", "read", "-g", "AppleInterfaceStyle"],
-            capture_output=True, text=True, timeout=3)
+            capture_output=True, text=True, timeout=3, check=False)
         return "dark" if r.stdout.strip().lower() == "dark" else "light"
     except Exception:
         pass
     return "dark"
 
 
-_THEME_PREF_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), ".theme_pref")
+_THEME_PREF_FILE = os.path.join(_PROJECT_ROOT, ".theme_pref")
 
 
 def _load_theme_pref() -> str:
@@ -146,9 +156,9 @@ def _load_theme_pref() -> str:
     try:
         with open(_THEME_PREF_FILE, encoding="utf-8") as f:
             v = f.read().strip()
-            return v if v in ("dark", "light") else None
+            return v if v in ("dark", "light") else "dark"
     except OSError:
-        return None
+        return "dark"
 
 
 def _save_theme_pref(name: str) -> None:
@@ -228,7 +238,7 @@ def _check_missing_packages():
     for pip_name, import_name in REQUIRED_PACKAGES:
         try:
             importlib.import_module(import_name)
-        except (ImportError, Exception):
+        except ImportError:  # package not installed
             missing.append((pip_name, import_name))
     return missing
 
@@ -238,7 +248,7 @@ def _is_first_run():
 
 
 def _mark_installed():
-    with open(_INSTALLED_MARKER, "w") as f:
+    with open(_INSTALLED_MARKER, "w", encoding="utf-8") as f:
         f.write(f"installed {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
 
 
@@ -295,9 +305,9 @@ class SetupWizard(tk.Tk):
             colour = f"#{r:02x}{g:02x}{b:02x}"
             hdr.create_line(0, i, 700, i, fill=colour)
         hdr.create_text(24, 28, text="🚀 LocalOCR Setup", anchor="w",
-                        fill="white", font=("Segoe UI", 20, "bold"))
+                        fill="white", font=(FONT_FAMILY, 20, "bold"))
         hdr.create_text(24, 56, text="First-time dependency installation",
-                        anchor="w", fill="#d0d0ff", font=("Segoe UI", 11))
+                        anchor="w", fill="#d0d0ff", font=(FONT_FAMILY, 11))
 
         # ── Install path ─────────────────────────────────────────────────
         path_frame = tk.Frame(self, bg=Theme.BG_MID, padx=16, pady=12)
@@ -305,7 +315,7 @@ class SetupWizard(tk.Tk):
 
         tk.Label(path_frame, text="📂 Application Path",
                  bg=Theme.BG_MID, fg=Theme.ACCENT_GLOW,
-                 font=("Segoe UI", 11, "bold")).pack(anchor="w")
+                 font=(FONT_FAMILY, 11, "bold")).pack(anchor="w")
         self._var_path = tk.StringVar(value=_PROJECT_ROOT)
         path_entry = tk.Entry(path_frame, textvariable=self._var_path,
                               state="readonly", font=("Consolas", 10),
@@ -321,7 +331,7 @@ class SetupWizard(tk.Tk):
 
         tk.Label(info_frame, text="🐍 Python Environment",
                  bg=Theme.BG_MID, fg=Theme.INFO,
-                 font=("Segoe UI", 11, "bold")).pack(anchor="w")
+                 font=(FONT_FAMILY, 11, "bold")).pack(anchor="w")
         tk.Label(info_frame, text=f"  Executable: {sys.executable}",
                  bg=Theme.BG_MID, fg=Theme.TEXT_DIM,
                  font=("Consolas", 9)).pack(anchor="w")
@@ -335,7 +345,7 @@ class SetupWizard(tk.Tk):
 
         tk.Label(log_outer, text="📋 Installation Log",
                  bg=Theme.BG_DARK, fg=Theme.TEXT,
-                 font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 4))
+                 font=(FONT_FAMILY, 11, "bold")).pack(anchor="w", pady=(0, 4))
 
         self._txt_log = scrolledtext.ScrolledText(
             log_outer, wrap="word", font=("Consolas", 9),
@@ -369,7 +379,7 @@ class SetupWizard(tk.Tk):
             btn_frame, text="  Cancel  ", command=self._on_close,
             bg=Theme.BG_LIGHT, fg=Theme.TEXT_DIM,
             activebackground=Theme.ERROR, activeforeground="white",
-            font=("Segoe UI", 10), relief="flat", bd=0, cursor="hand2")
+            font=(FONT_FAMILY, 10), relief="flat", bd=0, cursor="hand2")
         self._btn_cancel.pack(side="left", padx=4)
 
         self._btn_install = tk.Button(
@@ -377,7 +387,7 @@ class SetupWizard(tk.Tk):
             command=self._start_install,
             bg=Theme.ACCENT, fg="white",
             activebackground=Theme.ACCENT_HOVER, activeforeground="white",
-            font=("Segoe UI", 11, "bold"), relief="flat", bd=0,
+            font=(FONT_FAMILY, 11, "bold"), relief="flat", bd=0,
             cursor="hand2", padx=16, pady=6)
         self._btn_install.pack(side="right", padx=4)
 
@@ -386,7 +396,7 @@ class SetupWizard(tk.Tk):
             command=self._skip,
             bg=Theme.BG_SURFACE, fg=Theme.TEXT_DIM,
             activebackground=Theme.WARNING, activeforeground="black",
-            font=("Segoe UI", 10), relief="flat", bd=0, cursor="hand2")
+            font=(FONT_FAMILY, 10), relief="flat", bd=0, cursor="hand2")
         self._btn_skip.pack(side="right", padx=4)
 
     def _log(self, msg, colour=None):
@@ -407,7 +417,7 @@ class SetupWizard(tk.Tk):
         self._progress.start(10)
         threading.Thread(target=self._run_install, daemon=True).start()
 
-    def _run_install(self):
+    def _run_install(self):  # NOSONAR
         try:
             self.after(0, lambda: self._log(
                 "🔍 Checking installed packages...", Theme.INFO))
@@ -426,7 +436,7 @@ class SetupWizard(tk.Tk):
                 torch_needed = False
                 try:
                     importlib.import_module("torch")
-                except (ImportError, Exception):
+                except ImportError:  # torch not installed
                     torch_needed = True
 
                 if torch_needed:
@@ -471,7 +481,7 @@ class SetupWizard(tk.Tk):
         except Exception as exc:
             err = str(exc)
             self.after(0, lambda: self._log(f"❌ ERROR: {err}", Theme.ERROR))
-            self.after(0, lambda: self._progress.stop())
+            self.after(0, lambda: self._progress.stop())  # pylint: disable=unnecessary-lambda
             self.after(0, lambda: self._btn_install.configure(state="normal"))
             self.after(0, lambda: self._btn_skip.configure(state="normal"))
 
@@ -519,6 +529,7 @@ class SetupWizard(tk.Tk):
 # ══════════════════════════════════════════════════════════════════════════════
 # Lazy pipeline loader
 # ══════════════════════════════════════════════════════════════════════════════
+# pylint: disable=invalid-name  # _pipeline is a mutable module-level singleton, not a constant
 _pipeline = None
 _pipeline_lock = threading.Lock()
 
@@ -538,8 +549,8 @@ def _get_pipeline():
 # ══════════════════════════════════════════════════════════════════════════════
 def _render_pdf_page_pil(pdf_path: str, page_num: int = 0,
                          max_width: int = 480, max_height: int = 640):
-    import fitz
-    from PIL import Image
+    import fitz  # pylint: disable=import-error
+    from PIL import Image  # pylint: disable=import-error
     try:
         doc = fitz.open(pdf_path)
         if page_num >= len(doc):
@@ -568,7 +579,7 @@ class OCRApp(tk.Tk):
     """Desktop GUI for the PDF-to-DOCX OCR Pipeline with modern dark theme."""
 
     APP_TITLE = "LocalOCR — PDF to DOCX Converter"
-    VERSION   = "v1.0.0-beta"
+    VERSION   = "v0.4.0"
     WINDOW_SIZE = "1280x860"
 
     def __init__(self):
@@ -592,6 +603,37 @@ class OCRApp(tk.Tk):
         self._preview_photo = None  # prevent GC
         self._start_time = None
 
+        # UI widgets declared here to satisfy W0201; built in _build_* methods
+        self._progress = None
+        self._lbl_status = None
+        self._cb_quality = None
+        self._cb_language = None
+        self._cb_engine = None
+        self._cb_page_size = None
+        self._cb_margin = None
+        self._var_yolo = None
+        self._lbl_yolo_val = None
+        self._var_header = None
+        self._var_footer = None
+        self._btn_convert = None
+        self._btn_prev_page = None
+        self._lbl_page = None
+        self._btn_next_page = None
+        self._canvas = None
+        self._lbl_word_count = None
+        self._find_frame = None
+        self._find_var = None
+        self._find_entry = None
+        self._lbl_find_count = None
+        self._find_index = "1.0"
+        self._txt_output = None
+        self._info_tree = None
+        self._btn_save_docx = None
+        self._btn_save_txt = None
+        self._btn_save_html = None
+        self._btn_open_folder = None
+        self._txt_log = None
+
         self._build_menu()
         self._build_header()
         self._build_ui()
@@ -610,7 +652,7 @@ class OCRApp(tk.Tk):
         style.configure(".", background=Theme.BG_DARK,
                         foreground=Theme.TEXT, fieldbackground=Theme.BG_LIGHT,
                         bordercolor=Theme.BORDER, focuscolor=Theme.ACCENT,
-                        font=("Segoe UI", 10))
+                font=(FONT_FAMILY, 10))
 
         # Frames
         style.configure("TFrame", background=Theme.BG_DARK)
@@ -620,17 +662,17 @@ class OCRApp(tk.Tk):
         # Labels
         style.configure("TLabel", background=Theme.BG_DARK,
                         foreground=Theme.TEXT)
-        style.configure("Title.TLabel", font=("Segoe UI", 16, "bold"),
+        style.configure("Title.TLabel", font=(FONT_FAMILY, 16, "bold"),
                         foreground=Theme.ACCENT_GLOW, background=Theme.BG_DARK)
-        style.configure("Subtitle.TLabel", font=("Segoe UI", 11),
+        style.configure("Subtitle.TLabel", font=(FONT_FAMILY, 11),
                         foreground=Theme.TEXT_DIM, background=Theme.BG_DARK)
-        style.configure("Status.TLabel", font=("Segoe UI", 10),
+        style.configure("Status.TLabel", font=(FONT_FAMILY, 10),
                         foreground=Theme.TEXT_DIM, background=Theme.BG_DARK)
-        style.configure("Card.TLabel", background=Theme.BG_MID,
+        style.configure(STYLE_CARD_LABEL, background=Theme.BG_MID,
                         foreground=Theme.TEXT)
         style.configure("Accent.TLabel", background=Theme.BG_MID,
                         foreground=Theme.ACCENT_GLOW,
-                        font=("Segoe UI", 10, "bold"))
+                        font=(FONT_FAMILY, 10, "bold"))
         style.configure("Dim.TLabel", background=Theme.BG_MID,
                         foreground=Theme.TEXT_DIM)
         style.configure("File.TLabel", background=Theme.BG_DARK,
@@ -643,36 +685,36 @@ class OCRApp(tk.Tk):
                         bordercolor=Theme.BORDER)
         style.configure("TLabelframe.Label", background=Theme.BG_MID,
                         foreground=Theme.ACCENT_GLOW,
-                        font=("Segoe UI", 10, "bold"))
+                        font=(FONT_FAMILY, 10, "bold"))
 
         # Buttons
         style.configure("TButton", background=Theme.BG_SURFACE,
                         foreground=Theme.TEXT, padding=(12, 6),
-                        font=("Segoe UI", 10))
+                        font=(FONT_FAMILY, 10))
         style.map("TButton",
                   background=[("active", Theme.ACCENT),
                               ("disabled", Theme.BG_LIGHT)],
                   foreground=[("active", "white"),
                               ("disabled", Theme.TEXT_MUTED)])
 
-        style.configure("Accent.TButton", background=Theme.ACCENT,
+        style.configure(STYLE_ACCENT_BUTTON, background=Theme.ACCENT,
                         foreground="white", padding=(18, 10),
-                        font=("Segoe UI", 12, "bold"))
-        style.map("Accent.TButton",
+                font=(FONT_FAMILY, 12, "bold"))
+        style.map(STYLE_ACCENT_BUTTON,
                   background=[("active", Theme.ACCENT_HOVER),
                               ("disabled", Theme.BG_LIGHT)],
                   foreground=[("disabled", Theme.TEXT_MUTED)])
 
-        style.configure("Success.TButton", background=Theme.SUCCESS,
+        style.configure(STYLE_SUCCESS_BUTTON, background=Theme.SUCCESS,
                         foreground="#1a1b2e", padding=(14, 7),
-                        font=("Segoe UI", 10, "bold"))
-        style.map("Success.TButton",
+                font=(FONT_FAMILY, 10, "bold"))
+        style.map(STYLE_SUCCESS_BUTTON,
                   background=[("active", "#00e89c"),
                               ("disabled", Theme.BG_LIGHT)])
 
         style.configure("Danger.TButton", background=Theme.ERROR,
                         foreground="white", padding=(12, 6),
-                        font=("Segoe UI", 10))
+                        font=(FONT_FAMILY, 10))
         style.map("Danger.TButton",
                   background=[("active", "#ff5e8a"),
                               ("disabled", Theme.BG_LIGHT)])
@@ -700,7 +742,7 @@ class OCRApp(tk.Tk):
         style.configure("TNotebook.Tab", background=Theme.BG_MID,
                         foreground=Theme.TEXT_DIM,
                         padding=(16, 8),
-                        font=("Segoe UI", 10))
+                        font=(FONT_FAMILY, 10))
         style.map("TNotebook.Tab",
                   background=[("selected", Theme.ACCENT)],
                   foreground=[("selected", "white")],
@@ -712,12 +754,12 @@ class OCRApp(tk.Tk):
                         foreground=Theme.TEXT,
                         fieldbackground=Theme.BG_MID,
                         rowheight=28,
-                        font=("Segoe UI", 10),
+                        font=(FONT_FAMILY, 10),
                         bordercolor=Theme.BORDER)
         style.configure("Treeview.Heading",
                         background=Theme.BG_SURFACE,
                         foreground=Theme.ACCENT_GLOW,
-                        font=("Segoe UI", 10, "bold"))
+                        font=(FONT_FAMILY, 10, "bold"))
         style.map("Treeview",
                   background=[("selected", Theme.ACCENT)],
                   foreground=[("selected", "white")])
@@ -756,10 +798,11 @@ class OCRApp(tk.Tk):
                           relief="flat", bd=0)
         self.config(menu=menubar)
 
-        _mk = lambda parent: tk.Menu(parent, tearoff=0,
-                                     bg=Theme.BG_MID, fg=Theme.TEXT,
-                                     activebackground=Theme.ACCENT,
-                                     activeforeground="white")
+        def _mk(parent):
+            return tk.Menu(parent, tearoff=0,
+                           bg=Theme.BG_MID, fg=Theme.TEXT,
+                           activebackground=Theme.ACCENT,
+                           activeforeground="white")
 
         file_menu = _mk(menubar)
         file_menu.add_command(label="  📂  Open PDF…",
@@ -839,11 +882,11 @@ class OCRApp(tk.Tk):
             hdr.create_line(0, i, 1400, i, fill=colour)
 
         hdr.create_text(20, 22, text="📄 LocalOCR", anchor="w",
-                        fill="white", font=("Segoe UI", 18, "bold"))
+                        fill="white", font=(FONT_FAMILY, 18, "bold"))
         hdr.create_text(20, 46, text="PDF to DOCX • OCR • Layout Detection",
-                        anchor="w", fill="#c0c0ff", font=("Segoe UI", 10))
+                        anchor="w", fill="#c0c0ff", font=(FONT_FAMILY, 10))
         hdr.create_text(1260, 32, text=self.VERSION, anchor="e",
-                        fill="#b0b0ff", font=("Segoe UI", 11, "bold"))
+                        fill="#b0b0ff", font=(FONT_FAMILY, 11, "bold"))
 
     # ── Main UI ───────────────────────────────────────────────────────────
     def _build_ui(self):
@@ -866,7 +909,7 @@ class OCRApp(tk.Tk):
             toolbar, text=_icon, command=self._toggle_theme,
             bg=Theme.BG_SURFACE, fg=Theme.TEXT_DIM,
             activebackground=Theme.ACCENT, activeforeground="white",
-            relief="flat", font=("Segoe UI", 10), cursor="hand2",
+            relief="flat", font=(FONT_FAMILY, 10), cursor="hand2",
             padx=10, pady=2)
         self._btn_theme.pack(side="right", padx=(4, 6))
 
@@ -893,7 +936,7 @@ class OCRApp(tk.Tk):
         def _add_combo(label_text, values, default_idx=0):
             nonlocal row
             ttk.Label(settings_lf, text=label_text,
-                      style="Card.TLabel").grid(
+                      style=STYLE_CARD_LABEL).grid(
                 row=row, column=0, sticky="w", padx=(4, 8), pady=3)
             cb = ttk.Combobox(settings_lf, values=values, state="readonly",
                               width=28)
@@ -915,7 +958,7 @@ class OCRApp(tk.Tk):
 
         # YOLO confidence
         ttk.Label(settings_lf, text="Detection Conf:",
-                  style="Card.TLabel").grid(
+                  style=STYLE_CARD_LABEL).grid(
             row=row, column=0, sticky="w", padx=(4, 8), pady=3)
         yolo_frame = tk.Frame(settings_lf, bg=Theme.BG_MID)
         yolo_frame.grid(row=row, column=1, sticky="ew", padx=4, pady=3)
@@ -934,7 +977,7 @@ class OCRApp(tk.Tk):
 
         # Header / Footer trim
         ttk.Label(settings_lf, text="Header Trim %:",
-                  style="Card.TLabel").grid(
+                  style=STYLE_CARD_LABEL).grid(
             row=row, column=0, sticky="w", padx=(4, 8), pady=3)
         self._var_header = tk.DoubleVar(value=0)
         ttk.Scale(settings_lf, from_=0, to=25, orient="horizontal",
@@ -943,7 +986,7 @@ class OCRApp(tk.Tk):
         row += 1
 
         ttk.Label(settings_lf, text="Footer Trim %:",
-                  style="Card.TLabel").grid(
+                  style=STYLE_CARD_LABEL).grid(
             row=row, column=0, sticky="w", padx=(4, 8), pady=3)
         self._var_footer = tk.DoubleVar(value=0)
         ttk.Scale(settings_lf, from_=0, to=25, orient="horizontal",
@@ -958,7 +1001,7 @@ class OCRApp(tk.Tk):
         btn_frame.pack(fill="x", padx=4)
         self._btn_convert = ttk.Button(
             btn_frame, text="  🔄  Convert PDF  ",
-            style="Accent.TButton", command=self._start_convert)
+            style=STYLE_ACCENT_BUTTON, command=self._start_convert)
         self._btn_convert.pack(fill="x", pady=4, ipady=2)
 
         # ── PDF Preview ──────────────────────────────────────────────────
@@ -972,7 +1015,7 @@ class OCRApp(tk.Tk):
         self._btn_prev_page.pack(side="left", padx=2, pady=2)
         self._lbl_page = tk.Label(nav_frame, text="Page 0 / 0",
                                   bg=Theme.BG_MID, fg=Theme.TEXT,
-                                  font=("Segoe UI", 10, "bold"))
+                                  font=(FONT_FAMILY, 10, "bold"))
         self._lbl_page.pack(side="left", expand=True)
         self._btn_next_page = ttk.Button(nav_frame, text="Next ▶",
                                          command=self._next_page, width=8)
@@ -1003,13 +1046,13 @@ class OCRApp(tk.Tk):
                    command=lambda: self._set_output_text("")).pack(side="left")
         self._lbl_word_count = tk.Label(
             out_toolbar, text="", bg=Theme.BG_MID, fg=Theme.TEXT_MUTED,
-            font=("Segoe UI", 9))
+            font=(FONT_FAMILY, 9))
         self._lbl_word_count.pack(side="right", padx=6)
 
         # Find bar (hidden by default)
         self._find_frame = tk.Frame(text_tab, bg=Theme.BG_SURFACE, pady=3, padx=4)
         tk.Label(self._find_frame, text="Find:", bg=Theme.BG_SURFACE,
-                 fg=Theme.TEXT, font=("Segoe UI", 10)).pack(side="left")
+                 fg=Theme.TEXT, font=(FONT_FAMILY, 10)).pack(side="left")
         self._find_var = tk.StringVar()
         self._find_entry = ttk.Entry(self._find_frame,
                                      textvariable=self._find_var, width=24)
@@ -1020,7 +1063,7 @@ class OCRApp(tk.Tk):
                    command=self._find_prev).pack(side="left", padx=2)
         self._lbl_find_count = tk.Label(
             self._find_frame, text="", bg=Theme.BG_SURFACE,
-            fg=Theme.TEXT_MUTED, font=("Segoe UI", 9))
+            fg=Theme.TEXT_MUTED, font=(FONT_FAMILY, 9))
         self._lbl_find_count.pack(side="left", padx=6)
         ttk.Button(self._find_frame, text="✕",
                    command=self._hide_find_bar, width=3).pack(side="right")
@@ -1059,7 +1102,7 @@ class OCRApp(tk.Tk):
 
         self._btn_save_docx = ttk.Button(
             action_frame, text="💾 Save DOCX",
-            style="Success.TButton",
+            style=STYLE_SUCCESS_BUTTON,
             command=self._save_docx, state="disabled")
         self._btn_save_docx.pack(side="left", padx=4)
 
@@ -1086,7 +1129,7 @@ class OCRApp(tk.Tk):
         log_header.pack(fill="x")
         tk.Label(log_header, text="📋 Log", bg=Theme.BG_DARK,
                  fg=Theme.ACCENT_GLOW,
-                 font=("Segoe UI", 10, "bold")).pack(anchor="w")
+                 font=(FONT_FAMILY, 10, "bold")).pack(anchor="w")
 
         self._txt_log = scrolledtext.ScrolledText(
             log_frame, wrap="word", font=("Consolas", 9), height=7,
@@ -1118,11 +1161,11 @@ class OCRApp(tk.Tk):
         # Build color remap: old hex → new hex
         new_palette = Theme.palette()
         remap = {}
-        for k in old_palette:
-            ov = old_palette[k].lower()
-            nv = new_palette[k].lower()
-            if ov != nv:
-                remap[ov] = nv
+        for key, old_value in old_palette.items():
+            ov_val = old_value.lower()
+            nv_val = new_palette[key].lower()
+            if ov_val != nv_val:
+                remap[ov_val] = nv_val
 
         # Root window
         self.configure(bg=Theme.BG_DARK)
@@ -1192,26 +1235,23 @@ class OCRApp(tk.Tk):
 
     # ── Status Bar ────────────────────────────────────────────────────────
     def _build_status_bar(self):
-        bar = tk.Frame(self, bg=Theme.BG_MID, padx=10, pady=5)
-        bar.pack(fill="x", side="bottom")
+        status_frame = tk.Frame(self, bg=Theme.BG_MID, padx=10, pady=5)
+        status_frame.pack(fill="x", side="bottom")
 
         self._progress = ttk.Progressbar(
-            bar, mode="indeterminate", length=180,
+            status_frame, mode="indeterminate", length=180,
             style="Custom.Horizontal.TProgressbar")
         self._progress.pack(side="left", padx=(0, 10))
 
         self._lbl_status = tk.Label(
-            bar, text="Idle", bg=Theme.BG_MID, fg=Theme.TEXT_DIM,
-            font=("Segoe UI", 10), anchor="w")
+            status_frame, text="Idle", bg=Theme.BG_MID, fg=Theme.TEXT_DIM,
+            font=(FONT_FAMILY, 10), anchor="w")
         self._lbl_status.pack(side="left", fill="x", expand=True)
 
-        tk.Label(bar, text="LocalOCR v1.0.0-beta",
+        tk.Label(status_frame, text="LocalOCR v0.4.0",
                  bg=Theme.BG_MID, fg=Theme.TEXT_MUTED,
-                 font=("Segoe UI", 9)).pack(side="right")
+                 font=(FONT_FAMILY, 9)).pack(side="right")
 
-    # ══════════════════════════════════════════════════════════════════════
-    # Helpers
-    # ══════════════════════════════════════════════════════════════════════
     def _log(self, msg: str, colour: str = None):
         self._txt_log.configure(state="normal")
         tag_map = {
@@ -1284,8 +1324,12 @@ class OCRApp(tk.Tk):
             self._txt_output.tag_add("found", pos, end)
             start = end
             count += 1
-        self._lbl_find_count.configure(
-            text=f"{count} match{'es' if count != 1 else ''}" if count else "Not found")
+        if count:
+            suffix = "es" if count != 1 else ""
+            find_text = f"{count} match{suffix}"
+        else:
+            find_text = "Not found"
+        self._lbl_find_count.configure(text=find_text)
         self._find_index = "1.0"
 
     def _find_next(self):
@@ -1366,10 +1410,7 @@ class OCRApp(tk.Tk):
                         "", "end", text=f"💾 Output {fmt.upper()}",
                         values=(f"{size_kb:.1f} KB",))
 
-    # ══════════════════════════════════════════════════════════════════════
-    # Pipeline warm-up  — staged with progress updates
-    # ══════════════════════════════════════════════════════════════════════
-    def _warmup_pipeline(self):
+    def _warmup_pipeline(self):  # NOSONAR
         steps = [
             ("📦 Importing core modules (fitz, cv2, numpy)...",
              lambda: (__import__("fitz"), __import__("cv2"), __import__("numpy"))),
@@ -1380,7 +1421,7 @@ class OCRApp(tk.Tk):
             ("📦 Loading transformers & ONNX runtime...",
              lambda: (__import__("transformers"), __import__("onnxruntime"))),
             ("🔧 Initializing OCR pipeline...",
-             lambda: _get_pipeline()),
+             _get_pipeline),
         ]
         total = len(steps)
         try:
@@ -1415,8 +1456,7 @@ class OCRApp(tk.Tk):
 
                     # Try huggingface_hub first
                     try:
-                        import shutil
-                        from huggingface_hub import hf_hub_download
+                        from huggingface_hub import hf_hub_download  # pylint: disable=import-error
                         self.after(0, lambda: self._log(
                             "   Downloading via huggingface_hub...", Theme.TEXT_MUTED))
                         cached = hf_hub_download(
@@ -1493,9 +1533,6 @@ class OCRApp(tk.Tk):
     def _reset_progress(self):
         self._progress.configure(mode="indeterminate", value=0)
 
-    # ══════════════════════════════════════════════════════════════════════
-    # File browsing
-    # ══════════════════════════════════════════════════════════════════════
     def _browse_pdf(self):
         path = filedialog.askopenfilename(
             title="Select PDF file",
@@ -1510,9 +1547,6 @@ class OCRApp(tk.Tk):
         self._log(f"📂 Opened: {name}", Theme.INFO)
         self._update_preview()
 
-    # ══════════════════════════════════════════════════════════════════════
-    # Preview
-    # ══════════════════════════════════════════════════════════════════════
     def _update_preview(self):
         if not self._pdf_path:
             return
@@ -1546,9 +1580,6 @@ class OCRApp(tk.Tk):
             self._current_page += 1
             self._update_preview()
 
-    # ══════════════════════════════════════════════════════════════════════
-    # Conversion
-    # ══════════════════════════════════════════════════════════════════════
     def _start_convert(self):
         if not self._pdf_path:
             messagebox.showwarning("No PDF",
@@ -1584,7 +1615,7 @@ class OCRApp(tk.Tk):
                 "  Step 2/4: Rendering & detecting layout...", Theme.TEXT_MUTED))
 
             # Count pages first for progress
-            import fitz as _fitz
+            import fitz as _fitz  # pylint: disable=import-error
             _doc = _fitz.open(self._pdf_path)
             n_pages = len(_doc)
             _doc.close()
@@ -1592,11 +1623,10 @@ class OCRApp(tk.Tk):
             self.after(0, lambda: self._set_progress_value(1))
 
             # Hook into pipeline's logger to capture per-page progress
-            import logging as _logging
-            _pipe_logger = _logging.getLogger("src.pipeline")
+            _pipe_logger = logging.getLogger("src.pipeline")
             _orig_level = _pipe_logger.level
 
-            class _PageHandler(_logging.Handler):
+            class _PageHandler(logging.Handler):
                 def __init__(self, app):
                     super().__init__()
                     self.app = app
@@ -1606,11 +1636,11 @@ class OCRApp(tk.Tk):
                     if "Processing page" in msg:
                         self._page_count += 1
                         pc = self._page_count
-                        self.app.after(0, lambda m=msg: self.app._log(
+                        self.app.after(0, lambda m=msg: self.app._log(  # pylint: disable=protected-access
                             f"  📄 {m}", Theme.TEXT_MUTED))
-                        self.app.after(0, lambda v=pc: self.app._set_progress_value(v + 1))
+                        self.app.after(0, lambda v=pc: self.app._set_progress_value(v + 1))  # pylint: disable=protected-access
                     elif "Detected:" in msg or "YOLO" in msg or "Table" in msg or "Figure" in msg:
-                        self.app.after(0, lambda m=msg: self.app._log(
+                        self.app.after(0, lambda m=msg: self.app._log(  # pylint: disable=protected-access
                             f"  🔍 {m}", Theme.TEXT_MUTED))
 
             _handler = _PageHandler(self)
@@ -1681,9 +1711,6 @@ class OCRApp(tk.Tk):
         self._log(f"❌ Error: {error_msg}", Theme.ERROR)
         messagebox.showerror("Error", error_msg)
 
-    # ══════════════════════════════════════════════════════════════════════
-    # Save / Export
-    # ══════════════════════════════════════════════════════════════════════
     def _save_file(self, fmt: str, ext: str, label: str):
         if not self._last_result:
             return
@@ -1732,11 +1759,71 @@ class OCRApp(tk.Tk):
         messagebox.showinfo("Info", "No output files found.")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Entry point
-# ══════════════════════════════════════════════════════════════════════════════
+def _write_smoke_log(lines):
+    log_path = os.environ.get(
+        "LOCALOCR_SMOKE_LOG",
+        os.path.join(_PROJECT_ROOT, "localocr-smoke-test.log"),
+    )
+    with open(log_path, "w", encoding="utf-8") as log_file:
+        log_file.write("\n".join(lines) + "\n")
+
+
+def _run_smoke_test() -> int:
+    """Verify runtime imports and DocLayout-YOLO model loading, then exit."""
+    lines = [
+        f"project_root={_PROJECT_ROOT}",
+        f"python={sys.executable}",
+        f"frozen={getattr(sys, 'frozen', False)}",
+    ]
+    try:
+        smoke_modules = [
+            "fitz", "PIL.Image", "numpy", "cv2", "doclayout_yolo",
+            "easyocr", "paddleocr", "onnxruntime", "transformers",
+            "pytesseract", "huggingface_hub", "lap", "shapely",
+        ]
+        for module_name in smoke_modules:
+            try:
+                importlib.import_module(module_name)
+                lines.append(f"module_ok={module_name}")
+            except Exception as module_exc:
+                lines.append(f"module_failed={module_name}")
+                raise module_exc
+        from src.layout_detector import LayoutDetector
+
+        model_path = LayoutDetector.default_model_path()
+        detector = LayoutDetector()
+        lines.extend([
+            "imports_ok=True",
+            "ocr_imports_ok=True",
+            f"model_path={model_path}",
+            f"model_exists={os.path.exists(model_path)}",
+            f"model_loaded={detector.model_loaded}",
+        ])
+        _write_smoke_log(lines)
+        return 0 if detector.model_loaded else 2
+    except Exception as exc:
+        lines.extend([
+            "imports_ok=False",
+            f"error_type={type(exc).__name__}",
+            f"error={exc}",
+        ])
+        _write_smoke_log(lines)
+        return 1
+
+
 def main():
-    if _is_first_run():
+    """Launch the OCR desktop application, running first-time setup if needed."""
+    if "--smoke-test" in sys.argv:
+        sys.exit(_run_smoke_test())
+
+    if getattr(sys, 'frozen', False):
+        # Running as a PyInstaller bundle — dependencies are already bundled.
+        # Auto-create the installed marker so the SetupWizard is skipped.
+        if not os.path.exists(_INSTALLED_MARKER):
+            _mark_installed()
+        app = OCRApp()
+        app.mainloop()
+    elif _is_first_run():
         wizard = SetupWizard()
         wizard.mainloop()
     else:

@@ -1,3 +1,4 @@
+# pylint: disable=no-member,broad-exception-caught,import-outside-toplevel
 """
 Layout Detection & Table Extraction Module — v2.0
 DocLayout-YOLO for AI-powered layout detection with OpenCV contour fallback.
@@ -21,59 +22,69 @@ import logging
 from typing import Dict, List, Any, Optional, Tuple
 
 import numpy as np
-import cv2
+import cv2  # pylint: disable=no-member,import-error
 
 logger = logging.getLogger(__name__)
 
 _PLAIN_TEXT = "plain text"
+_DEFAULT_TABLE_LANG = "tha+eng"
+_YOLO_MODEL_RELATIVE = os.path.join(
+    "models", "DocLayout-YOLO-DocStructBench",
+    "doclayout_yolo_docstructbench_imgsz1280_2501.pt",
+)
 _EMPTY_DETECTIONS = {
     "figures": [], "tables": [], "text_regions": [],
     "formulas": [], "captions": [], "other": [],
 }
+_SKIP_HEAVY_IMPORTS = os.getenv("LOCALOCR_SKIP_HEAVY_IMPORTS", "").strip() == "1"
 
 # ── Optional heavy imports ────────────────────────────────────────────────────
-YOLO_AVAILABLE = False
-try:
-    import sys
-    import subprocess
-    import torch
-
-    # ── Ensure dill is installed (required by the YOLO .pt checkpoint) ────────
+YOLO_AVAILABLE = False  # pylint: disable=invalid-name
+YOLOv10 = None
+if not _SKIP_HEAVY_IMPORTS:
     try:
-        import dill  # noqa: F401
-    except ImportError:
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--quiet", "dill"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        import dill  # noqa: F401
+        import sys
+        import subprocess
+        import torch
 
-    # ── PyTorch ≥2.6 changed weights_only default to True — override it ───────
-    _original_torch_load = torch.load
+        # ── Ensure dill is installed (required by the YOLO .pt checkpoint) ────────
+        try:
+            import dill  # noqa: F401  # pylint: disable=unused-import
+        except ImportError:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "--quiet", "dill"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            import dill  # noqa: F401  # pylint: disable=unused-import,reimported
 
-    def _safe_torch_load(*args, **kwargs):
-        kwargs.setdefault("weights_only", False)
-        return _original_torch_load(*args, **kwargs)
-    torch.load = _safe_torch_load
+        # ── PyTorch ≥2.6 changed weights_only default to True — override it ───────
+        _original_torch_load = torch.load
 
-    # ── Also register safe globals for PyTorch 2.6+ serialization check ──────
-    try:
-        from doclayout_yolo.nn.tasks import YOLOv10DetectionModel
-        torch.serialization.add_safe_globals([YOLOv10DetectionModel])
-    except Exception:
+        def _safe_torch_load(*args, **kwargs):
+            kwargs.setdefault("weights_only", False)
+            return _original_torch_load(*args, **kwargs)
+        torch.load = _safe_torch_load
+
+        # ── Also register safe globals for PyTorch 2.6+ serialization check ──────
+        try:
+            from doclayout_yolo.nn.tasks import YOLOv10DetectionModel  # pylint: disable=import-error
+            torch.serialization.add_safe_globals([YOLOv10DetectionModel])
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+        from doclayout_yolo import YOLOv10
+        YOLO_AVAILABLE = True  # pylint: disable=invalid-name
+        logger.info("DocLayout-YOLO available")
+    except (ImportError, OSError, RuntimeError):
         pass
 
-    from doclayout_yolo import YOLOv10
-    YOLO_AVAILABLE = True
-    logger.info("DocLayout-YOLO available")
-except (ImportError, OSError, RuntimeError):
-    pass
-
-PPSTRUCTURE_AVAILABLE = False
-try:
-    from paddleocr import PPStructure
-    PPSTRUCTURE_AVAILABLE = True
-except (ImportError, OSError):
-    pass
+PPSTRUCTURE_AVAILABLE = False  # pylint: disable=invalid-name
+PPStructure = None
+if not _SKIP_HEAVY_IMPORTS:
+    try:
+        from paddleocr import PPStructure  # pylint: disable=import-error
+        PPSTRUCTURE_AVAILABLE = True  # pylint: disable=invalid-name
+    except (ImportError, OSError):
+        pass
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -105,12 +116,42 @@ class LayoutDetector:
     # ── Model path (also used by installer to verify model location) ──────────
     @staticmethod
     def default_model_path() -> str:
-        """Return the expected local model .pt path (may not exist yet)."""
-        return os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "models", "DocLayout-YOLO-DocStructBench",
-            "doclayout_yolo_docstructbench_imgsz1280_2501.pt",
-        )
+        """Return the best local DocLayout-YOLO model path.
+
+        Search order supports source runs, built exe runs, shortcuts with a
+        working directory, and developer builds where the exe is under dist/.
+        """
+        import sys as _sys
+        env_path = os.getenv("YOLO_MODEL_PATH")
+        if env_path:
+            return os.path.abspath(env_path)
+
+        bases = []
+        if getattr(_sys, 'frozen', False):
+            exe_dir = os.path.dirname(_sys.executable)
+            bases.extend([exe_dir, os.getcwd()])
+            current = exe_dir
+            for _ in range(4):
+                parent = os.path.dirname(current)
+                if parent == current:
+                    break
+                bases.append(parent)
+                current = parent
+        else:
+            bases.extend([
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                os.getcwd(),
+            ])
+
+        candidates = []
+        for base in bases:
+            candidate = os.path.abspath(os.path.join(base, _YOLO_MODEL_RELATIVE))
+            if candidate not in candidates:
+                candidates.append(candidate)
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                return candidate
+        return candidates[0]
 
     def _try_load_model(self, model_path: Optional[str] = None) -> None:
         """Attempt to load the YOLO model from disk. Raises on failure."""
@@ -120,6 +161,9 @@ class LayoutDetector:
             logger.error(
                 "DocLayout-YOLO model NOT FOUND at %s — "
                 "run the installer to download it.", chosen)
+            return
+        if YOLOv10 is None:
+            logger.error("DocLayout-YOLO package is not available")
             return
         try:
             self.model = YOLOv10(chosen)
@@ -141,6 +185,8 @@ class LayoutDetector:
         model via the installer or install.sh before launching the app.
         """
         if not self.model_loaded:
+            if os.getenv("LOCALOCR_ALLOW_LAYOUT_FALLBACK", "").strip() == "1":
+                return self._detect_opencv_fallback(image, page_number)
             model_path = self.default_model_path()
             raise RuntimeError(
                 f"DocLayout-YOLO model is required but not loaded.\n"
@@ -207,7 +253,7 @@ class LayoutDetector:
                 f"DocLayout-YOLO inference failed: {type(exc).__name__}: {exc}"
             ) from exc
 
-    def _reclassify_figures_as_tables(self, image: np.ndarray,
+    def _reclassify_figures_as_tables(self, image: np.ndarray,  # NOSONAR
                                       detections: Dict[str, List]) -> None:
         """Move figure detections that contain grid lines to tables list."""
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
@@ -267,7 +313,7 @@ class LayoutDetector:
 
     # ── OpenCV fallback ───────────────────────────────────────────────────────
 
-    def _detect_opencv_fallback(self, image: np.ndarray,
+    def _detect_opencv_fallback(self, image: np.ndarray,  # NOSONAR
                                 page_number: int) -> Dict[str, Any]:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
         h, w = gray.shape[:2]
@@ -359,7 +405,7 @@ class TableExtractor:
 
     def extract_tables(self, image: np.ndarray,
                        table_boxes: List[Dict],
-                       languages: str = "tha+eng") -> List[Dict[str, Any]]:
+                       languages: str = _DEFAULT_TABLE_LANG) -> List[Dict[str, Any]]:
         """Extract table content from detected table regions."""
         if not self.enabled or not table_boxes:
             return []
@@ -378,7 +424,7 @@ class TableExtractor:
         return tables
 
     def _extract_single(self, table_img: np.ndarray,
-                        languages: str = "tha+eng") -> Dict[str, Any]:
+                        languages: str = _DEFAULT_TABLE_LANG) -> Dict[str, Any]:
         if self.engine == "paddleocr" and PPSTRUCTURE_AVAILABLE:
             r = self._extract_ppstructure(table_img)
             if r:
@@ -388,6 +434,8 @@ class TableExtractor:
     # ── PPStructure (optional) ────────────────────────────────────────────────
 
     def _extract_ppstructure(self, img: np.ndarray) -> Optional[Dict[str, Any]]:
+        if PPStructure is None:
+            return None
         if self._pp_structure is None:
             try:
                 self._pp_structure = PPStructure(
@@ -411,7 +459,7 @@ class TableExtractor:
     # ── OpenCV grid extraction v2 (improved alignment) ────────────────────────
 
     def _extract_opencv_v2(self, img: np.ndarray,
-                           languages: str = "tha+eng") -> Dict[str, Any]:
+                           languages: str = _DEFAULT_TABLE_LANG) -> Dict[str, Any]:
         """Extract table with improved grid detection and cell alignment."""
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
         h, w = gray.shape[:2]
@@ -430,11 +478,9 @@ class TableExtractor:
         lines_adapt = self._detect_grid_lines(thresh, h, w)
         lines_otsu = self._detect_grid_lines(otsu_thresh, h, w)
 
-        best_thresh = thresh
         h_lines, v_lines = lines_adapt
         if (len(lines_otsu[0]) + len(lines_otsu[1])) > (len(h_lines) + len(v_lines)):
             h_lines, v_lines = lines_otsu
-            best_thresh = otsu_thresh
 
         # If we have grid lines, build structured table
         if len(h_lines) >= 2 and len(v_lines) >= 2:
@@ -482,7 +528,7 @@ class TableExtractor:
         return h_lines, v_lines
 
     @staticmethod
-    def _find_line_positions(projection: np.ndarray, min_gap: int = 10) -> List[int]:
+    def _find_line_positions(projection: np.ndarray, min_gap: int = 10) -> List[int]:  # NOSONAR
         """Find positions of lines from a projection profile."""
         threshold = np.max(projection) * 0.15
         positions = []
@@ -508,7 +554,7 @@ class TableExtractor:
 
         return positions
 
-    def _build_grid_table(self, gray: np.ndarray, color_img: np.ndarray,
+    def _build_grid_table(self, gray: np.ndarray, color_img: np.ndarray,  # NOSONAR
                           h_lines: List[int], v_lines: List[int],
                           languages: str) -> Dict[str, Any]:
         """Build HTML table from grid intersection points."""
@@ -648,7 +694,7 @@ class TableExtractor:
 
         # Fallback: try PaddleOCR directly
         try:
-            from paddleocr import PaddleOCR
+            from paddleocr import PaddleOCR  # pylint: disable=import-error
             paddle = PaddleOCR(use_angle_cls=True, lang="en",
                                use_gpu=self.use_gpu, show_log=False)
             result = paddle.ocr(cell_img, cls=True)
@@ -687,7 +733,7 @@ class TableExtractor:
 
         return {"html": "", "text": ""}
 
-    def _items_to_table(self, items: List[Dict], img_shape: tuple) -> Dict[str, Any]:
+    def _items_to_table(self, items: List[Dict], img_shape: tuple) -> Dict[str, Any]:  # NOSONAR
         """Convert position-aware OCR items into a structured table.
 
         Groups items by their vertical position (rows) and horizontal
@@ -750,7 +796,7 @@ class TableExtractor:
         for ri, row in enumerate(rows):
             html_parts.append("<tr>")
             row_texts = []
-            for ci, entry in enumerate(row):
+            for entry in row:
                 tag = "th" if ri == 0 else "td"
                 escaped = html.escape(entry["text"])
                 html_parts.append(

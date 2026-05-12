@@ -29,6 +29,8 @@ temp/
 Thumbs.db
 
 # Test outputs & temp scripts
+test_selenium_output/
+tests/testocrtor.pdf
 *.docx
 *.html
 test_output.txt

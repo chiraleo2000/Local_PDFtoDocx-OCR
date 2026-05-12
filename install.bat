@@ -1,17 +1,17 @@
 @echo off
 REM ══════════════════════════════════════════════════════════════════════════
-REM  LocalOCR Installer for Windows  v1.0.0-beta
+REM  LocalOCR Installer for Windows  v0.4.0
 REM  Detailed progress reporting during installation.
 REM ══════════════════════════════════════════════════════════════════════════
 setlocal enabledelayedexpansion
-title LocalOCR Installer v1.0.0-beta
+title LocalOCR Installer v0.4.0
 color 0B
 
 echo.
 echo  ╔══════════════════════════════════════════════════════════════╗
 echo  ║                                                              ║
 echo  ║      LocalOCR — PDF to DOCX Converter                       ║
-echo  ║      Installer v1.0.0-beta                                   ║
+echo  ║      Installer v0.4.0                                         ║
 echo  ║                                                              ║
 echo  ╚══════════════════════════════════════════════════════════════╝
 echo.

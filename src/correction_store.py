@@ -1,3 +1,4 @@
+# pylint: disable=no-member,import-outside-toplevel
 """
 Correction Store & Auto-Retrain — v1.0
 
@@ -23,12 +24,11 @@ import os
 import re
 import shutil
 import threading
-import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-import cv2
+import cv2  # pylint: disable=no-member,import-error
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -99,10 +99,6 @@ class CorrectionStore:
         logger.info(
             "CorrectionStore: %d existing corrections, retrain every %d",
             self._correction_count, self.retrain_interval)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # Public API
-    # ══════════════════════════════════════════════════════════════════════════
 
     def log_correction(self, page_image: np.ndarray,
                        bbox: List[float],
@@ -260,10 +256,6 @@ class CorrectionStore:
                 pass
         return entries
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # Fine-tune (background)
-    # ══════════════════════════════════════════════════════════════════════════
-
     def _start_retrain_async(self) -> None:
         """Launch YOLO fine-tune in a background thread."""
         self._retrain_running = True
@@ -333,8 +325,8 @@ class CorrectionStore:
             yaml_path.write_text(yaml_content, encoding="utf-8")
 
             # Find base model
-            model_dir = Path(__file__).parent.parent / "models" / "DocLayout-YOLO-DocStructBench"
-            base_pt = model_dir / "doclayout_yolo_docstructbench_imgsz1280_2501.pt"
+            from src.layout_detector import LayoutDetector
+            base_pt = Path(LayoutDetector.default_model_path())
 
             try:
                 import torch
@@ -361,7 +353,7 @@ class CorrectionStore:
             model = YOLOv10(str(base_pt))
             logger.info("Starting YOLO fine-tune with %d images", len(label_files))
 
-            train_results = model.train(
+            model.train(
                 data=str(yaml_path),
                 epochs=5,
                 imgsz=1280,
@@ -402,10 +394,6 @@ class CorrectionStore:
             self._save_retrain_result(result)
             self._retrain_running = False
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # Internal helpers
-    # ══════════════════════════════════════════════════════════════════════════
-
     def _count_existing(self) -> int:
         """Count existing manual corrections from the log."""
         if not self.corrections_file.exists():
@@ -418,7 +406,7 @@ class CorrectionStore:
                         rec = json.loads(line.strip())
                         if rec.get("source") == "manual":
                             count += 1
-                    except (json.JSONDecodeError, ValueError):
+                    except json.JSONDecodeError:
                         pass
         except OSError as exc:
             logger.warning("Could not read corrections file: %s", type(exc).__name__)
@@ -431,7 +419,7 @@ class CorrectionStore:
         try:
             with open(self.retrain_log_file, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except (OSError, json.JSONDecodeError, ValueError):
+        except (OSError, json.JSONDecodeError):
             return []
 
     def _save_retrain_result(self, result: Dict) -> None:

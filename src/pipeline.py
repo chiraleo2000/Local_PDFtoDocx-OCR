@@ -19,9 +19,8 @@ import os
 import re
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Callable
 
-import cv2
 import numpy as np
 import fitz  # PyMuPDF
 
@@ -130,6 +129,7 @@ def _sort_reading_order(blocks: List[ContentBlock],
 
 
 _DEFAULT_LANGUAGES = "tha+eng"
+ProgressCallback = Callable[[int, int, str], None]
 
 
 class OCRPipeline:
@@ -174,6 +174,7 @@ class OCRPipeline:
                     yolo_confidence: Optional[float] = None,
                     page_size: str = "A4",
                     margin_preset: str = "Normal",
+                    progress_callback: Optional[ProgressCallback] = None,
                     ) -> Dict[str, Any]:
         """Process a PDF end-to-end.
 
@@ -202,12 +203,21 @@ class OCRPipeline:
 
             doc = fitz.open(pdf_path)
             page_count = len(doc)
+            progress_total = page_count + 1
             all_blocks: List[ContentBlock] = []
             total_tables = 0
             total_figures = 0
 
             for page_num in range(page_count):
                 logger.info("Processing page %d/%d", page_num + 1, page_count)
+                direct_block = self._embedded_text_block(doc[page_num], page_num, langs)
+                if direct_block is not None:
+                    all_blocks.append(direct_block)
+                    self._notify_progress(
+                        progress_callback, page_num + 1, progress_total,
+                        f"Completed page {page_num + 1}/{page_count}")
+                    continue
+
                 img = self._render_page_image(
                     doc[page_num], scale, header_trim, footer_trim)
                 h, w = img.shape[:2]
@@ -219,6 +229,9 @@ class OCRPipeline:
                 all_blocks.extend(page_blocks)
                 total_tables += n_tables
                 total_figures += n_figures
+                self._notify_progress(
+                    progress_callback, page_num + 1, progress_total,
+                    f"Completed page {page_num + 1}/{page_count}")
 
             full_text = self._blocks_to_text(all_blocks)
 
@@ -232,9 +245,15 @@ class OCRPipeline:
                 f"Tables: {total_tables}\n"
                 f"Figures: {total_figures}"
             )
+            self._notify_progress(
+                progress_callback, page_count, progress_total,
+                "Exporting output files")
             files = self.exporter.create_all_from_blocks(
                 all_blocks, meta_str,
                 page_size=page_size, margin_preset=margin_preset)
+            self._notify_progress(
+                progress_callback, progress_total, progress_total,
+                "Exported output files")
             return {
                 "success": True,
                 "text": full_text,
@@ -251,7 +270,7 @@ class OCRPipeline:
             }
 
         except (OSError, RuntimeError, ValueError) as exc:
-            logger.error("Pipeline error: %s", exc, exc_info=True)
+            logger.exception("Pipeline error")
             return {
                 "success": False, "text": "", "files": {},
                 "metadata": {}, "error": str(exc),
@@ -314,16 +333,16 @@ class OCRPipeline:
         try:
             n_tables = self._extract_table_blocks(
                 img, table_dets, page_num, languages, page_blocks)
-        except Exception as exc:
-            logger.error("Table extraction failed on page %d: %s", page_num + 1, exc)
+        except (OSError, RuntimeError, ValueError):
+            logger.exception("Table extraction failed on page %d", page_num + 1)
             n_tables = 0
 
         # ── Step 6: Extract figures ──────────────────────────────────
         try:
             n_figures = self._extract_figure_blocks(
                 img, figure_dets, page_num, page_blocks)
-        except Exception as exc:
-            logger.error("Figure extraction failed on page %d: %s", page_num + 1, exc)
+        except (OSError, RuntimeError, ValueError):
+            logger.exception("Figure extraction failed on page %d", page_num + 1)
             n_figures = 0
 
         logger.info(
@@ -365,6 +384,18 @@ class OCRPipeline:
             blocks.append(ContentBlock(
                 block_type="text", page=page_num, y_top=0, x_left=0, text=txt))
         return blocks, 0, 0
+
+    @staticmethod
+    def _embedded_text_block(page, page_num: int, languages: str):
+        """Return a text block for simple born-digital PDF pages."""
+        raw = page.get_text("text") or ""
+        txt = clean_text(raw, languages)
+        if not txt.strip():
+            return None
+        if page.get_images(full=True):
+            return None
+        return ContentBlock(
+            block_type="text", page=page_num, y_top=0, x_left=0, text=txt)
 
     def _ocr_regions_to_blocks(self, regions, preprocessed, img, h, w,
                                page_num, block_type, languages, out) -> None:
@@ -448,6 +479,13 @@ class OCRPipeline:
         )
 
     @staticmethod
+    def _notify_progress(callback: Optional[ProgressCallback], current: int,
+                         total: int, message: str) -> None:
+        """Notify UI progress callbacks without coupling the pipeline to Gradio."""
+        if callback is not None:
+            callback(current, total, message)
+
+    @staticmethod
     def _blocks_to_text(blocks: List[ContentBlock]) -> str:
         """Convert blocks → plain text with page separators."""
         parts: List[str] = []
@@ -480,9 +518,12 @@ class OCRPipeline:
         img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
             pix.h, pix.w, pix.n)
         if img.shape[2] == 4:
-            img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+            img = img[:, :, [2, 1, 0]]
         elif img.shape[2] == 3:
-            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            img = img[:, :, [2, 1, 0]]
+        elif img.shape[2] == 1:
+            img = np.repeat(img, 3, axis=2)
+        img = np.ascontiguousarray(img)
         h = img.shape[0]
         top_cut = int((header_trim / 100) * h) if header_trim > 0 else 0
         bot_cut = int((footer_trim / 100) * h) if footer_trim > 0 else 0
@@ -526,7 +567,7 @@ class OCRPipeline:
                 "image_shape": list(img.shape),
             }
         except (OSError, RuntimeError, ValueError) as exc:
-            logger.error("detect_page_regions error: %s", exc)
+            logger.exception("detect_page_regions error")
             return {"success": False, "error": str(exc)}
         finally:
             if doc:
@@ -560,6 +601,7 @@ class OCRPipeline:
             yolo_confidence: Optional[float] = None,
             page_size: str = "A4",
             margin_preset: str = "Normal",
+            progress_callback: Optional[ProgressCallback] = None,
     ) -> Dict[str, Any]:
         """Process PDF with optional manual region corrections.
 
@@ -586,6 +628,7 @@ class OCRPipeline:
 
             doc = fitz.open(pdf_path)
             page_count = len(doc)
+            progress_total = page_count + 1
             all_blocks: List[ContentBlock] = []
             total_tables = 0
             total_figures = 0
@@ -593,14 +636,36 @@ class OCRPipeline:
 
             for page_num in range(page_count):
                 logger.info("Processing page %d/%d", page_num + 1, page_count)
+                extra = (manual_regions or {}).get(page_num, [])
+                direct_block = self._embedded_text_block(doc[page_num], page_num, langs)
+                if direct_block is not None:
+                    all_blocks.append(direct_block)
+                    page_rect = doc[page_num].rect
+                    correction_image = np.ones(
+                        (max(1, int(page_rect.height)),
+                         max(1, int(page_rect.width)), 3),
+                        dtype=np.uint8) * 255
+                    for mr in extra:
+                        self.corrections.log_correction(
+                            page_image=correction_image,
+                            bbox=mr["bbox"],
+                            region_class=mr.get("class", "figure"),
+                            page_number=page_num,
+                            pdf_name=pdf_name,
+                            action="add",
+                            source="manual",
+                        )
+                    self._notify_progress(
+                        progress_callback, page_num + 1, progress_total,
+                        f"Completed page {page_num + 1}/{page_count}")
+                    continue
+
                 img = self._render_page_image(
                     doc[page_num], scale, header_trim, footer_trim)
                 h, w = img.shape[:2]
                 preprocessed = self.preprocessor.preprocess(img, quality=q)
 
                 # Merge manual regions into detection
-                extra = (manual_regions or {}).get(page_num, [])
-
                 page_blocks, n_tables, n_figures = self._process_single_page(
                     img, preprocessed, h, w, page_num, langs,
                     yolo_confidence, extra_regions=extra)
@@ -620,6 +685,9 @@ class OCRPipeline:
                 all_blocks.extend(page_blocks)
                 total_tables += n_tables
                 total_figures += n_figures
+                self._notify_progress(
+                    progress_callback, page_num + 1, progress_total,
+                    f"Completed page {page_num + 1}/{page_count}")
 
             full_text = self._blocks_to_text(all_blocks)
             engines = self.ocr.get_available_engines()
@@ -632,9 +700,15 @@ class OCRPipeline:
                 f"Tables: {total_tables}\n"
                 f"Figures: {total_figures}"
             )
+            self._notify_progress(
+                progress_callback, page_count, progress_total,
+                "Exporting output files")
             files = self.exporter.create_all_from_blocks(
                 all_blocks, meta_str,
                 page_size=page_size, margin_preset=margin_preset)
+            self._notify_progress(
+                progress_callback, progress_total, progress_total,
+                "Exported output files")
             return {
                 "success": True,
                 "text": full_text,
@@ -652,7 +726,7 @@ class OCRPipeline:
                 "error": None,
             }
         except (OSError, RuntimeError, ValueError) as exc:
-            logger.error("Pipeline error: %s", exc, exc_info=True)
+            logger.exception("Pipeline error")
             return {
                 "success": False, "text": "", "files": {},
                 "metadata": {}, "error": str(exc),

@@ -1,3 +1,5 @@
+# pylint: disable=no-member,broad-exception-caught,global-statement,wrong-import-position
+# pylint: disable=invalid-name,import-outside-toplevel,missing-function-docstring
 """
 Multi-Engine OCR Module — v2.2
 Thai-optimised cascade: EasyOCR (Thai+English) → Thai-TrOCR (line-level)
@@ -15,7 +17,6 @@ Security:
 """
 import os
 import sys
-import re
 import logging
 from typing import Optional, List, Dict, Any
 
@@ -41,6 +42,22 @@ except ImportError:
 
 _MAX_IMAGE_PIXELS = 100_000_000  # 100 megapixels
 _THAI_TROCR_HF_REPO = "openthaigpt/thai-trocr"
+_SKIP_HEAVY_IMPORTS = os.getenv("LOCALOCR_SKIP_HEAVY_IMPORTS", "").strip() == "1"
+
+
+def _onnx_providers() -> List[str]:
+    """Return ONNX Runtime providers requested by the deployment environment."""
+    configured = os.getenv("ONNX_PROVIDERS", "").strip()
+    if configured:
+        providers = [provider.strip() for provider in configured.split(",")]
+        return [provider for provider in providers if provider]
+
+    accelerator = os.getenv("ACCELERATOR", "cpu").strip().lower()
+    if accelerator in {"cuda", "gpu"}:
+        return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    if accelerator in {"npu", "openvino"}:
+        return ["OpenVINOExecutionProvider", "CPUExecutionProvider"]
+    return ["CPUExecutionProvider"]
 
 
 def _validate_image(image: np.ndarray) -> bool:
@@ -80,8 +97,9 @@ def _check_thai_trocr():
                                            "models", "thai-trocr-onnx"))
         onnx_path = os.path.join(model_dir, "model.onnx")
         if os.path.exists(onnx_path):
+            providers = _onnx_providers()
             _trocr_session = ort.InferenceSession(
-                onnx_path, providers=["CPUExecutionProvider"])
+                onnx_path, providers=providers)
             try:
                 from transformers import TrOCRProcessor
                 hf_dir = os.getenv("THAI_TROCR_HF_PATH",
@@ -96,7 +114,7 @@ def _check_thai_trocr():
                 _trocr_processor = None
             THAI_TROCR_AVAILABLE = _trocr_processor is not None
             if THAI_TROCR_AVAILABLE:
-                logger.info("Thai-TrOCR ONNX loaded")
+                logger.info("Thai-TrOCR ONNX loaded with providers=%s", providers)
             return
     except ImportError:
         pass
@@ -127,23 +145,27 @@ def _check_thai_trocr():
 
 # --- PaddleOCR ---
 PADDLE_AVAILABLE = False
-try:
-    from paddleocr import PaddleOCR as _PaddleOCR
-    PADDLE_AVAILABLE = True
-    logger.info("PaddleOCR available")
-except Exception:
-    pass
+_PaddleOCR = None
+if not _SKIP_HEAVY_IMPORTS:
+    try:
+        from paddleocr import PaddleOCR as _PaddleOCR
+        PADDLE_AVAILABLE = True
+        logger.info("PaddleOCR available")
+    except Exception:
+        pass
 
 
 # --- EasyOCR (Thai + multilingual) ---
 EASYOCR_AVAILABLE = False
 _easyocr_reader = None
-try:
-    import easyocr as _easyocr_mod
-    EASYOCR_AVAILABLE = True
-    logger.info("EasyOCR available")
-except Exception:
-    pass
+_easyocr_mod = None
+if not _SKIP_HEAVY_IMPORTS:
+    try:
+        import easyocr as _easyocr_mod
+        EASYOCR_AVAILABLE = True
+        logger.info("EasyOCR available")
+    except Exception:
+        pass
 
 
 class OCREngine:
