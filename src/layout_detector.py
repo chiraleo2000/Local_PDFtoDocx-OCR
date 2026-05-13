@@ -18,6 +18,7 @@ Security:
 """
 import os
 import html
+import importlib
 import logging
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -40,7 +41,7 @@ _SKIP_HEAVY_IMPORTS = os.getenv("LOCALOCR_SKIP_HEAVY_IMPORTS", "").strip() == "1
 
 # ── Optional heavy imports ────────────────────────────────────────────────────
 YOLO_AVAILABLE = False  # pylint: disable=invalid-name
-YOLOv10 = None
+_YOLO_CLASS = None
 if not _SKIP_HEAVY_IMPORTS:
     try:
         import sys
@@ -66,24 +67,27 @@ if not _SKIP_HEAVY_IMPORTS:
 
         # ── Also register safe globals for PyTorch 2.6+ serialization check ──────
         try:
-            from doclayout_yolo.nn.tasks import YOLOv10DetectionModel  # pylint: disable=import-error
-            torch.serialization.add_safe_globals([YOLOv10DetectionModel])
+            yolo_tasks = importlib.import_module("doclayout_yolo.nn.tasks")
+            yolo_detection_model = getattr(yolo_tasks, "YOLOv10DetectionModel")
+            torch.serialization.add_safe_globals([yolo_detection_model])
         except Exception:  # pylint: disable=broad-except
             pass
 
-        from doclayout_yolo import YOLOv10
+        yolo_module = importlib.import_module("doclayout_yolo")
+        _YOLO_CLASS = getattr(yolo_module, "YOLOv10")
         YOLO_AVAILABLE = True  # pylint: disable=invalid-name
         logger.info("DocLayout-YOLO available")
-    except (ImportError, OSError, RuntimeError):
+    except (ImportError, OSError, RuntimeError, AttributeError):
         pass
 
 PPSTRUCTURE_AVAILABLE = False  # pylint: disable=invalid-name
-PPStructure = None
+_PP_STRUCTURE_CLASS = None
 if not _SKIP_HEAVY_IMPORTS:
     try:
-        from paddleocr import PPStructure  # pylint: disable=import-error
+        _paddleocr_optional_module = importlib.import_module("paddleocr")
+        _PP_STRUCTURE_CLASS = getattr(_paddleocr_optional_module, "PPStructure")
         PPSTRUCTURE_AVAILABLE = True  # pylint: disable=invalid-name
-    except (ImportError, OSError):
+    except (ImportError, OSError, RuntimeError, AttributeError):
         pass
 
 
@@ -162,18 +166,17 @@ class LayoutDetector:
                 "DocLayout-YOLO model NOT FOUND at %s — "
                 "run the installer to download it.", chosen)
             return
-        if YOLOv10 is None:
+        if _YOLO_CLASS is None:
             logger.error("DocLayout-YOLO package is not available")
             return
         try:
-            self.model = YOLOv10(chosen)
+            self.model = _YOLO_CLASS(chosen)
             self.model_loaded = True
             logger.info("DocLayout-YOLO model loaded from %s", chosen)
-        except Exception as exc:
-            logger.error(
-                "DocLayout-YOLO model load FAILED (%s: %s) — "
-                "reinstall or re-download the model.",
-                type(exc).__name__, exc)
+        except Exception:
+            logger.exception(
+                "DocLayout-YOLO model load FAILED — "
+                "reinstall or re-download the model.")
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -248,7 +251,7 @@ class LayoutDetector:
                 "total": sum(len(v) for v in detections.values()),
             }
         except Exception as exc:
-            logger.error("YOLO detection failed: %s — %s", type(exc).__name__, exc)
+            logger.exception("YOLO detection failed")
             raise RuntimeError(
                 f"DocLayout-YOLO inference failed: {type(exc).__name__}: {exc}"
             ) from exc
@@ -434,11 +437,11 @@ class TableExtractor:
     # ── PPStructure (optional) ────────────────────────────────────────────────
 
     def _extract_ppstructure(self, img: np.ndarray) -> Optional[Dict[str, Any]]:
-        if PPStructure is None:
+        if _PP_STRUCTURE_CLASS is None:
             return None
         if self._pp_structure is None:
             try:
-                self._pp_structure = PPStructure(
+                self._pp_structure = _PP_STRUCTURE_CLASS(
                     table=True, ocr=True,
                     use_gpu=self.use_gpu, show_log=False,
                 )
@@ -694,9 +697,9 @@ class TableExtractor:
 
         # Fallback: try PaddleOCR directly
         try:
-            from paddleocr import PaddleOCR  # pylint: disable=import-error
-            paddle = PaddleOCR(use_angle_cls=True, lang="en",
-                               use_gpu=self.use_gpu, show_log=False)
+            paddle_ocr_class = getattr(importlib.import_module("paddleocr"), "PaddleOCR")
+            paddle = paddle_ocr_class(use_angle_cls=True, lang="en",
+                                      use_gpu=self.use_gpu, show_log=False)
             result = paddle.ocr(cell_img, cls=True)
             if result and result[0]:
                 texts = [line[1][0] for line in result[0]]

@@ -3,7 +3,7 @@
 # pylint: disable=catching-non-exception
 """
 PDF to DOCX OCR Service — Gradio Web Application
-v0.4.0  |  Thai-optimised OCR  |  Manual correction + auto-retrain
+v0.4.1  |  Thai-optimised OCR  |  Manual correction + auto-retrain
 
 Convert tab: Upload → detect → manual add tables/figures → convert
 Review tab: See detected regions, draw new ones, re-convert
@@ -588,7 +588,7 @@ def create_interface():
                     <h1>PDF OCR Pipeline</h1>
                     <p>EasyOCR | Thai-TrOCR | PaddleOCR | DocLayout-YOLO | HTML-first Export</p>
                 </div>
-                <div class="hero-badge">v0.4.0 &middot; Thai-Optimised</div>
+                <div class="hero-badge">v0.4.1 &middot; Thai-Optimised</div>
             </div>
             """)
 
@@ -926,7 +926,7 @@ def create_interface():
         gr.HTML("""
         <div style="text-align:center;padding:20px;margin-top:20px;
                     border-top:1px solid #e2e8f0;color:#94a3b8;font-size:0.85rem;">
-            PDF OCR Pipeline v0.4.0 — Apache-2.0 License — Thai-optimised OCR
+            PDF OCR Pipeline v0.4.1 — Apache-2.0 License — Thai-optimised OCR
         </div>
         """)
 
