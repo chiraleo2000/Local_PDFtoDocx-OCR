@@ -2,13 +2,13 @@
 # ============================================================
 # LocalOCR - PDF to DOCX Web App
 # CPU-first Docker image with optional CUDA and OpenVINO/NPU builds.
-# v0.6.0 — strict engine policy: Thai → Thai-TrOCR, other → PaddleOCR
+# v0.5.0 — strict engine policy: Thai → Thai-TrOCR, other → PaddleOCR
 # ============================================================
 FROM python:3.12-slim-bookworm
 
 LABEL maintainer="chiraleo2000"
 LABEL org.opencontainers.image.title="LocalOCR"
-LABEL org.opencontainers.image.version="0.6.0"
+LABEL org.opencontainers.image.version="0.5.0"
 LABEL org.opencontainers.image.description="Thai+English PDF OCR, DocLayout-YOLO, Gradio web UI"
 
 WORKDIR /app

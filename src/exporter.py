@@ -1,5 +1,5 @@
 """
-Document Exporter + Image Extractor — v2.3
+Document Exporter + Image Extractor — v2.4
 HTML-first export: Build positioned HTML → convert to DOCX & TXT.
 Images embedded as base64 in HTML, properly transferred to DOCX via htmldocx.
 Figure numbering: 1-based.
@@ -44,7 +44,8 @@ logger = logging.getLogger(__name__)
 try:
     from docx import Document
     from docx.shared import Inches, Pt, RGBColor, Emu
-    from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
+    from docx.enum.text import (WD_ALIGN_PARAGRAPH, WD_BREAK,
+                                WD_TAB_ALIGNMENT, WD_TAB_LEADER)
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
     DOCX_AVAILABLE = True
@@ -66,6 +67,13 @@ except ImportError:
     logger.info("htmldocx not installed — will use fallback DOCX builder")
 
 _BASE64_RE = re.compile(r"^[A-Za-z0-9+/\n\r]*={0,2}$")
+
+_THAI_SCRIPT_RE = re.compile(r"[\u0E00-\u0E7F]")
+# "หัวข้อ ......... 12" — table-of-contents entry with dot leaders
+_TOC_LINE_RE = re.compile(r"^(?P<label>.+?)\s*\.{4,}\s*(?P<num>\d{1,4})$")
+# "4. หัวข้อ" / "4.1 หัวข้อ" / "ภาคผนวก ก" — heading-like lines
+_HEADING_RE = re.compile(
+    r"^(ภาคผนวก\s|อภิธานศัพท์$|\d{1,2}(\.\d{1,2})?\.?\s)")
 
 
 def _is_valid_base64(data: str) -> bool:
@@ -223,9 +231,78 @@ class DocumentExporter:
       - derive plain-text from blocks
     """
 
-    FONT_NAME = "Tahoma"
+    FONT_NAME = os.getenv("DOCX_LATIN_FONT", "Tahoma")
+    # Thai-capable font for Thai runs (mirrors the validated 3-font scheme:
+    # Thai body text reads far better in a Thai font than in Tahoma)
+    THAI_FONT = os.getenv("DOCX_THAI_FONT", "TH Sarabun New")
     FONT_SIZE_NORMAL = 11
     FONT_SIZE_TABLE = 10
+
+    # ── Per-script run helpers (v2.4) ────────────────────────────────────────
+    @staticmethod
+    def _split_script_runs(text: str):
+        """Split text into (is_thai, chunk) runs; spaces stay in-place."""
+        runs, cur, cur_thai = [], "", None
+        for ch in text:
+            is_thai = bool(_THAI_SCRIPT_RE.match(ch)) or (
+                ch == " " and bool(cur_thai))
+            if cur_thai is None or is_thai == cur_thai:
+                cur += ch
+            else:
+                runs.append((bool(cur_thai), cur))
+                cur = ch
+            cur_thai = is_thai
+        if cur:
+            runs.append((bool(cur_thai), cur))
+        return runs
+
+    def _add_runs(self, p, text: str, size_pt: Optional[float] = None,
+                  bold: bool = False):
+        """Add *text* as runs with per-script fonts (Thai → THAI_FONT).
+
+        Also sets ``w:szCs`` — Word sizes complex scripts (Thai) from the
+        complex-script size, which python-docx does not set by itself.
+        """
+        for is_thai, chunk in self._split_script_runs(text):
+            run = p.add_run(chunk)
+            font_name = self.THAI_FONT if is_thai else self.FONT_NAME
+            run.font.name = font_name
+            if size_pt:
+                run.font.size = Pt(size_pt)
+            if bold:
+                run.bold = True
+            try:
+                rpr = run._element.get_or_add_rPr()  # noqa: SLF001
+                rfonts = rpr.find(qn("w:rFonts"))
+                if rfonts is None:
+                    rfonts = OxmlElement("w:rFonts")
+                    rpr.append(rfonts)
+                for attr in ("w:ascii", "w:hAnsi", "w:eastAsia", "w:cs"):
+                    rfonts.set(qn(attr), font_name)
+                if size_pt:
+                    sz_cs = rpr.find(qn("w:szCs"))
+                    if sz_cs is None:
+                        sz_cs = OxmlElement("w:szCs")
+                        rpr.append(sz_cs)
+                    sz_cs.set(qn("w:val"), str(int(size_pt * 2)))
+            except Exception:
+                pass
+        return p
+
+    def _add_toc_line(self, doc, label: str, num: str,
+                      usable_w_in: float,
+                      size_pt: Optional[float] = None) -> None:
+        """TOC entry: text + right-aligned dot-leader tab + page number."""
+        p = doc.add_paragraph()
+        pf = p.paragraph_format
+        pf.space_before = Pt(0)
+        pf.space_after = Pt(2)
+        pf.tab_stops.add_tab_stop(
+            Inches(max(usable_w_in - 0.05, 1.0)),
+            WD_TAB_ALIGNMENT.RIGHT, WD_TAB_LEADER.DOTS)
+        self._add_runs(p, label, size_pt=size_pt)
+        p.add_run("\t")
+        self._add_runs(p, num, size_pt=size_pt)
 
     def __init__(self):
         pass
@@ -683,7 +760,10 @@ class DocumentExporter:
         rowspan = int(cell_el.get("rowspan", 1))
 
         cell = tbl.cell(ri, col_idx)
-        cell.text = cell_el.get_text(strip=True)
+        # v2.4: per-script fonts inside table cells too
+        self._add_runs(cell.paragraphs[0], cell_el.get_text(strip=True),
+                       size_pt=self.FONT_SIZE_TABLE,
+                       bold=(cell_el.name == "th"))
 
         if colspan > 1 and col_idx + colspan - 1 < max_cols:
             try:
@@ -695,13 +775,6 @@ class DocumentExporter:
                 cell.merge(tbl.cell(ri + rowspan - 1, col_idx))
             except Exception:
                 pass
-
-        for p in cell.paragraphs:
-            for run in p.runs:
-                run.font.name = self.FONT_NAME
-                run.font.size = Pt(self.FONT_SIZE_TABLE)
-                if cell_el.name == "th":
-                    run.bold = True
 
         return col_idx + colspan
 
@@ -762,7 +835,7 @@ class DocumentExporter:
         style = doc.styles["Normal"]
         style.font.name = self.FONT_NAME
         style.font.size = Pt(self.FONT_SIZE_NORMAL)
-        self._set_eastasia_font(style, self.FONT_NAME)
+        self._set_eastasia_font(style, self.THAI_FONT)
         self._apply_page_layout(doc, page_size, margin_preset)
 
         pw_in, ph_in = PAGE_SIZES.get(page_size, PAGE_SIZES["A4"])
@@ -893,11 +966,10 @@ class DocumentExporter:
                 p.paragraph_format.left_indent = Emu(
                     int(indent_units * sx * 635))  # twips → EMU (×635)
 
-            run = p.add_run(text)
-            run.font.name = self.FONT_NAME
-            run.font.size = Pt(round(self._line_font_pt(line, pt_per_unit), 1))
-            if line.get("bold"):
-                run.bold = True
+            self._add_runs(
+                p, text,
+                size_pt=round(self._line_font_pt(line, pt_per_unit), 1),
+                bold=bool(line.get("bold")))
 
     def _add_table_absolute(self, doc, b, sx: float, sy: float,
                             pt_per_unit: float) -> None:
@@ -1128,7 +1200,7 @@ class DocumentExporter:
         style = doc.styles["Normal"]
         style.font.name = self.FONT_NAME
         style.font.size = Pt(self.FONT_SIZE_NORMAL)
-        self._set_eastasia_font(style, self.FONT_NAME)
+        self._set_eastasia_font(style, self.THAI_FONT)
         self._apply_page_layout(doc, page_size, margin_preset)
 
         pw_in, ph_in = PAGE_SIZES.get(page_size, PAGE_SIZES["A4"])
@@ -1170,15 +1242,35 @@ class DocumentExporter:
 
     def _add_structured_text(self, doc, b, src_w: float,
                              usable_w_in: float, pt_per_unit: float) -> None:
-        """One block -> flowing paragraphs with alignment/indent/size kept."""
+        """One block -> flowing paragraphs with alignment/indent/size kept.
+
+        v2.4: per-script fonts (Thai → THAI_FONT), dotted-leader TOC
+        lines, and bold emphasis for numbered headings.
+        """
         for para_lines in self._merge_lines_to_paragraphs(b):
             first_line = para_lines[0]
             text = self._thai_join([ln.get("text", "") for ln in para_lines])
             if not text:
                 continue
+            size = None
+            if pt_per_unit > 0 and first_line.get("bbox"):
+                size = round(self._line_font_pt(first_line, pt_per_unit), 1)
+            bold = bool(first_line.get("bold"))
+
+            # TOC entry "หัวข้อ ..... 12" → real dot-leader tab stop
+            toc = _TOC_LINE_RE.match(text)
+            if toc and len(para_lines) == 1:
+                self._add_toc_line(doc, toc.group("label").strip(),
+                                   toc.group("num"), usable_w_in, size)
+                continue
+            # Numbered headings ("4.1 เครื่องมือ") read better in bold
+            heading = bool(_HEADING_RE.match(text)) and len(text) <= 60
+            if heading:
+                bold = True
+
             p = doc.add_paragraph()
             pf = p.paragraph_format
-            pf.space_before = Pt(0)
+            pf.space_before = Pt(8 if heading else 0)
             pf.space_after = Pt(4)
             if b.bbox and first_line.get("bbox"):
                 align, indent_units = self._line_alignment(
@@ -1188,13 +1280,7 @@ class DocumentExporter:
                     pf.left_indent = Inches(
                         min(indent_units / src_w * usable_w_in,
                             usable_w_in * 0.6))
-            run = p.add_run(text)
-            run.font.name = self.FONT_NAME
-            if pt_per_unit > 0 and first_line.get("bbox"):
-                run.font.size = Pt(round(
-                    self._line_font_pt(first_line, pt_per_unit), 1))
-            if first_line.get("bold"):
-                run.bold = True
+            self._add_runs(p, text, size_pt=size, bold=bold)
 
     def _add_structured_table(self, doc, b, usable_w_in: float) -> None:
         """Inline (non-floating) editable Word table in reading order."""

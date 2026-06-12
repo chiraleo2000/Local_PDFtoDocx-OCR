@@ -5,8 +5,8 @@ services:
       dockerfile: Dockerfile
       args:
         ACCELERATOR: cpu
-    image: localocr:cpu
-    container_name: localocr-cpu
+    image: localocr:0.5.0-cpu
+    container_name: localocr-cpu-0.5.0
     restart: unless-stopped
     environment:
       ACCELERATOR: cpu

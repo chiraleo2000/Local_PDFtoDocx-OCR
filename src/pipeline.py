@@ -213,6 +213,8 @@ def clean_text(text: str, languages: str = "eng") -> str:
         text = _THAI_DUP_MARK_RE.sub(r"\1", text)
         # Normalise decomposed sara-am (nikhahit + sara aa → sara am)
         text = text.replace("ํา", "ำ")
+        # Double sara-e mistaken for sara-ae: "เเ" → "แ"
+        text = text.replace("เเ", "แ")
     text = re.sub(r"[^\S\n]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     lines = [line.strip() for line in text.split("\n")]
