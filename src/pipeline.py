@@ -1,4 +1,4 @@
-"""OCR Pipeline Orchestrator - v2.3
+"""OCR Pipeline Orchestrator - v2.5
 
 PDF -> Render -> Layout Detect -> GROUP (text/table/figure)
   -> OCR text only -> Table extraction -> Image extraction
@@ -19,6 +19,7 @@ import os
 import re
 import base64
 import logging
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional, Callable
 
@@ -35,6 +36,8 @@ logger = logging.getLogger(__name__)
 
 _MAX_PDF_SIZE_BYTES = int(os.getenv("MAX_PDF_SIZE_MB", "200")) * 1024 * 1024
 _MAX_TRIM_PERCENT = 25.0
+# OCR segments below this confidence are dropped (engines that report it)
+_MIN_SEGMENT_CONF = float(os.getenv("OCR_MIN_CONF", "0.30"))
 
 
 def _validate_pdf_path(pdf_path: str) -> Optional[str]:
@@ -108,6 +111,13 @@ def _segments_to_lines(segments: List[Dict[str, Any]],
         txt = (seg.get("text") or "").strip()
         if rect is None or not txt:
             continue
+        # v2.5: drop low-confidence fragments (hallucinated specks)
+        conf = seg.get("conf", seg.get("confidence", seg.get("score")))
+        try:
+            if conf is not None and float(conf) < _MIN_SEGMENT_CONF:
+                continue
+        except (TypeError, ValueError):
+            pass
         entries.append({"text": txt, "rect": rect,
                         "cy": (rect[1] + rect[3]) / 2.0,
                         "h": rect[3] - rect[1]})
@@ -205,6 +215,7 @@ def clean_text(text: str, languages: str = "eng") -> str:
     """Remove OCR artifacts, fix Thai spacing, normalise whitespace."""
     if not text:
         return ""
+    text = unicodedata.normalize("NFC", text)
     text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
     text = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", text)
     if "tha" in languages or _THAI_CHAR_RE.search(text):
@@ -245,6 +256,49 @@ def _sort_reading_order(blocks: List[ContentBlock],
 
     blocks.sort(key=lambda b: (b.y_top, b.x_left))
     return blocks
+
+
+def _bbox_overlap_frac(a: List[float], b: List[float]) -> float:
+    """Intersection area as a fraction of the smaller bbox."""
+    ix0, iy0 = max(a[0], b[0]), max(a[1], b[1])
+    ix1, iy1 = min(a[2], b[2]), min(a[3], b[3])
+    if ix1 <= ix0 or iy1 <= iy0:
+        return 0.0
+    inter = (ix1 - ix0) * (iy1 - iy0)
+    area_a = max((a[2] - a[0]) * (a[3] - a[1]), 1e-6)
+    area_b = max((b[2] - b[0]) * (b[3] - b[1]), 1e-6)
+    return inter / min(area_a, area_b)
+
+
+_DEDUP_WS_RE = re.compile(r"\s+")
+
+
+def _dedup_blocks(blocks: List["ContentBlock"]) -> List["ContentBlock"]:
+    """Drop text blocks whose text duplicates an overlapping earlier block.
+
+    Overlapping layout detections make the same paragraph get OCRed
+    twice; this de-duplicates the result (v2.5).
+    """
+    out: List[ContentBlock] = []
+    for b in blocks:
+        dup = False
+        if b.block_type in ("text", "caption") and b.text.strip():
+            key = _DEDUP_WS_RE.sub("", b.text)
+            for o in out:
+                if o.block_type not in ("text", "caption"):
+                    continue
+                if _DEDUP_WS_RE.sub("", o.text) != key:
+                    continue
+                if (not b.bbox or not o.bbox
+                        or _bbox_overlap_frac(b.bbox, o.bbox) > 0.30):
+                    dup = True
+                    break
+        if not dup:
+            out.append(b)
+    if len(out) != len(blocks):
+        logger.info("Removed %d duplicated text block(s)",
+                    len(blocks) - len(out))
+    return out
 
 
 _DEFAULT_LANGUAGES = "tha+eng"
@@ -421,6 +475,13 @@ class OCRPipeline:
         caption_dets  = detections.get("captions", [])
         formula_dets  = detections.get("formulas", [])
 
+        # ── v2.5: collapse overlapping/nested detections — duplicated
+        #    boxes are the main source of duplicated OCR paragraphs ──
+        text_regions = self.layout.dedup_regions(text_regions)
+        table_dets   = self.layout.dedup_regions(table_dets)
+        figure_dets  = self.layout.dedup_regions(figure_dets)
+        caption_dets = self.layout.dedup_regions(caption_dets)
+
         logger.info(
             "Detected: page %d — text=%d, tables=%d, figures=%d, captions=%d"
             " (method=%s)",
@@ -490,8 +551,9 @@ class OCRPipeline:
             n_tables, n_figures,
         )
 
-        # ── Step 7: Sort into reading order ──────────────────────────
+        # ── Step 7: Sort into reading order, drop duplicated text ────
         page_blocks = _sort_reading_order(page_blocks, w)
+        page_blocks = _dedup_blocks(page_blocks)
         return page_blocks, n_tables, n_figures
 
     # ── _process_single_page helpers ─────────────────────────────────────────
@@ -884,8 +946,11 @@ class OCRPipeline:
                              ) -> Optional[ContentBlock]:
         """OCR a single detected text region → ContentBlock or None."""
         x0, y0, x1, y1 = [int(v) for v in region["bbox"]]
-        x0, y0 = max(0, x0), max(0, y0)
-        x1, y1 = min(w, x1), min(h, y1)
+        # v2.5: pad the crop so Thai upper/lower vowels and tone marks at
+        # the region border are not clipped off before recognition
+        pad = max(4, int(min(h, w) * 0.004))
+        x0, y0 = max(0, x0 - pad), max(0, y0 - pad)
+        x1, y1 = min(w, x1 + pad), min(h, y1 + pad)
         if x1 <= x0 or y1 <= y0:
             return None
 

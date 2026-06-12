@@ -1,6 +1,6 @@
 # pylint: disable=no-member,broad-exception-caught,import-outside-toplevel
 """
-Layout Detection & Table Extraction Module — v2.1
+Layout Detection & Table Extraction Module — v2.2
 DocLayout-YOLO for AI-powered layout detection with OpenCV contour fallback.
 Detects text blocks, tables, figures, formulas, headings on page images.
 
@@ -378,6 +378,48 @@ class LayoutDetector:
         if cv2.countNonZero(hl) > area * 0.01 and cv2.countNonZero(vl) > area * 0.01:
             return {"bbox": bbox, "confidence": 0.5, "class": "table", "class_id": 5}
         return {"bbox": bbox, "confidence": 0.4, "class": "figure", "class_id": 3}
+
+    # ── Detection de-duplication (v2.2) ──────────────────────────────────────
+
+    @staticmethod
+    def _box_overlap_frac(a: List[float], b: List[float]) -> float:
+        """Intersection area as a fraction of the smaller box."""
+        ix0, iy0 = max(a[0], b[0]), max(a[1], b[1])
+        ix1, iy1 = min(a[2], b[2]), min(a[3], b[3])
+        if ix1 <= ix0 or iy1 <= iy0:
+            return 0.0
+        inter = (ix1 - ix0) * (iy1 - iy0)
+        area_a = max((a[2] - a[0]) * (a[3] - a[1]), 1e-6)
+        area_b = max((b[2] - b[0]) * (b[3] - b[1]), 1e-6)
+        return inter / min(area_a, area_b)
+
+    def dedup_regions(self, dets: List[Dict[str, Any]],
+                      overlap: float = 0.60) -> List[Dict[str, Any]]:
+        """Collapse duplicate/nested detections of the same kind.
+
+        Two boxes covering the same area make that text get OCRed twice,
+        which shows up as duplicated paragraphs in the output. The
+        highest-confidence box wins; results return in reading order.
+        """
+        if len(dets) <= 1:
+            return dets
+        kept: List[Dict[str, Any]] = []
+        for det in sorted(dets,
+                          key=lambda d: -float(d.get("confidence", 0.0))):
+            bb = det.get("bbox")
+            if not bb:
+                kept.append(det)
+                continue
+            if any(k.get("bbox")
+                   and self._box_overlap_frac(bb, k["bbox"]) >= overlap
+                   for k in kept):
+                continue
+            kept.append(det)
+        if len(kept) != len(dets):
+            logger.info("Dedup: %d -> %d detections", len(dets), len(kept))
+        kept.sort(key=lambda d: (d["bbox"][1], d["bbox"][0])
+                  if d.get("bbox") else (0.0, 0.0))
+        return kept
 
     # ══════════════════════════════════════════════════════════════════════════
     # Graphic Recovery — v2.1 (logos / stamps / signatures missed by YOLO)
@@ -818,6 +860,12 @@ class TableExtractor:
         h, w = cell_img.shape[:2]
         if h < 5 or w < 5:
             return ""
+
+        # v2.5: tiny cells upscale 2x — Thai vowel/tone marks are
+        # unreadable for the recognisers below ~24 px line height
+        if h < 24:
+            cell_img = cv2.resize(cell_img, None, fx=2.0, fy=2.0,
+                                  interpolation=cv2.INTER_CUBIC)
 
         # Use the connected OCR engine (strict policy: Thai → Thai-TrOCR,
         # other → PaddleOCR). No hard-coded English-only
