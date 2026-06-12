@@ -293,13 +293,17 @@ class TestGradioInterfaceConstruction:
         assert any("Language" in lbl for lbl in labels), (
             f"Language dropdown not found. Labels: {labels[:20]}")
 
-    def test_interface_has_engine_dropdown(self):
+    def test_interface_uses_auto_ocr_policy(self):
         import sys
         sys.path.insert(0, str(ROOT_DIR))
         import app as app_module
         blocks = app_module.create_interface()
-        labels = [getattr(b, "label", "") or "" for b in blocks.blocks.values()]
-        assert any("Engine" in lbl for lbl in labels)
+        labels = []
+        for block in blocks.blocks.values():
+            label = getattr(block, "label", None) or getattr(block, "value", None)
+            if isinstance(label, str):
+                labels.append(label)
+        assert any("Thai-TrOCR" in lbl or "PaddleOCR" in lbl for lbl in labels)
 
     def test_interface_has_convert_button(self):
         import sys
@@ -325,7 +329,7 @@ class TestGradioInterfaceConstruction:
                 labels.append(label)
         assert not any("Sign In" == lbl or "Password" == lbl for lbl in labels)
 
-    def test_interface_has_settings_tab(self):
+    def test_interface_has_advanced_tab(self):
         import sys
         sys.path.insert(0, str(ROOT_DIR))
         import app as app_module
@@ -335,8 +339,7 @@ class TestGradioInterfaceConstruction:
             label = getattr(block, "label", None) or getattr(block, "value", None)
             if isinstance(label, str):
                 labels.append(label)
-        assert any("Configuration" in lbl or "Settings" in lbl or "Confidence" in lbl
-                   for lbl in labels)
+        assert any("Advanced" in lbl or "System status" in lbl for lbl in labels)
 
     def test_interface_has_review_tab(self):
         """v0.5: Review & Correct tab should exist."""

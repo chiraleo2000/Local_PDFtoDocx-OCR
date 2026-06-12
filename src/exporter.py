@@ -1,5 +1,5 @@
 """
-Document Exporter + Image Extractor — v2.2
+Document Exporter + Image Extractor — v2.3
 HTML-first export: Build positioned HTML → convert to DOCX & TXT.
 Images embedded as base64 in HTML, properly transferred to DOCX via htmldocx.
 Figure numbering: 1-based.
@@ -104,16 +104,33 @@ _IMG_RENDER_DPI = 150
 # Image / Figure Extraction  (1-based numbering)
 # ══════════════════════════════════════════════════════════════════════════════
 class ImageExtractor:
-    """Crop detected figure regions, save to disk, and encode to base64."""
+    """Crop detected figure regions, save to disk, and encode to base64.
 
-    def __init__(self, min_width: int = 80, min_height: int = 80,
-                 min_area: int = 5000):
-        self.min_width = min_width
-        self.min_height = min_height
+    v2.3: thresholds lowered (and env-tunable) so small logos/stamps are
+    kept; every figure carries its source ``bbox`` so the pipeline never
+    mis-associates positions; ``page_figure()`` preserves graphic-only
+    pages (covers, diagrams) that OCR would otherwise drop entirely.
+    """
+
+    def __init__(self, min_width: int = 40, min_height: int = 40,
+                 min_area: int = 2000):
+        self.min_width = int(os.getenv("IMAGE_MIN_WIDTH", str(min_width)))
+        self.min_height = int(os.getenv("IMAGE_MIN_HEIGHT", str(min_height)))
         self.min_area = int(os.getenv("IMAGE_MIN_AREA", str(min_area)))
         self.enabled = os.getenv("IMAGE_EXTRACTION", "true").lower() == "true"
         self.temp_dir = Path(tempfile.gettempdir()) / "pdf_ocr_images"
         self.temp_dir.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def encode_png_base64(crop: np.ndarray) -> str:
+        """Encode a BGR/gray numpy crop as base64 PNG."""
+        pil_img = Image.fromarray(
+            cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+            if len(crop.shape) == 3 else crop
+        )
+        buf = BytesIO()
+        pil_img.save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode()
 
     def extract_figures(self, page_image: np.ndarray,
                         figure_detections: List[Dict],
@@ -124,7 +141,7 @@ class ImageExtractor:
         figures: List[Dict[str, Any]] = []
         img_h, img_w = page_image.shape[:2]
 
-        for idx, det in enumerate(figure_detections):
+        for det in figure_detections:
             bbox = det["bbox"]
             x0, y0, x1, y1 = [int(v) for v in bbox]
             x0, y0 = max(0, x0), max(0, y0)
@@ -137,28 +154,61 @@ class ImageExtractor:
             if w < self.min_width or h < self.min_height or w * h < self.min_area:
                 continue
 
-            fig_num = idx + 1                               # 1-based
+            fig_num = len(figures) + 1                      # 1-based
             fname = f"page{page_number + 1}_fig{fig_num}.png"
             fpath = self.temp_dir / fname
             cv2.imwrite(str(fpath), crop)
-
-            pil_img = Image.fromarray(
-                cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-                if len(crop.shape) == 3 else crop
-            )
-            buf = BytesIO()
-            pil_img.save(buf, format="PNG")
-            b64 = base64.b64encode(buf.getvalue()).decode()
 
             figures.append({
                 "page": page_number,
                 "index": fig_num,                           # 1-based
                 "path": str(fpath),
-                "base64": b64,
+                "base64": self.encode_png_base64(crop),
                 "width": w,
                 "height": h,
+                # source bbox travels with the figure so the caller never
+                # mis-aligns figures with detections it filtered out
+                "bbox": [float(x0), float(y0), float(x1), float(y1)],
+                "source": det.get("source", "detected"),
             })
         return figures
+
+    def page_figure(self, page_image: np.ndarray, page_number: int = 0,
+                    min_ink: float = 0.004) -> Optional[Dict[str, Any]]:
+        """Return the page's ink area as one figure (graphic-only pages).
+
+        Used when OCR finds no text and layout detection finds no regions —
+        e.g. cover pages, full-page diagrams, logo pages. Previously these
+        pages were dropped from the output entirely.
+        """
+        if not self.enabled or page_image is None or page_image.size == 0:
+            return None
+        gray = (cv2.cvtColor(page_image, cv2.COLOR_BGR2GRAY)
+                if len(page_image.shape) == 3 else page_image)
+        h, w = gray.shape[:2]
+        _, binary = cv2.threshold(
+            gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        ink = cv2.countNonZero(binary)
+        if ink < (h * w) * min_ink:
+            return None
+        ys, xs = np.where(binary > 0)
+        pad = max(4, int(min(h, w) * 0.01))
+        x0 = max(0, int(xs.min()) - pad)
+        y0 = max(0, int(ys.min()) - pad)
+        x1 = min(w, int(xs.max()) + pad)
+        y1 = min(h, int(ys.max()) + pad)
+        crop = page_image[y0:y1, x0:x1]
+        if crop.size == 0:
+            return None
+        return {
+            "page": page_number,
+            "index": 1,
+            "base64": self.encode_png_base64(crop),
+            "width": int(x1 - x0),
+            "height": int(y1 - y0),
+            "bbox": [float(x0), float(y0), float(x1), float(y1)],
+            "source": "fullpage",
+        }
 
 
 # ══════════════════════════════════════════════════════════════════════════════

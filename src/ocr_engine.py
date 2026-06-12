@@ -514,7 +514,7 @@ class OCREngine:
                        languages: Optional[str] = None) -> List[str]:
         """Strict, language-aware engine selection (v3.0).
 
-        auto:  Thai → ["thai_trocr"], other → ["paddleocr"].
+        auto:  Thai → ["thai_trocr", "paddleocr"], other → ["paddleocr"].
         An explicitly named engine runs alone — no silent fallback.
         """
         explicit = {
@@ -527,9 +527,11 @@ class OCREngine:
         }
         if requested in explicit:
             return [explicit[requested]]
-        # auto — strict policy
+        # auto — best models: Thai-TrOCR first, PaddleOCR fallback for mixed pages
         lang = languages or self.languages
-        return ["thai_trocr"] if self._is_thai(lang) else ["paddleocr"]
+        if self._is_thai(lang):
+            return ["thai_trocr", "paddleocr"]
+        return ["paddleocr"]
 
     # ── Engine runners ──
 

@@ -46,8 +46,9 @@ class OpenCVPreprocessor:
         if q == "fast":
             return ["denoise"]
         elif q == "accurate":
-            return ["denoise", "deskew", "clahe", "binarise", "morphology"]
-        return ["denoise", "deskew", "clahe"]
+            return ["denoise", "deskew", "clahe", "upscale", "sharpen",
+                    "binarise", "morphology"]
+        return ["denoise", "deskew", "clahe", "upscale"]
 
     # ── Individual steps ──
 
@@ -91,6 +92,31 @@ class OpenCVPreprocessor:
         gray = img if len(img.shape) == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         return clahe.apply(gray)
+
+    # Small renders make Thai tone/vowel marks only 1-2 px tall, which
+    # both Thai-TrOCR and PaddleOCR misread. Upscale low-resolution pages
+    # so the shortest side reaches a workable size before recognition.
+    _UPSCALE_MIN_SHORT_SIDE = 1500
+    _UPSCALE_MAX_FACTOR = 2.0
+
+    @classmethod
+    def _step_upscale(cls, img: np.ndarray) -> np.ndarray:
+        h, w = img.shape[:2]
+        short = min(h, w)
+        if short >= cls._UPSCALE_MIN_SHORT_SIDE:
+            return img
+        scale = min(cls._UPSCALE_MAX_FACTOR,
+                    cls._UPSCALE_MIN_SHORT_SIDE / max(short, 1))
+        if scale <= 1.05:
+            return img
+        return cv2.resize(img, None, fx=scale, fy=scale,
+                          interpolation=cv2.INTER_CUBIC)
+
+    @staticmethod
+    def _step_sharpen(img: np.ndarray) -> np.ndarray:
+        """Unsharp mask — crisper glyph edges after denoise/upscale."""
+        blur = cv2.GaussianBlur(img, (0, 0), 1.0)
+        return cv2.addWeighted(img, 1.5, blur, -0.5, 0)
 
     @staticmethod
     def _step_binarise(img: np.ndarray) -> np.ndarray:

@@ -25,7 +25,9 @@ os.environ.setdefault("NUMEXPR_NUM_THREADS", str(_CPU_WORKERS))
 os.environ.setdefault("USE_GPU", "false")
 os.environ.setdefault("ACCELERATOR", "cpu")
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
-os.environ.setdefault("DISABLE_TROCR_PRELOAD", "1")
+os.environ.setdefault("DISABLE_TROCR_PRELOAD", "0")
+os.environ.setdefault("OCR_ENGINE", "auto")
+os.environ.setdefault("QUALITY_PRESET", "accurate")
 os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
@@ -67,6 +69,7 @@ import gradio as gr
 
 from src.pipeline import OCRPipeline
 from src.services import HistoryManager
+from src.ocr_engine import _check_thai_trocr
 
 # ── Initialise services ──────────────────────────────────────────────────────
 pipeline = OCRPipeline()
@@ -75,11 +78,19 @@ history.cleanup_old_entries()
 
 # ── Option maps ──────────────────────────────────────────────────────────────
 # UI label constants — centralised to satisfy S1192 (no duplicate string literals)
-_DEFAULT_QUALITY       = "Balanced (Recommended)"
+_DEFAULT_QUALITY       = "Best (Accurate)"
 _DEFAULT_LANGUAGE      = "Thai + English"
 _DEFAULT_LANGUAGE_CODE = "tha+eng"
 _DEFAULT_ENGINE        = "Auto (Thai→TrOCR, other→PaddleOCR)"
+_ENGINE_AUTO_LABEL     = "Thai-TrOCR + PaddleOCR (auto)"
+_DEFAULT_YOLO_CONF     = 0.25
 _MSG_UPLOAD_PDF_FIRST  = "Upload a PDF first."
+
+SIMPLE_LANGUAGE_OPTIONS = {
+    _DEFAULT_LANGUAGE: _DEFAULT_LANGUAGE_CODE,
+    "English only": "eng",
+    "Thai only": "tha",
+}
 
 QUALITY_OPTIONS = {
     "Standard (Fast)": "fast",
@@ -124,6 +135,13 @@ MARGIN_OPTIONS = {
 
 _PAGE_ZERO = "Page 0 / 0"
 _LOCAL_USER = "local"
+
+# Preload best OCR models: Thai-TrOCR (Thai) + PaddleOCR PP-OCRv5 (other)
+pipeline.ocr.primary_engine = os.getenv("OCR_ENGINE", "auto")
+pipeline.ocr._ensure_engines()
+_check_thai_trocr(preload=True)
+if pipeline.ocr.primary_engine == "auto":
+    pipeline.ocr._get_paddle(os.getenv("LANGUAGES", _DEFAULT_LANGUAGE_CODE))
 
 # Colours for bounding box overlay
 _BOX_COLORS = {
@@ -228,8 +246,9 @@ def change_page(pdf_file, direction, current, total, header_pct, footer_pct):
 
 
 def process_document(pdf_file, quality_label, header_pct, footer_pct,
-                     language_label, engine_label, yolo_conf,
+                     language_label,
                      page_size_label=None, margin_label=None,
+                     yolo_conf=_DEFAULT_YOLO_CONF,
                      progress=gr.Progress(track_tqdm=False)):
     """Convert a PDF — no authentication required in local mode."""
     if pdf_file is None:
@@ -242,13 +261,13 @@ def process_document(pdf_file, quality_label, header_pct, footer_pct,
         progress((current, total), desc=message)
 
     pdf_path = str(pdf_file)
-    quality = QUALITY_OPTIONS.get(quality_label, "balanced")
-    languages = LANGUAGE_OPTIONS.get(language_label, _DEFAULT_LANGUAGE_CODE)
-    engine = ENGINE_OPTIONS.get(engine_label, "auto")
+    quality = QUALITY_OPTIONS.get(quality_label, "accurate")
+    languages = (SIMPLE_LANGUAGE_OPTIONS.get(language_label)
+                 or LANGUAGE_OPTIONS.get(language_label, _DEFAULT_LANGUAGE_CODE))
     page_size = page_size_label or "A4"
     margin_preset = MARGIN_OPTIONS.get(margin_label, "Normal")
 
-    pipeline.ocr.primary_engine = engine
+    pipeline.ocr.primary_engine = "auto"
 
     result = pipeline.process_pdf(
         pdf_path, quality=quality,
@@ -263,14 +282,13 @@ def process_document(pdf_file, quality_label, header_pct, footer_pct,
         files = result["files"]
         meta = result["metadata"]
 
-        engine_display = engine_label or _DEFAULT_ENGINE
         status = (
             f"**Conversion Complete!**\n\n"
             f"Pages: {meta.get('pages', 0)} | "
             f"Tables: {meta.get('tables', 0)} | "
             f"Figures: {meta.get('figures', 0)}\n"
             f"Language: {language_label} | Quality: {quality_label} | "
-            f"Engine: {engine_display}"
+            f"Engine: {_ENGINE_AUTO_LABEL}"
         )
 
         original_name = os.path.basename(pdf_path)
@@ -389,7 +407,7 @@ def review_clear_manual(pdf_file, current_page, yolo_conf, manual_regions_state)
 
 
 def review_convert_with_corrections(pdf_file, quality_label, header_pct, footer_pct,
-                                    language_label, engine_label, yolo_conf,
+                                    language_label, yolo_conf,
                                     manual_regions_state, page_size_label=None,
                                     margin_label=None,
                                     progress=gr.Progress(track_tqdm=False)):
@@ -404,12 +422,12 @@ def review_convert_with_corrections(pdf_file, quality_label, header_pct, footer_
         progress((current, total), desc=message)
 
     pdf_path = str(pdf_file)
-    quality = QUALITY_OPTIONS.get(quality_label, "balanced")
-    languages = LANGUAGE_OPTIONS.get(language_label, _DEFAULT_LANGUAGE_CODE)
-    engine = ENGINE_OPTIONS.get(engine_label, "auto")
+    quality = QUALITY_OPTIONS.get(quality_label, "accurate")
+    languages = (SIMPLE_LANGUAGE_OPTIONS.get(language_label)
+                 or LANGUAGE_OPTIONS.get(language_label, _DEFAULT_LANGUAGE_CODE))
     page_size = page_size_label or "A4"
     margin_preset = MARGIN_OPTIONS.get(margin_label, "Normal")
-    pipeline.ocr.primary_engine = engine
+    pipeline.ocr.primary_engine = "auto"
 
     # Build manual_regions dict: {page_num: [{"bbox": ..., "class": ...}]}
     mr_dict: dict = {}
@@ -432,14 +450,13 @@ def review_convert_with_corrections(pdf_file, quality_label, header_pct, footer_
         files = result["files"]
         meta = result["metadata"]
         mc = meta.get("manual_corrections", 0)
-        engine_display = engine_label or _DEFAULT_ENGINE
         status = (
             f"**Conversion Complete (with {mc} manual corrections)!**\n\n"
             f"Pages: {meta.get('pages', 0)} | "
             f"Tables: {meta.get('tables', 0)} | "
             f"Figures: {meta.get('figures', 0)}\n"
             f"Language: {language_label} | Quality: {quality_label} | "
-            f"Engine: {engine_display}"
+            f"Engine: {_ENGINE_AUTO_LABEL}"
         )
         original_name = os.path.basename(pdf_path)
         history.save_result(_LOCAL_USER, original_name, files, meta)
@@ -586,246 +603,84 @@ def create_interface():
             gr.HTML("""
             <div class="hero-bar">
                 <div>
-                    <h1>PDF OCR Pipeline</h1>
-                    <p>Thai-TrOCR (Thai) | PaddleOCR (other) | DocLayout-YOLO | Layout-faithful Export</p>
+                    <h1>LocalOCR</h1>
+                    <p>Upload a PDF &rarr; Convert &rarr; Download Word. Thai uses Thai-TrOCR; other languages use PaddleOCR automatically.</p>
                 </div>
-                <div class="hero-badge">v0.5.0 &middot; Thai-Optimised</div>
+                <div class="hero-badge">v0.5.0 &middot; Best OCR</div>
             </div>
             """)
 
         with gr.Tabs():
-            # ── TAB 1: Quick Convert ─────────────────────────────
-            with gr.Tab("Convert PDF"):
+            # ── TAB 1: Convert (simple) ──────────────────────────
+            with gr.Tab("Convert"):
                 with gr.Row():
                     with gr.Column(scale=1):
-                        gr.HTML('<div class="step-label">Step 1 — Upload PDF</div>')
                         pdf_input = gr.File(
-                            label="Select PDF file",
+                            label="1. Upload PDF",
                             file_types=[".pdf"],
                             type="filepath",
                             file_count="single",
                         )
-
-                        gr.HTML('<div class="step-label">Step 2 — Settings</div>')
-
                         language_dd = gr.Dropdown(
-                            choices=list(LANGUAGE_OPTIONS.keys()),
+                            choices=list(SIMPLE_LANGUAGE_OPTIONS.keys()),
                             value=_DEFAULT_LANGUAGE,
-                            label="OCR Language",
-                            info="Select the language(s) in the document",
+                            label="2. Document language",
+                            info="Thai + English is recommended for mixed Thai/English documents",
                         )
-                        quality_dd = gr.Dropdown(
-                            choices=list(QUALITY_OPTIONS.keys()),
-                            value=_DEFAULT_QUALITY,
-                            label="Quality Level",
+                        convert_btn = gr.Button(
+                            "3. Convert to Word (DOCX)",
+                            variant="primary", size="lg",
                         )
+                        status_md = gr.Markdown("")
 
-                        gr.HTML('<div class="step-label">Output Layout</div>')
-                        page_size_dd = gr.Dropdown(
-                            choices=PAGE_SIZE_OPTIONS,
-                            value="A4",
-                            label="Paper Size",
-                            info="Page size for the output DOCX document",
-                        )
-                        margin_dd = gr.Dropdown(
-                            choices=list(MARGIN_OPTIONS.keys()),
-                            value=_DEFAULT_MARGIN_LABEL,
-                            label="Margins",
-                            info="Margin preset (matching MS Word defaults)",
-                        )
-
-                        with gr.Accordion("Advanced Settings", open=False):
-                            engine_dd = gr.Dropdown(
-                                choices=list(ENGINE_OPTIONS.keys()),
-                                value=_DEFAULT_ENGINE,
-                                label="OCR Engine",
-                                info="Auto: Thai → Thai-TrOCR, other languages → PaddleOCR",
+                        with gr.Accordion("More options", open=False):
+                            quality_dd = gr.Dropdown(
+                                choices=list(QUALITY_OPTIONS.keys()),
+                                value=_DEFAULT_QUALITY,
+                                label="Scan quality",
                             )
-                            yolo_conf_sl = gr.Slider(
-                                0.05, 0.50, 0.30, step=0.05,
-                                label="Layout Detection Confidence",
-                                info="Lower = detect more regions (tables, figures). "
-                                     "Try 0.10 if tables are missed.",
+                            page_size_dd = gr.Dropdown(
+                                choices=PAGE_SIZE_OPTIONS,
+                                value="A4",
+                                label="Paper size",
+                            )
+                            margin_dd = gr.Dropdown(
+                                choices=list(MARGIN_OPTIONS.keys()),
+                                value=_DEFAULT_MARGIN_LABEL,
+                                label="Margins",
                             )
                             with gr.Row():
                                 header_sl = gr.Slider(0, 25, 0, step=1,
-                                                      label="Header Trim %")
+                                                      label="Header trim %")
                                 footer_sl = gr.Slider(0, 25, 0, step=1,
-                                                      label="Footer Trim %")
+                                                      label="Footer trim %")
 
-                        gr.HTML('<div class="step-label">Step 3 — Convert</div>')
-                        convert_btn = gr.Button("Convert to DOCX",
-                                                variant="primary", size="lg")
-                        status_md = gr.Markdown("")
+                        with gr.Group(visible=False) as download_section:
+                            with gr.Row():
+                                dl_docx = gr.File(label="Word (.docx)",
+                                                  interactive=False)
+                                dl_txt = gr.File(label="Text (.txt)",
+                                                 interactive=False)
+
+                        with gr.Accordion("Extracted text preview", open=False):
+                            text_output = gr.Textbox(
+                                label="Text",
+                                placeholder="Converted text appears here...",
+                                lines=10, max_lines=25, interactive=False,
+                            )
 
                     with gr.Column(scale=1):
-                        gr.HTML('<div class="step-label">Document Preview</div>')
                         preview_img = gr.Image(label="Preview",
-                                               interactive=False, height=500)
+                                               interactive=False, height=520)
                         with gr.Row(visible=False) as page_controls:
-                            prev_btn = gr.Button("Prev", size="sm")
+                            prev_btn = gr.Button("Previous", size="sm")
                             page_label = gr.Textbox(
                                 value=_PAGE_ZERO, interactive=False,
                                 show_label=False, container=False,
                             )
                             next_btn = gr.Button("Next", size="sm")
 
-                with gr.Group(visible=False) as download_section:
-                    gr.HTML('<div class="step-label-green">Step 4 — Download</div>')
-                    with gr.Row():
-                        dl_txt = gr.File(label="Text (.txt)", interactive=False)
-                        dl_docx = gr.File(label="Word (.docx)", interactive=False)
-
-                with gr.Accordion("View Extracted Text", open=False):
-                    text_output = gr.Textbox(
-                        label="Extracted Text",
-                        placeholder="Converted text appears here...",
-                        lines=12, max_lines=30, interactive=False,
-                    )
-
-            # ── TAB 2: Review & Correct ──────────────────────────
-            with gr.Tab("Review & Correct"):
-                gr.Markdown(
-                    "Upload a PDF, review auto-detected regions, manually "
-                    "add **table** or **figure** boxes, then convert with "
-                    "corrections.  Every manual correction is logged — "
-                    "the model auto-retrains every "
-                    f"**{pipeline.corrections.retrain_interval}** corrections."
-                )
-                with gr.Row():
-                    # ── Left: Controls ──
-                    with gr.Column(scale=1):
-                        gr.HTML('<div class="step-label">Step 1 — Load PDF</div>')
-                        rv_pdf_input = gr.File(
-                            label="Select PDF file",
-                            file_types=[".pdf"], type="filepath",
-                            file_count="single",
-                        )
-
-                        gr.HTML('<div class="step-label">Step 2 — Review Detections</div>')
-                        rv_yolo_conf = gr.Slider(
-                            0.05, 0.50, 0.15, step=0.05,
-                            label="Detection Confidence",
-                        )
-                        with gr.Row(visible=False) as rv_page_controls:
-                            rv_prev_btn = gr.Button("< Prev Page", size="sm")
-                            rv_page_lbl = gr.Textbox(
-                                value="Page 1 / ?", interactive=False,
-                                show_label=False, container=False,
-                            )
-                            rv_next_btn = gr.Button("Next Page >", size="sm")
-
-                        rv_info_md = gr.Markdown("")
-
-                        gr.HTML('<div class="step-label-orange">'
-                                'Step 3 — Add Manual Regions</div>')
-                        gr.Markdown(
-                            "Look at the page image on the right. The pixel "
-                            "coordinates start at **(0,0) = top-left**. "
-                            "Enter bounding-box coordinates below."
-                        )
-                        with gr.Row():
-                            rv_x0 = gr.Number(label="x0 (left)", value=0)
-                            rv_y0 = gr.Number(label="y0 (top)", value=0)
-                        with gr.Row():
-                            rv_x1 = gr.Number(label="x1 (right)", value=100)
-                            rv_y1 = gr.Number(label="y1 (bottom)", value=100)
-                        rv_class_dd = gr.Dropdown(
-                            choices=CLASS_OPTIONS, value="table",
-                            label="Region Type",
-                        )
-                        with gr.Row():
-                            rv_add_btn = gr.Button("Add Region",
-                                                   variant="primary", size="sm")
-                            rv_clear_btn = gr.Button("Clear Page Regions",
-                                                     variant="secondary", size="sm")
-
-                        gr.HTML('<div class="step-label-green">'
-                                'Step 4 — Convert with Corrections</div>')
-
-                        rv_lang_dd = gr.Dropdown(
-                            choices=list(LANGUAGE_OPTIONS.keys()),
-                            value=_DEFAULT_LANGUAGE, label="OCR Language",
-                        )
-                        rv_quality_dd = gr.Dropdown(
-                            choices=list(QUALITY_OPTIONS.keys()),
-                            value=_DEFAULT_QUALITY, label="Quality",
-                        )
-                        rv_page_size_dd = gr.Dropdown(
-                            choices=PAGE_SIZE_OPTIONS,
-                            value="A4",
-                            label="Paper Size",
-                            info="Page size for the output DOCX",
-                        )
-                        rv_margin_dd = gr.Dropdown(
-                            choices=list(MARGIN_OPTIONS.keys()),
-                            value=_DEFAULT_MARGIN_LABEL,
-                            label="Margins",
-                        )
-                        with gr.Accordion("Advanced", open=False):
-                            rv_engine_dd = gr.Dropdown(
-                                choices=list(ENGINE_OPTIONS.keys()),
-                                value=_DEFAULT_ENGINE, label="Engine",
-                            )
-                            with gr.Row():
-                                rv_header_sl = gr.Slider(0, 25, 0, step=1,
-                                                         label="Header Trim %")
-                                rv_footer_sl = gr.Slider(0, 25, 0, step=1,
-                                                         label="Footer Trim %")
-
-                        rv_convert_btn = gr.Button(
-                            "Convert with Corrections",
-                            variant="primary", size="lg",
-                        )
-                        rv_status_md = gr.Markdown("")
-
-                    # ── Right: Image preview ──
-                    with gr.Column(scale=1):
-                        gr.HTML('<div class="step-label">Detected Regions</div>')
-                        rv_preview_img = gr.Image(
-                            label="Page with detections",
-                            interactive=False, height=600,
-                        )
-
-                # Download row
-                with gr.Group(visible=False) as rv_download_section:
-                    gr.HTML('<div class="step-label-green">Download</div>')
-                    with gr.Row():
-                        rv_dl_txt = gr.File(label="Text (.txt)", interactive=False)
-                        rv_dl_docx = gr.File(label="Word (.docx)",
-                                             interactive=False)
-                with gr.Accordion("View Extracted Text", open=False):
-                    rv_text_output = gr.Textbox(
-                        label="Extracted Text",
-                        placeholder="Converted text appears here...",
-                        lines=12, max_lines=30, interactive=False,
-                    )
-
-            # ── TAB 3: Training / Corrections ────────────────────
-            with gr.Tab("Training"):
-                gr.HTML('<div class="step-label">Auto-Retrain Dashboard</div>')
-                gr.Markdown(
-                    "Manual corrections are logged in YOLO format. When the "
-                    f"count reaches a multiple of "
-                    f"**{pipeline.corrections.retrain_interval}**, the layout "
-                    "model is automatically fine-tuned in the background."
-                )
-                training_stats_md = gr.Markdown(get_correction_stats_md)
-                refresh_training_btn = gr.Button("Refresh Stats", size="sm")
-                refresh_training_btn.click(
-                    fn=get_correction_stats_md,
-                    outputs=[training_stats_md],
-                )
-
-                with gr.Accordion("Corrections Log (recent 30)", open=False):
-                    corrections_log_md = gr.Markdown(get_corrections_log_md)
-                    refresh_log_btn = gr.Button("Refresh Log", size="sm")
-                    refresh_log_btn.click(
-                        fn=get_corrections_log_md,
-                        outputs=[corrections_log_md],
-                    )
-
-            # ── TAB 4: History ───────────────────────────────────
+            # ── TAB 2: History ───────────────────────────────────
             with gr.Tab("History"):
                 gr.HTML('<div class="step-label">Processing History</div>')
                 refresh_btn = gr.Button("Refresh", size="sm")
@@ -835,8 +690,8 @@ def create_interface():
                     interactive=False,
                 )
                 gr.HTML("<p style='color:#64748b;font-size:0.9rem;'>"
-                        "Paste an Entry ID from the table above, then click a "
-                        "download button to retrieve your saved files.</p>")
+                        "Paste an Entry ID from the table, then download "
+                        "your saved files.</p>")
                 with gr.Row():
                     entry_id_input = gr.Textbox(
                         label="Entry ID",
@@ -854,75 +709,130 @@ def create_interface():
                     dl_history_txt_file  = gr.File(
                         label="Text File (.txt)", interactive=False)
 
-            # ── TAB 5: Settings ──────────────────────────────────
-            with gr.Tab("Settings"):
-                gr.HTML('<div class="step-label">Configuration</div>')
+            # ── TAB 3: Advanced ────────────────────────────────
+            with gr.Tab("Advanced"):
                 gr.Markdown(
-                    "These settings can also be set via the `.env` file. "
-                    "Values chosen here apply to this session only."
+                    f"**OCR engines:** {_ENGINE_AUTO_LABEL} — "
+                    "Thai-TrOCR (`openthaigpt/thai-trocr`) for Thai text, "
+                    "PaddleOCR PP-OCRv5 for other languages."
                 )
+                with gr.Accordion("Review & fix detected regions", open=False):
+                    gr.Markdown(
+                        "Add missing **table** or **figure** boxes, then "
+                        "convert with corrections. Corrections auto-retrain "
+                        f"every **{pipeline.corrections.retrain_interval}** entries."
+                    )
+                    with gr.Row():
+                        with gr.Column(scale=1):
+                            rv_pdf_input = gr.File(
+                                label="PDF file",
+                                file_types=[".pdf"], type="filepath",
+                                file_count="single",
+                            )
+                            rv_yolo_conf = gr.Slider(
+                                0.05, 0.50, _DEFAULT_YOLO_CONF, step=0.05,
+                                label="Detection confidence",
+                            )
+                            with gr.Row(visible=False) as rv_page_controls:
+                                rv_prev_btn = gr.Button("Previous page", size="sm")
+                                rv_page_lbl = gr.Textbox(
+                                    value="Page 1 / ?", interactive=False,
+                                    show_label=False, container=False,
+                                )
+                                rv_next_btn = gr.Button("Next page", size="sm")
+                            rv_info_md = gr.Markdown("")
+                            with gr.Row():
+                                rv_x0 = gr.Number(label="Left (x0)", value=0)
+                                rv_y0 = gr.Number(label="Top (y0)", value=0)
+                            with gr.Row():
+                                rv_x1 = gr.Number(label="Right (x1)", value=100)
+                                rv_y1 = gr.Number(label="Bottom (y1)", value=100)
+                            rv_class_dd = gr.Dropdown(
+                                choices=CLASS_OPTIONS, value="table",
+                                label="Region type",
+                            )
+                            with gr.Row():
+                                rv_add_btn = gr.Button("Add region",
+                                                       variant="primary", size="sm")
+                                rv_clear_btn = gr.Button("Clear page",
+                                                         variant="secondary",
+                                                         size="sm")
+                            rv_lang_dd = gr.Dropdown(
+                                choices=list(SIMPLE_LANGUAGE_OPTIONS.keys()),
+                                value=_DEFAULT_LANGUAGE, label="Language",
+                            )
+                            rv_quality_dd = gr.Dropdown(
+                                choices=list(QUALITY_OPTIONS.keys()),
+                                value=_DEFAULT_QUALITY, label="Quality",
+                            )
+                            rv_page_size_dd = gr.Dropdown(
+                                choices=PAGE_SIZE_OPTIONS, value="A4",
+                                label="Paper size",
+                            )
+                            rv_margin_dd = gr.Dropdown(
+                                choices=list(MARGIN_OPTIONS.keys()),
+                                value=_DEFAULT_MARGIN_LABEL, label="Margins",
+                            )
+                            with gr.Row():
+                                rv_header_sl = gr.Slider(0, 25, 0, step=1,
+                                                         label="Header trim %")
+                                rv_footer_sl = gr.Slider(0, 25, 0, step=1,
+                                                         label="Footer trim %")
+                            rv_convert_btn = gr.Button(
+                                "Convert with corrections",
+                                variant="primary", size="lg",
+                            )
+                            rv_status_md = gr.Markdown("")
+                            with gr.Group(visible=False) as rv_download_section:
+                                with gr.Row():
+                                    rv_dl_docx = gr.File(label="Word (.docx)",
+                                                         interactive=False)
+                                    rv_dl_txt = gr.File(label="Text (.txt)",
+                                                        interactive=False)
+                            rv_text_output = gr.Textbox(
+                                label="Extracted text",
+                                lines=8, max_lines=20, interactive=False,
+                            )
+                        with gr.Column(scale=1):
+                            rv_preview_img = gr.Image(
+                                label="Detected regions",
+                                interactive=False, height=520,
+                            )
 
-                with gr.Row():
-                    with gr.Column():
-                        gr.Markdown("### OCR Configuration")
-                        settings_lang = gr.Dropdown(
-                            choices=list(LANGUAGE_OPTIONS.keys()),
-                            value=_DEFAULT_LANGUAGE,
-                            label="Default OCR Language",
-                            info="Applies when you press Convert (also changeable on Convert tab)",
-                        )
-                        settings_engine = gr.Dropdown(
-                            choices=list(ENGINE_OPTIONS.keys()),
-                            value=_DEFAULT_ENGINE,
-                            label="Default OCR Engine",
-                        )
-                        settings_quality = gr.Dropdown(
-                            choices=list(QUALITY_OPTIONS.keys()),
-                            value=_DEFAULT_QUALITY,
-                            label="Default Quality",
-                        )
+                with gr.Accordion("Training & corrections log", open=False):
+                    training_stats_md = gr.Markdown(get_correction_stats_md)
+                    refresh_training_btn = gr.Button("Refresh stats", size="sm")
+                    refresh_training_btn.click(
+                        fn=get_correction_stats_md,
+                        outputs=[training_stats_md],
+                    )
+                    corrections_log_md = gr.Markdown(get_corrections_log_md)
+                    refresh_log_btn = gr.Button("Refresh log", size="sm")
+                    refresh_log_btn.click(
+                        fn=get_corrections_log_md,
+                        outputs=[corrections_log_md],
+                    )
 
-                    with gr.Column():
-                        gr.Markdown("### Layout Detection")
-                        settings_yolo_conf = gr.Slider(
-                            0.05, 0.50, 0.15, step=0.05,
-                            label="YOLO Confidence Threshold",
-                            info="Lower value detects more regions (tables, figures, text blocks). "
-                                 "Increase if too many false positives appear.",
-                        )
-                        gr.Markdown("### Installed Engines")
-                        engines = pipeline.ocr.get_available_engines()
-                        engine_info = "\n".join(
-                            f"- **{name}**: {'Installed' if ok else 'Not installed'}"
-                            for name, ok in engines.items()
-                        )
-                        gr.Markdown(engine_info)
-                        gr.Markdown(
-                            f"- **DocLayout-YOLO**: "
-                            f"{'Loaded' if pipeline.layout.model_loaded else 'Not loaded (OpenCV fallback)'}"
-                        )
-
-                # Sync settings ↔ convert tab
-                settings_lang.change(
-                    fn=lambda v: v, inputs=[settings_lang], outputs=[language_dd])
-                settings_engine.change(
-                    fn=lambda v: v, inputs=[settings_engine], outputs=[engine_dd])
-                settings_quality.change(
-                    fn=lambda v: v, inputs=[settings_quality], outputs=[quality_dd])
-                settings_yolo_conf.change(
-                    fn=lambda v: v, inputs=[settings_yolo_conf], outputs=[yolo_conf_sl])
-
-            # ── TAB 6: System Status ─────────────────────────────
-            with gr.Tab("System Status"):
-                gr.HTML('<div class="step-label">Pipeline Status</div>')
-                _status_text = json.dumps(pipeline.get_status(), indent=2)
-                status_info = gr.Textbox(label="Status", value=_status_text,
-                                         lines=12, interactive=False)
-                refresh_status = gr.Button("Refresh", size="sm")
-                refresh_status.click(
-                    fn=lambda: json.dumps(pipeline.get_status(), indent=2),
-                    outputs=[status_info],
-                )
+                with gr.Accordion("System status", open=False):
+                    _status_text = json.dumps(pipeline.get_status(), indent=2)
+                    engines = pipeline.ocr.get_available_engines()
+                    engine_info = "\n".join(
+                        f"- **{name}**: {'ready' if ok else 'not installed'}"
+                        for name, ok in engines.items()
+                    )
+                    gr.Markdown(
+                        f"### Installed engines\n{engine_info}\n\n"
+                        f"- **DocLayout-YOLO**: "
+                        f"{'loaded' if pipeline.layout.model_loaded else 'fallback (OpenCV)'}"
+                    )
+                    status_info = gr.Textbox(label="Pipeline JSON",
+                                             value=_status_text,
+                                             lines=10, interactive=False)
+                    refresh_status = gr.Button("Refresh", size="sm")
+                    refresh_status.click(
+                        fn=lambda: json.dumps(pipeline.get_status(), indent=2),
+                        outputs=[status_info],
+                    )
 
         gr.HTML("""
         <div style="text-align:center;padding:20px;margin-top:20px;
@@ -954,13 +864,12 @@ def create_interface():
         )
 
         convert_btn.click(
-            fn=lambda: "**Processing...** This may take a moment.",
+            fn=lambda: "**Processing...** Using Thai-TrOCR + PaddleOCR.",
             outputs=[status_md],
         ).then(
             fn=process_document,
             inputs=[pdf_input, quality_dd, header_sl, footer_sl,
-                    language_dd, engine_dd, yolo_conf_sl,
-                    page_size_dd, margin_dd],
+                    language_dd, page_size_dd, margin_dd],
             outputs=[text_output, status_md, dl_txt, dl_docx,
                      download_section, history_table],
         )
@@ -1028,12 +937,12 @@ def create_interface():
         )
 
         rv_convert_btn.click(
-            fn=lambda: "**Processing with corrections...** This may take a moment.",
+            fn=lambda: "**Processing with corrections...**",
             outputs=[rv_status_md],
         ).then(
             fn=review_convert_with_corrections,
             inputs=[rv_pdf_input, rv_quality_dd, rv_header_sl, rv_footer_sl,
-                    rv_lang_dd, rv_engine_dd, rv_yolo_conf,
+                    rv_lang_dd, rv_yolo_conf,
                     rv_manual_regions, rv_page_size_dd, rv_margin_dd],
             outputs=[rv_text_output, rv_status_md, rv_dl_txt, rv_dl_docx,
                      rv_download_section, history_table],

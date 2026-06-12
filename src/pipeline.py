@@ -1,4 +1,4 @@
-"""OCR Pipeline Orchestrator - v2.0
+"""OCR Pipeline Orchestrator - v2.3
 
 PDF -> Render -> Layout Detect -> GROUP (text/table/figure)
   -> OCR text only -> Table extraction -> Image extraction
@@ -17,6 +17,7 @@ Security:
 """
 import os
 import re
+import base64
 import logging
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional, Callable
@@ -144,6 +145,9 @@ def _segments_to_lines(segments: List[Dict[str, Any]],
 # ══════════════════════════════════════════════════════════════════════════════
 _THAI_CHAR_RE = re.compile(r"[\u0E00-\u0E7F]")
 _THAI_SPACE_RE = re.compile(r"([\u0E00-\u0E7F])\s+([\u0E00-\u0E7F])")
+# Duplicated Thai combining marks (tone marks, upper/lower vowels) —
+# a frequent OCR artifact: "กรุ่่ง" → "กรุ่ง"
+_THAI_DUP_MARK_RE = re.compile(r"([ัิ-ฺ็-๎])\1+")
 
 
 def _fix_thai_spacing(text: str) -> str:
@@ -178,8 +182,22 @@ def _embedded_text_reliable(text: str, languages: str) -> bool:
         return False
     # Thai requested but not a single Thai character extracted —
     # classic symptom of a Thai font without a ToUnicode table.
+    # v2.3: a genuinely English-only page inside a tha+eng document is
+    # still trustworthy — but only when it reads like healthy prose, not
+    # like the ASCII residue a stripped Thai layer leaves behind
+    # (digit-heavy fragments, orphaned closing parentheses).
     if "tha" in languages and not _THAI_CHAR_RE.search(text):
-        return False
+        digits = sum(ch.isdigit() for ch in text)
+        opens = text.count("(")
+        closes = text.count(")")
+        healthy_latin = (
+            letters >= 40
+            and letters / n >= 0.55
+            and digits / n <= 0.12
+            and closes <= opens + 2
+        )
+        if not healthy_latin:
+            return False
     return True
 
 
@@ -191,6 +209,10 @@ def clean_text(text: str, languages: str = "eng") -> str:
     text = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", text)
     if "tha" in languages or _THAI_CHAR_RE.search(text):
         text = _fix_thai_spacing(text)
+        # Collapse duplicated tone/vowel marks (OCR stutter)
+        text = _THAI_DUP_MARK_RE.sub(r"\1", text)
+        # Normalise decomposed sara-am (nikhahit + sara aa → sara am)
+        text = text.replace("ํา", "ำ")
     text = re.sub(r"[^\S\n]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     lines = [line.strip() for line in text.split("\n")]
@@ -308,6 +330,8 @@ class OCRPipeline:
                 direct_blocks = self._embedded_text_block(doc[page_num], page_num, langs)
                 if direct_blocks is not None:
                     all_blocks.extend(direct_blocks)
+                    total_figures += sum(
+                        1 for b in direct_blocks if b.block_type == "figure")
                     self._notify_progress(
                         progress_callback, page_num + 1, progress_total,
                         f"Completed page {page_num + 1}/{page_count}")
@@ -407,11 +431,29 @@ class OCRPipeline:
         self._merge_manual_regions(
             extra_regions, text_regions, table_dets, figure_dets, page_num)
 
+        # ── Step 1c: Recover graphics the detector missed (v2.3) ─────
+        # Logos/stamps often land in the "abandon" class (dropped), or
+        # are missed entirely — both used to lose the image. Re-tag
+        # graphic-like abandoned regions and scan the leftover ink.
+        if os.getenv("GRAPHIC_RECOVERY", "true").lower() == "true":
+            other_dets = detections.get("other", [])
+            try:
+                if other_dets:
+                    figure_dets.extend(
+                        self.layout.filter_graphic_regions(img, other_dets))
+                known = [d["bbox"] for d in (
+                    text_regions + table_dets + figure_dets
+                    + caption_dets + formula_dets + other_dets)]
+                figure_dets.extend(self.layout.recover_graphics(img, known))
+            except (OSError, RuntimeError, ValueError):
+                logger.exception(
+                    "Graphic recovery failed on page %d", page_num + 1)
+
         page_blocks: List[ContentBlock] = []
 
         # ── Fallback: no layout detected → full-page OCR ────────────
         if not text_regions and not table_dets and not figure_dets:
-            return self._fullpage_fallback(preprocessed, page_num, languages)
+            return self._fullpage_fallback(img, preprocessed, page_num, languages)
 
         # ── Step 2-4: OCR text, captions, formulas ───────────────────
         self._ocr_regions_to_blocks(
@@ -469,8 +511,13 @@ class OCRPipeline:
                 text_regions.append(det)
             logger.info("Merged manual %s region on page %d", cls, page_num)
 
-    def _fullpage_fallback(self, preprocessed, page_num, languages):
-        """OCR the entire page when no layout regions were detected."""
+    def _fullpage_fallback(self, img, preprocessed, page_num, languages):
+        """OCR the entire page when no layout regions were detected.
+
+        v2.3: pages with no recognisable text but visible ink (covers,
+        diagrams, logo pages) are preserved as a full-page figure instead
+        of being dropped from the output.
+        """
         ocr_result = self.ocr.ocr_full_page(preprocessed, languages=languages)
         raw = ocr_result.get("text", "")
         txt = clean_text(raw, languages)
@@ -491,25 +538,72 @@ class OCRPipeline:
                 block_type="text", page=page_num, y_top=0, x_left=0, text=txt,
                 bbox=bbox, page_width=float(pw), page_height=float(ph),
                 lines=lines))
+            return blocks, 0, 0
+
+        # No text found — keep the page as an image if it has content
+        try:
+            fig = self.image_extractor.page_figure(img, page_num)
+        except (OSError, RuntimeError, ValueError):
+            fig = None
+        if fig:
+            ih, iw = img.shape[:2]
+            bbox = fig.get("bbox", [0.0, 0.0, float(iw), float(ih)])
+            logger.info(
+                "Page %d: no text detected — preserved as full-page figure",
+                page_num + 1)
+            return [ContentBlock(
+                block_type="figure", page=page_num,
+                y_top=float(bbox[1]), x_left=float(bbox[0]),
+                figure=fig,
+                bbox=[float(v) for v in bbox],
+                page_width=float(iw), page_height=float(ih),
+            )], 0, 1
         return blocks, 0, 0
 
-    @staticmethod
-    def _embedded_text_block(page, page_num: int, languages: str):
-        """Return positioned text blocks for simple born-digital PDF pages.
+    def _embedded_text_block(self, page, page_num: int, languages: str):
+        """Return positioned blocks for born-digital PDF pages.
 
         Uses ``get_text("dict")`` so block/line positions and font sizes are
-        preserved (bbox in PDF points). Returns a list of ContentBlocks, or
-        ``None`` if the page needs the OCR path.
+        preserved (bbox in PDF points). v2.3: pages with a reliable text
+        layer AND images no longer lose their images — embedded raster
+        images and vector logo clusters are extracted as figure blocks
+        alongside the text (hybrid path). Returns a list of ContentBlocks,
+        or ``None`` if the page needs the OCR path.
         """
-        raw = page.get_text("text") or ""
-        cleaned = clean_text(raw, languages)
-        if not cleaned.strip():
-            return None
-        if page.get_images(full=True):
-            return None
         # Optional override: always OCR, never trust embedded text
         if os.getenv("FORCE_OCR", "false").lower() == "true":
             return None
+
+        raw = page.get_text("text") or ""
+        cleaned = clean_text(raw, languages)
+        pw = float(page.rect.width)
+        ph = float(page.rect.height)
+        page_area = max(pw * ph, 1.0)
+
+        # Full-page scan (one image covering nearly the whole page) →
+        # always take the OCR path, even if a hidden text layer exists.
+        try:
+            img_infos = page.get_image_info() or []
+        except (RuntimeError, ValueError):
+            img_infos = []
+        for info in img_infos:
+            bx = info.get("bbox")
+            if not bx:
+                continue
+            r = fitz.Rect(bx) & page.rect
+            if r.get_area() >= page_area * 0.82:
+                return None
+
+        if not cleaned.strip():
+            # No text layer at all. Born-digital graphic-only pages
+            # (covers, logo pages) keep their images; anything else
+            # goes to OCR.
+            if img_infos or self._page_has_drawings(page):
+                fig_blocks = self._embedded_image_blocks(page, page_num, [])
+                if fig_blocks:
+                    return fig_blocks
+            return None
+
         # Broken/incomplete text layer (e.g. Thai glyphs without Unicode
         # mapping) → route the page through the OCR pipeline instead.
         if not _embedded_text_reliable(cleaned, languages):
@@ -518,8 +612,6 @@ class OCRPipeline:
                 "(missing Thai/letters) — using OCR instead.", page_num + 1)
             return None
 
-        pw = float(page.rect.width)
-        ph = float(page.rect.height)
         blocks: List[ContentBlock] = []
         try:
             page_dict = page.get_text("dict")
@@ -561,7 +653,174 @@ class OCRPipeline:
             blocks = [ContentBlock(
                 block_type="text", page=page_num, y_top=0, x_left=0,
                 text=txt, page_width=pw, page_height=ph)]
+
+        # ── v2.3: keep the page's images (was: entire page sent to OCR,
+        #    or images silently lost) ──
+        try:
+            blocks.extend(
+                self._embedded_image_blocks(page, page_num, blocks))
+        except (RuntimeError, ValueError):
+            logger.exception(
+                "Embedded image extraction failed on page %d", page_num + 1)
         return blocks
+
+    # ── Embedded image / vector-logo extraction (v2.3) ───────────────────────
+
+    _EMBED_RENDER_SCALE = 3.0       # render embedded figures at 3× for quality
+    _EMBED_MIN_SIDE_PT = 12.0       # smallest figure side (PDF points)
+    _EMBED_MIN_AREA_PT = 900.0      # smallest figure area (PDF points²)
+    _MAX_VECTOR_PRIMITIVES = 500    # skip vector clustering on huge art pages
+
+    @staticmethod
+    def _page_has_drawings(page) -> bool:
+        try:
+            return bool(page.get_drawings())
+        except (RuntimeError, ValueError):
+            return False
+
+    def _embedded_image_blocks(self, page, page_num: int,
+                               text_blocks: List[ContentBlock],
+                               ) -> List[ContentBlock]:
+        """Extract placed raster images + vector graphic clusters as figures.
+
+        Each figure region is rendered from the page (handles rotation,
+        masks, transparency and overlapping content correctly) and encoded
+        as base64 PNG, positioned with the same PDF-point coordinates used
+        by the embedded text blocks.
+        """
+        pw = float(page.rect.width)
+        ph = float(page.rect.height)
+        page_area = max(pw * ph, 1.0)
+        text_rects = [fitz.Rect(b.bbox) for b in text_blocks if b.bbox]
+
+        rects: List[fitz.Rect] = []
+
+        # 1) Placed raster images (logos, photos, stamps)
+        try:
+            infos = page.get_image_info() or []
+        except (RuntimeError, ValueError):
+            infos = []
+        for info in infos:
+            bx = info.get("bbox")
+            if not bx:
+                continue
+            r = fitz.Rect(bx) & page.rect
+            if r.is_empty or r.width < 6 or r.height < 6:
+                continue
+            if r.get_area() >= page_area * 0.95:
+                continue
+            rects.append(r)
+
+        # 2) Vector graphics (logos drawn as paths) — clustered primitives
+        rects.extend(self._vector_graphic_rects(page, page_area))
+
+        rects = self._merge_rects(rects, pad=4.0)
+
+        blocks: List[ContentBlock] = []
+        idx = 0
+        for r in rects:
+            if (r.width < self._EMBED_MIN_SIDE_PT
+                    or r.height < self._EMBED_MIN_SIDE_PT
+                    or r.get_area() < self._EMBED_MIN_AREA_PT):
+                continue
+            if self._rect_mostly_text(r, text_rects):
+                continue       # text frame / underline box — not a figure
+            try:
+                pix = page.get_pixmap(
+                    matrix=fitz.Matrix(self._EMBED_RENDER_SCALE,
+                                       self._EMBED_RENDER_SCALE),
+                    clip=r)
+                png = pix.tobytes("png")
+            except (RuntimeError, ValueError):
+                continue
+            idx += 1
+            blocks.append(ContentBlock(
+                block_type="figure", page=page_num,
+                y_top=float(r.y0), x_left=float(r.x0),
+                figure={
+                    "page": page_num,
+                    "index": idx,
+                    "base64": base64.b64encode(png).decode(),
+                    "width": int(pix.width),
+                    "height": int(pix.height),
+                    "bbox": [float(r.x0), float(r.y0),
+                             float(r.x1), float(r.y1)],
+                    "source": "embedded",
+                },
+                bbox=[float(r.x0), float(r.y0), float(r.x1), float(r.y1)],
+                page_width=pw, page_height=ph,
+            ))
+        if blocks:
+            logger.info("Page %d: extracted %d embedded figure(s)",
+                        page_num + 1, len(blocks))
+        return blocks
+
+    def _vector_graphic_rects(self, page, page_area: float
+                              ) -> List["fitz.Rect"]:
+        """Cluster vector drawing primitives into logo/graphic rectangles."""
+        try:
+            drawings = page.get_drawings()
+        except (RuntimeError, ValueError):
+            return []
+        if not drawings or len(drawings) > self._MAX_VECTOR_PRIMITIVES:
+            return []
+        raw: List[fitz.Rect] = []
+        for d in drawings:
+            r = fitz.Rect(d.get("rect", fitz.Rect()))
+            if r.is_empty:
+                continue
+            if r.get_area() > page_area * 0.6:    # page frame / background
+                continue
+            raw.append(r)
+        if not raw:
+            return []
+        merged = self._merge_rects(raw, pad=6.0)
+        out = []
+        for r in merged:
+            if r.width < self._EMBED_MIN_SIDE_PT * 1.2:
+                continue
+            if r.height < self._EMBED_MIN_SIDE_PT * 1.2:
+                continue
+            if (r.get_area() < self._EMBED_MIN_AREA_PT
+                    or r.get_area() > page_area * 0.6):
+                continue
+            out.append(r)
+        return out
+
+    @staticmethod
+    def _merge_rects(rects: List["fitz.Rect"], pad: float = 0.0
+                     ) -> List["fitz.Rect"]:
+        """Union intersecting (optionally padded) rectangles."""
+        pending = [fitz.Rect(r) for r in rects if not fitz.Rect(r).is_empty]
+        merged: List[fitz.Rect] = []
+        while pending:
+            r = pending.pop()
+            changed = True
+            while changed:
+                changed = False
+                rp = fitz.Rect(r.x0 - pad, r.y0 - pad,
+                               r.x1 + pad, r.y1 + pad)
+                i = 0
+                while i < len(pending):
+                    if rp.intersects(pending[i]):
+                        r |= pending.pop(i)
+                        changed = True
+                    else:
+                        i += 1
+            merged.append(r)
+        return merged
+
+    @staticmethod
+    def _rect_mostly_text(rect: "fitz.Rect",
+                          text_rects: List["fitz.Rect"]) -> bool:
+        """True when *rect* is mostly covered by text blocks."""
+        if not text_rects:
+            return False
+        area = rect.get_area()
+        if area <= 0:
+            return True
+        covered = sum(abs((rect & tr).get_area()) for tr in text_rects)
+        return (covered / area) > 0.55
 
     def _ocr_regions_to_blocks(self, regions, preprocessed, img, h, w,
                                page_num, block_type, languages, out) -> None:
@@ -601,9 +860,10 @@ class OCRPipeline:
             return 0
         ih, iw = img.shape[:2]
         extracted = self.image_extractor.extract_figures(img, figure_dets, page_num)
-        for i, fig in enumerate(extracted):
-            bbox = (figure_dets[i]["bbox"]
-                    if i < len(figure_dets) else [0, 0, 0, 0])
+        for fig in extracted:
+            # bbox now travels with the figure payload — index-based
+            # association broke whenever the extractor filtered a region
+            bbox = fig.get("bbox") or [0, 0, 0, 0]
             out.append(ContentBlock(
                 block_type="figure", page=page_num,
                 y_top=float(bbox[1]), x_left=float(bbox[0]),
@@ -827,6 +1087,8 @@ class OCRPipeline:
                 direct_blocks = self._embedded_text_block(doc[page_num], page_num, langs)
                 if direct_blocks is not None:
                     all_blocks.extend(direct_blocks)
+                    total_figures += sum(
+                        1 for b in direct_blocks if b.block_type == "figure")
                     page_rect = doc[page_num].rect
                     correction_image = np.ones(
                         (max(1, int(page_rect.height)),

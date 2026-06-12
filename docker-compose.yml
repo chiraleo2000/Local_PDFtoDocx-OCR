@@ -16,7 +16,7 @@ services:
       SERVER_PORT: "7870"
       QUALITY_PRESET: accurate
       OCR_ENGINE: auto
-      DISABLE_TROCR_PRELOAD: "1"
+      DISABLE_TROCR_PRELOAD: "0"
       LANGUAGES: tha+eng
       LAYOUT_MODE: flow
       CORRECTION_DATA_DIR: /app/correction_data
@@ -46,7 +46,7 @@ services:
       SERVER_PORT: "7870"
       QUALITY_PRESET: accurate
       OCR_ENGINE: auto
-      DISABLE_TROCR_PRELOAD: "1"
+      DISABLE_TROCR_PRELOAD: "0"
       LANGUAGES: tha+eng
       LAYOUT_MODE: flow
       CORRECTION_DATA_DIR: /app/correction_data
@@ -81,7 +81,7 @@ services:
       SERVER_PORT: "7870"
       QUALITY_PRESET: balanced
       OCR_ENGINE: auto
-      DISABLE_TROCR_PRELOAD: "1"
+      DISABLE_TROCR_PRELOAD: "0"
       LANGUAGES: tha+eng
       LAYOUT_MODE: flow
       CORRECTION_DATA_DIR: /app/correction_data

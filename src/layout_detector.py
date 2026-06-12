@@ -1,6 +1,6 @@
 # pylint: disable=no-member,broad-exception-caught,import-outside-toplevel
 """
-Layout Detection & Table Extraction Module — v2.0
+Layout Detection & Table Extraction Module — v2.1
 DocLayout-YOLO for AI-powered layout detection with OpenCV contour fallback.
 Detects text blocks, tables, figures, formulas, headings on page images.
 
@@ -378,6 +378,134 @@ class LayoutDetector:
         if cv2.countNonZero(hl) > area * 0.01 and cv2.countNonZero(vl) > area * 0.01:
             return {"bbox": bbox, "confidence": 0.5, "class": "table", "class_id": 5}
         return {"bbox": bbox, "confidence": 0.4, "class": "figure", "class_id": 3}
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Graphic Recovery — v2.1 (logos / stamps / signatures missed by YOLO)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    _RECOVERY_MIN_SIDE = 28          # px — smallest logo side we keep
+    _RECOVERY_MIN_AREA = 1600        # px² — smallest logo area we keep
+    _RECOVERY_MIN_INK = 0.05         # ink density below this = stray noise
+    _RECOVERY_MAX_REGIONS = 8        # safety cap per page
+
+    def recover_graphics(self, image: np.ndarray,
+                         known_boxes: List[List[float]],
+                         ) -> List[Dict[str, Any]]:
+        """Find graphic regions the detector missed (logos, stamps, signatures).
+
+        Every known region (text/table/figure/caption/formula/abandon) is
+        masked out of the page ink map; the remaining ink clusters that are
+        large, blocky and dense enough are returned as figure detections so
+        the exporter keeps them instead of silently dropping them.
+        """
+        if image is None or image.size == 0:
+            return []
+        gray = (cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+                if len(image.shape) == 3 else image)
+        h, w = gray.shape[:2]
+        _, binary = cv2.threshold(
+            gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        if cv2.countNonZero(binary) == 0:
+            return []
+
+        mask = binary.copy()
+        pad = max(2, int(min(h, w) * 0.004))
+        for bx in (known_boxes or []):
+            try:
+                x0, y0, x1, y1 = [int(v) for v in bx[:4]]
+            except (TypeError, ValueError):
+                continue
+            x0, y0 = max(0, x0 - pad), max(0, y0 - pad)
+            x1, y1 = min(w, x1 + pad), min(h, y1 + pad)
+            if x1 > x0 and y1 > y0:
+                mask[y0:y1, x0:x1] = 0
+
+        if cv2.countNonZero(mask) < self._RECOVERY_MIN_AREA // 4:
+            return []
+
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+        blob = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+        contours, _ = cv2.findContours(
+            blob, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        out: List[Dict[str, Any]] = []
+        for cnt in contours:
+            x, y, cw, ch = cv2.boundingRect(cnt)
+            area = cw * ch
+            if cw < self._RECOVERY_MIN_SIDE or ch < self._RECOVERY_MIN_SIDE:
+                continue
+            if area < self._RECOVERY_MIN_AREA or area > h * w * 0.9:
+                continue
+            aspect = cw / max(ch, 1)
+            if aspect > 12 or aspect < (1 / 12):      # rules / borders
+                continue
+            roi = mask[y:y + ch, x:x + cw]
+            density = cv2.countNonZero(roi) / max(area, 1)
+            if density < self._RECOVERY_MIN_INK:
+                continue
+            out.append({
+                "bbox": [float(x), float(y), float(x + cw), float(y + ch)],
+                "confidence": round(min(0.99, 0.30 + density), 2),
+                "class": "figure", "class_id": 3, "source": "recovery",
+            })
+
+        out.sort(key=lambda d: (d["bbox"][1], d["bbox"][0]))
+        if out:
+            logger.info("Graphic recovery found %d candidate region(s)",
+                        len(out))
+        return out[: self._RECOVERY_MAX_REGIONS]
+
+    def filter_graphic_regions(self, image: np.ndarray,
+                               dets: List[Dict[str, Any]],
+                               ) -> List[Dict[str, Any]]:
+        """Return the subset of *dets* whose content is graphic, not text.
+
+        DocLayout-YOLO labels page furniture as ``abandon`` — but logos and
+        stamps frequently land in that class too and used to be dropped.
+        Text regions are made of many small similar components; graphics
+        have one dominant blob or very dense ink. Only graphic-like
+        regions are returned (re-tagged as figures).
+        """
+        if image is None or image.size == 0 or not dets:
+            return []
+        gray = (cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+                if len(image.shape) == 3 else image)
+        ih, iw = gray.shape[:2]
+        out: List[Dict[str, Any]] = []
+        for det in dets:
+            try:
+                x0, y0, x1, y1 = [int(v) for v in det["bbox"][:4]]
+            except (KeyError, TypeError, ValueError):
+                continue
+            x0, y0 = max(0, x0), max(0, y0)
+            x1, y1 = min(iw, x1), min(ih, y1)
+            rw, rh = x1 - x0, y1 - y0
+            if rw < self._RECOVERY_MIN_SIDE or rh < self._RECOVERY_MIN_SIDE:
+                continue
+            roi = gray[y0:y1, x0:x1]
+            _, broi = cv2.threshold(
+                roi, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+            area = max(rw * rh, 1)
+            ink = cv2.countNonZero(broi) / area
+            if ink < 0.04:
+                continue
+            n, _, stats, _ = cv2.connectedComponentsWithStats(broi, 8)
+            if n <= 1:
+                continue
+            comp_areas = stats[1:, cv2.CC_STAT_AREA]
+            biggest_share = float(comp_areas.max()) / max(
+                float(comp_areas.sum()), 1.0)
+            # One dominant blob (logo/stamp) or very dense ink (photo)
+            if biggest_share > 0.35 or ink > 0.35:
+                fig = dict(det)
+                fig["class"] = "figure"
+                fig["class_id"] = 3
+                fig["source"] = fig.get("source", "abandon-graphic")
+                out.append(fig)
+        if out:
+            logger.info("Re-tagged %d abandoned region(s) as figures",
+                        len(out))
+        return out
 
 
 # ══════════════════════════════════════════════════════════════════════════════
