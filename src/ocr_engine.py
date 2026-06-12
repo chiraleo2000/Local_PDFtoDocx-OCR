@@ -1,15 +1,20 @@
 # pylint: disable=no-member,broad-exception-caught,global-statement,wrong-import-position
 # pylint: disable=invalid-name,import-outside-toplevel,missing-function-docstring
 """
-Multi-Engine OCR Module — v2.2
-Thai-optimised cascade: EasyOCR (Thai+English) → Thai-TrOCR (line-level)
-  → PaddleOCR (non-Thai fallback) → Tesseract.
+Multi-Engine OCR Module — v3.0 (strict language policy)
 
-Engine priority for Thai text:
-    EasyOCR          → Best Thai+English accuracy, built-in line detection
-    Thai-TrOCR       → Line-level Thai OCR (ONNX or transformers)
-    PaddleOCR        → General multilingual fallback (NO Thai support)
-    Tesseract        → Last-resort fallback
+    Thai input  ("tha"/"th" in LANGUAGES):
+        Thai-TrOCR ONLY — region crops are segmented into single text
+        lines (CV projection), each line recognised by TrOCR, and each
+        line returned WITH its bbox so the exporter can reproduce the
+        original spacing/alignment.
+
+    All other languages:
+        PaddleOCR ONLY — PP-OCRv5 with native per-line bboxes.
+
+No silent fallback to EasyOCR/Tesseract/Typhoon: those engines run only
+when explicitly requested via OCR_ENGINE=<name> (or the UI dropdown).
+OCR_ENGINE=auto (default) applies the strict policy above.
 
 Security:
     - Image inputs validated before processing
@@ -73,6 +78,150 @@ def _validate_image(image: np.ndarray) -> bool:
     return True
 
 
+def _segment_text_lines(image: np.ndarray) -> List[List[int]]:
+    """Segment a (possibly multi-line) text crop into single-line bboxes.
+
+    TrOCR is a SINGLE-LINE recognition model — feeding it a multi-line
+    crop produces garbage. This splits the crop into horizontal line
+    bands using morphological dilation + contours, then merges fragments
+    (Thai tone marks / vowels above & below the baseline) that belong to
+    the same visual line.
+
+    Returns a list of ``[x0, y0, x1, y1]`` boxes in crop coordinates,
+    sorted top→bottom. Empty list when nothing was found.
+    """
+    if image is None or image.size == 0:
+        return []
+    gray = (cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            if image.ndim == 3 else image.copy())
+    h, w = gray.shape[:2]
+    if h < 4 or w < 4:
+        return []
+
+    # Binarise: text → white on black (Otsu handles scans + renders)
+    _, binary = cv2.threshold(
+        gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    if cv2.countNonZero(binary) == 0:
+        return []
+
+    # Connect characters within a line: wide horizontal kernel, slight
+    # vertical reach so Thai upper/lower vowel marks join their line.
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_RECT, (max(12, w // 30), 3))
+    dilated = cv2.dilate(binary, kernel, iterations=2)
+
+    contours, _ = cv2.findContours(
+        dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    boxes = []
+    for c in contours:
+        x, y, bw, bh = cv2.boundingRect(c)
+        if bw < 8 or bh < 6:                       # specks
+            continue
+        boxes.append([x, y, x + bw, y + bh])
+    if not boxes:
+        return []
+
+    # Merge boxes whose vertical ranges overlap (same visual line)
+    boxes.sort(key=lambda b: b[1])
+    merged: List[List[int]] = [boxes[0]]
+    for b in boxes[1:]:
+        prev = merged[-1]
+        overlap = min(prev[3], b[3]) - max(prev[1], b[1])
+        min_h = max(1, min(prev[3] - prev[1], b[3] - b[1]))
+        if overlap > 0.45 * min_h:
+            prev[0] = min(prev[0], b[0])
+            prev[1] = min(prev[1], b[1])
+            prev[2] = max(prev[2], b[2])
+            prev[3] = max(prev[3], b[3])
+        else:
+            merged.append(list(b))
+
+    # Pad each line a little so ascenders/descenders aren't clipped
+    out = []
+    for x0, y0, x1, y1 in merged:
+        pad = max(2, int((y1 - y0) * 0.15))
+        out.append([max(0, x0 - 2), max(0, y0 - pad),
+                    min(w, x1 + 2), min(h, y1 + pad)])
+    out.sort(key=lambda b: (b[1], b[0]))
+    return out
+
+
+_MAX_CHUNK_RATIO = 8.0      # max chunk width as a multiple of line height
+_MIN_CHUNK_GAP_FRAC = 0.45  # horizontal gap (× line height) that splits chunks
+_TROCR_MIN_HEIGHT = 32      # upscale crops shorter than this before TrOCR
+
+
+def _split_line_into_chunks(gray: np.ndarray,
+                            box: List[int]) -> List[List[int]]:
+    """Split one text-line box into SMALL word/phrase chunks for TrOCR.
+
+    TrOCR resizes its input to a fixed square patch grid — wide lines get
+    horizontally squashed and mis-read. Splitting each line on horizontal
+    whitespace gaps (and force-splitting over-wide chunks at the emptiest
+    column) keeps every crop at a readable aspect ratio.
+
+    Returns chunk boxes ``[x0, y0, x1, y1]`` in page coordinates,
+    ordered left→right.
+    """
+    x0, y0, x1, y1 = [int(v) for v in box]
+    h = max(1, y1 - y0)
+    line = gray[y0:y1, x0:x1]
+    if line.size == 0:
+        return [list(box)]
+    _, binary = cv2.threshold(line, 0, 255,
+                              cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    ink = (binary > 0).sum(axis=0)
+
+    # Ink runs — column ranges that contain text
+    runs: List[List[int]] = []
+    start = None
+    for i, v in enumerate(ink):
+        if v and start is None:
+            start = i
+        elif not v and start is not None:
+            runs.append([start, i])
+            start = None
+    if start is not None:
+        runs.append([start, len(ink)])
+    if not runs:
+        return [list(box)]
+
+    # Merge runs separated by small gaps (intra-word/character gaps)
+    gap_thr = max(int(h * _MIN_CHUNK_GAP_FRAC), 6)
+    chunks = [runs[0][:]]
+    for s, e in runs[1:]:
+        if s - chunks[-1][1] <= gap_thr:
+            chunks[-1][1] = e
+        else:
+            chunks.append([s, e])
+
+    # Force-split chunks wider than _MAX_CHUNK_RATIO × height,
+    # cutting at the column with the least ink near the split point
+    max_w = max(int(h * _MAX_CHUNK_RATIO), 24)
+    final: List[List[int]] = []
+    for s, e in chunks:
+        while e - s > max_w:
+            target = s + max_w
+            lo = max(s + h, target - h)
+            hi = min(e - h, target + h)
+            if lo >= hi:
+                cut = target
+            else:
+                cut = lo + int(np.argmin(ink[lo:hi]))
+            final.append([s, cut])
+            s = cut
+        final.append([s, e])
+
+    pad = max(2, h // 10)
+    out: List[List[int]] = []
+    for s, e in final:
+        if e - s < 3:                      # specks
+            continue
+        out.append([max(x0, x0 + s - pad), y0,
+                    min(x1, x0 + e + pad), y1])
+    return out or [list(box)]
+
+
 # ── Optional imports ──────────────────────────────────────────────────────────
 
 # --- Thai-TrOCR ONNX ---
@@ -81,14 +230,20 @@ _trocr_session = None
 _trocr_processor = None
 
 
-def _check_thai_trocr():
-    """Try to load Thai-TrOCR ONNX model, or auto-download from HuggingFace."""
+def _check_thai_trocr(preload: bool = False):
+    """Try to load Thai-TrOCR ONNX model, or auto-download from HuggingFace.
+
+    DISABLE_TROCR_PRELOAD=1 only skips EAGER loading at startup
+    (``preload=True``); lazy loading at first use always proceeds —
+    previously this flag disabled Thai-TrOCR entirely, which silently
+    broke Thai OCR in the web app.
+    """
     global THAI_TROCR_AVAILABLE, _trocr_session, _trocr_processor
     if _trocr_session is not None:
         return
-    if os.getenv("DISABLE_TROCR_PRELOAD", "").strip() == "1":
-        logger.info("Thai-TrOCR preload disabled (DISABLE_TROCR_PRELOAD=1)")
-        THAI_TROCR_AVAILABLE = False
+    if preload and os.getenv("DISABLE_TROCR_PRELOAD", "").strip() == "1":
+        logger.info("Thai-TrOCR preload skipped (DISABLE_TROCR_PRELOAD=1) — "
+                    "will load lazily on first Thai page")
         return
     try:
         import onnxruntime as ort
@@ -168,26 +323,62 @@ if not _SKIP_HEAVY_IMPORTS:
         pass
 
 
-class OCREngine:
-    """Unified multi-engine OCR — Thai-optimised cascade (v2.2).
+# --- Typhoon OCR (SCB10X — best Thai document OCR) ---
+TYPHOON_AVAILABLE = False
+_typhoon_ocr_document = None
+if not _SKIP_HEAVY_IMPORTS:
+    try:
+        from typhoon_ocr import ocr_document as _typhoon_ocr_document
+        TYPHOON_AVAILABLE = True
+        logger.info("Typhoon OCR package available")
+    except Exception:
+        pass
 
-    Engine priority for Thai text:
-        1. easyocr    — EasyOCR Thai+English (best Thai full-page)
-        2. thai_trocr  — Thai-TrOCR (line-level Thai)
-        3. paddleocr   — PaddleOCR multilingual (no Thai, general fallback)
-        4. tesseract   — Last-resort fallback
+
+def _typhoon_configured() -> bool:
+    """Typhoon OCR is usable when the package is installed AND either an
+    API key (api.opentyphoon.ai) or a self-hosted endpoint is configured."""
+    return TYPHOON_AVAILABLE and bool(
+        os.getenv("TYPHOON_OCR_API_KEY")
+        or os.getenv("TYPHOON_BASE_URL")
+        or os.getenv("OPENAI_API_KEY"))
+
+
+def _paddle_version_major() -> int:
+    """Return the installed paddleocr major version (0 when unknown)."""
+    try:
+        import paddleocr
+        return int(str(getattr(paddleocr, "__version__", "0")).split(".")[0])
+    except Exception:
+        return 0
+
+
+def _paddle_supports_thai() -> bool:
+    """PP-OCRv5 Thai model (lang="th") requires paddleocr >= 3.x."""
+    return _paddle_version_major() >= 3
+
+
+class OCREngine:
+    """Unified OCR — strict language policy (v3.0).
+
+    Thai input:   Thai-TrOCR only (line-segmented, per-line bboxes)
+    Other langs:  PaddleOCR only (PP-OCRv5, native per-line bboxes)
+
+    EasyOCR / Tesseract / Typhoon run ONLY when explicitly requested
+    via OCR_ENGINE=<name> or an engine_override.
     """
 
     def __init__(self) -> None:
         self.use_gpu = os.getenv("USE_GPU", "true").lower() == "true"
-        self.primary_engine = os.getenv("OCR_ENGINE", "easyocr").lower()
+        self.primary_engine = os.getenv("OCR_ENGINE", "auto").lower()
         self.languages = os.getenv("LANGUAGES", "tha+eng")
-        self._paddle_instance = None
+        self._paddle_instances: Dict[str, Any] = {}
         self._easyocr_reader = None
         self._engines_checked = False
 
         logger.info(
-            "OCREngine v2.1 — primary=%s, gpu=%s, lang=%s",
+            "OCREngine v3.0 — primary=%s, gpu=%s, lang=%s "
+            "(policy: Thai→Thai-TrOCR, other→PaddleOCR)",
             self.primary_engine, self.use_gpu, self.languages,
         )
 
@@ -215,17 +406,72 @@ class OCREngine:
         return self._easyocr_reader
 
     def _get_paddle(self, languages: Optional[str] = None):
-        """Lazily initialise PaddleOCR."""
-        if self._paddle_instance is None and PADDLE_AVAILABLE:
-            try:
-                lang = self._paddle_lang(languages)
-                self._paddle_instance = _PaddleOCR(
+        """Lazily initialise PaddleOCR per language (2.x and 3.x APIs)."""
+        if not PADDLE_AVAILABLE:
+            return None
+        lang = self._paddle_lang(languages)
+        if lang in self._paddle_instances:
+            return self._paddle_instances[lang]
+        instance = None
+        try:
+            if _paddle_version_major() >= 3:
+                # 3.x API: device instead of use_gpu, no show_log
+                instance = _PaddleOCR(
+                    lang=lang,
+                    use_textline_orientation=True,
+                    device="gpu" if self.use_gpu else "cpu",
+                )
+            else:
+                instance = _PaddleOCR(
                     use_angle_cls=True, lang=lang,
                     use_gpu=self.use_gpu, show_log=False,
                 )
-            except (ImportError, OSError, RuntimeError) as exc:
-                logger.warning("PaddleOCR init failed: %s", type(exc).__name__)
-        return self._paddle_instance
+            logger.info("PaddleOCR initialised (v%d.x, lang=%s)",
+                        max(_paddle_version_major(), 2), lang)
+        except (ImportError, OSError, RuntimeError, TypeError) as exc:
+            logger.warning("PaddleOCR init failed: %s", type(exc).__name__)
+        if instance is not None:
+            self._paddle_instances[lang] = instance
+        return instance
+
+    @staticmethod
+    def _parse_paddle_result(result) -> List[Dict[str, Any]]:
+        """Normalise PaddleOCR output (2.x nested lists OR 3.x OCRResult)."""
+        lines: List[Dict[str, Any]] = []
+        if not result:
+            return lines
+        first = result[0]
+        if first is None:
+            return lines
+        # 3.x: list of dict-like OCRResult with rec_texts/rec_scores/rec_polys
+        if hasattr(first, "get") and first.get("rec_texts") is not None:
+            for res in result:
+                texts = res.get("rec_texts") or []
+                scores = res.get("rec_scores") or []
+                polys = res.get("rec_polys")
+                if polys is None:
+                    polys = res.get("dt_polys")
+                for i, text in enumerate(texts):
+                    bbox = None
+                    if polys is not None and i < len(polys):
+                        try:
+                            bbox = [[float(p[0]), float(p[1])]
+                                    for p in polys[i]]
+                        except (TypeError, ValueError, IndexError):
+                            bbox = None
+                    conf = float(scores[i]) if i < len(scores) else 0.0
+                    lines.append({"text": text, "confidence": conf,
+                                  "bbox": bbox})
+            return lines
+        # 2.x: [[ [bbox, (text, conf)], ... ]]
+        for line_info in first:
+            try:
+                lines.append({"text": line_info[1][0],
+                              "confidence": float(line_info[1][1]),
+                              "bbox": line_info[0]})
+            except (TypeError, IndexError):
+                continue
+        return lines
 
     # ── Public API ──
 
@@ -243,7 +489,7 @@ class OCREngine:
         engine = (engine_override or self.primary_engine).lower()
         lang = languages or self.languages
 
-        cascade = self._build_cascade(engine)
+        cascade = self._build_cascade(engine, lang)
         for eng in cascade:
             result = self._run_engine(image, eng, lang)
             if result and result.get("text", "").strip():
@@ -258,22 +504,32 @@ class OCREngine:
             return {"text": "", "confidence": 0.0, "engine_used": "none", "lines": []}
         return self.ocr_image(image, languages=languages)
 
-    def _build_cascade(self, requested: str) -> List[str]:
-        """Build ordered list of engines to try.
+    @staticmethod
+    def _is_thai(languages: str) -> bool:
+        lang = (languages or "").lower()
+        parts = [p.strip() for p in lang.split("+")]
+        return "tha" in parts or "th" in parts or "tha" in lang
 
-        Thai-optimised: EasyOCR (Thai native) → Thai-TrOCR → PaddleOCR → Tesseract.
+    def _build_cascade(self, requested: str,
+                       languages: Optional[str] = None) -> List[str]:
+        """Strict, language-aware engine selection (v3.0).
+
+        auto:  Thai → ["thai_trocr"], other → ["paddleocr"].
+        An explicitly named engine runs alone — no silent fallback.
         """
-        if requested in ("tesseract", "pytesseract"):
-            return ["tesseract", "easyocr", "thai_trocr", "paddleocr"]
-        elif requested in ("easyocr", "easy"):
-            return ["easyocr", "thai_trocr", "paddleocr", "tesseract"]
-        elif requested in ("thai_trocr", "trocr"):
-            return ["thai_trocr", "easyocr", "paddleocr", "tesseract"]
-        elif requested in ("paddleocr", "paddle"):
-            return ["paddleocr", "easyocr", "thai_trocr", "tesseract"]
-        else:
-            # Default: EasyOCR first (best Thai), then Thai-TrOCR, then PaddleOCR, then tesseract
-            return ["easyocr", "thai_trocr", "paddleocr", "tesseract"]
+        explicit = {
+            "typhoon": "typhoon", "typhoon_ocr": "typhoon",
+            "typhoon-ocr": "typhoon",
+            "tesseract": "tesseract", "pytesseract": "tesseract",
+            "easyocr": "easyocr", "easy": "easyocr",
+            "thai_trocr": "thai_trocr", "trocr": "thai_trocr",
+            "paddleocr": "paddleocr", "paddle": "paddleocr",
+        }
+        if requested in explicit:
+            return [explicit[requested]]
+        # auto — strict policy
+        lang = languages or self.languages
+        return ["thai_trocr"] if self._is_thai(lang) else ["paddleocr"]
 
     # ── Engine runners ──
 
@@ -282,6 +538,8 @@ class OCREngine:
         """Dispatch to the named engine with error containment."""
         try:
             lang = languages or self.languages
+            if engine == "typhoon":
+                return self._run_typhoon(image, lang)
             if engine == "easyocr":
                 return self._run_easyocr(image, lang)
             if engine == "thai_trocr":
@@ -294,6 +552,53 @@ class OCREngine:
         except (OSError, ValueError, RuntimeError) as exc:
             logger.error("Engine '%s' error: %s — %s", engine, type(exc).__name__, exc)
         return None
+
+    # ── Typhoon OCR (SCB10X Thai document VLM) ──
+
+    def _run_typhoon(self, image: np.ndarray,
+                     _languages: Optional[str] = None
+                     ) -> Optional[Dict[str, Any]]:
+        """Run Typhoon OCR via the typhoon-ocr package.
+
+        Uses api.opentyphoon.ai with TYPHOON_OCR_API_KEY, or a self-hosted
+        endpoint (vLLM / Ollama) via TYPHOON_BASE_URL. Returns markdown-ish
+        text; no per-line bboxes (the pipeline falls back to block bbox).
+        """
+        if not _typhoon_configured() or _typhoon_ocr_document is None:
+            return None
+        import tempfile
+        import uuid
+        tmp = os.path.join(tempfile.gettempdir(),
+                           f"typhoon_{uuid.uuid4().hex}.png")
+        try:
+            cv2.imwrite(tmp, image)
+            kwargs: Dict[str, Any] = {}
+            base_url = os.getenv("TYPHOON_BASE_URL", "").strip()
+            if base_url:
+                kwargs["base_url"] = base_url
+                kwargs["api_key"] = os.getenv("TYPHOON_OCR_API_KEY", "no-key")
+            task_type = os.getenv("TYPHOON_TASK", "").strip()
+            if task_type:
+                kwargs["task_type"] = task_type
+            text = _typhoon_ocr_document(
+                tmp, model=os.getenv("TYPHOON_MODEL", "typhoon-ocr"),
+                **kwargs)
+            text = (text or "").strip()
+            if not text:
+                return None
+            lines = [{"text": ln, "confidence": 0.95}
+                     for ln in text.split("\n") if ln.strip()]
+            return {"text": text, "confidence": 0.95,
+                    "engine_used": "typhoon", "lines": lines}
+        except Exception as exc:
+            logger.warning("Typhoon OCR error: %s — %s",
+                           type(exc).__name__, exc)
+            return None
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
     # ── EasyOCR (Thai + multilingual) ──
 
@@ -330,49 +635,128 @@ class OCREngine:
 
     # ── Thai-TrOCR ONNX ──
 
+    _TROCR_BATCH = 8
+
+    @staticmethod
+    def _trocr_recognize(pil_images: List) -> List[str]:
+        """Recognise a list of single-line PIL images with Thai-TrOCR."""
+        if not pil_images or _trocr_processor is None:
+            return []
+        texts: List[str] = []
+        if _trocr_session is not None and hasattr(_trocr_session, "run"):
+            # ONNX runtime — one image at a time
+            for img in pil_images:
+                pixel_values = _trocr_processor(
+                    images=img, return_tensors="pt").pixel_values
+                input_name = _trocr_session.get_inputs()[0].name
+                outputs = _trocr_session.run(
+                    None, {input_name: pixel_values.numpy()})
+                if outputs and len(outputs) > 0:
+                    texts.append(_trocr_processor.batch_decode(
+                        outputs[0], skip_special_tokens=True)[0])
+                else:
+                    texts.append("")
+            return texts
+        if _trocr_session is not None and hasattr(_trocr_session, "generate"):
+            # transformers — batched generation
+            batch_size = OCREngine._TROCR_BATCH
+            for i in range(0, len(pil_images), batch_size):
+                batch = pil_images[i:i + batch_size]
+                pixel_values = _trocr_processor(
+                    images=batch, return_tensors="pt").pixel_values
+                generated = _trocr_session.generate(
+                    pixel_values, max_new_tokens=256)
+                texts.extend(_trocr_processor.batch_decode(
+                    generated, skip_special_tokens=True))
+            return texts
+        return ["" for _ in pil_images]
+
     def _run_thai_trocr(self, image: np.ndarray,
                         _languages: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Chunked Thai-TrOCR recognition (v3.1).
+
+        TrOCR is a single-line, fixed-input model. The crop is segmented
+        in two passes BEFORE recognition:
+
+            1. visual lines (horizontal bands), then
+            2. small word/phrase chunks inside each line (gap-based,
+               with force-splitting of over-wide chunks)
+
+        Each small chunk is recognised separately (upscaled when tiny),
+        then chunk texts are reassembled left→right per line. Every chunk
+        keeps its bbox so the exporter reproduces spacing and alignment.
+        """
         _check_thai_trocr()
         if not THAI_TROCR_AVAILABLE or _trocr_processor is None:
+            logger.error("Thai-TrOCR unavailable — Thai pages cannot be OCRed "
+                         "(check models/thai-trocr or network access)")
             return None
         try:
             from PIL import Image as PILImage
 
             if len(image.shape) == 2:
-                pil_img = PILImage.fromarray(image).convert("RGB")
+                gray = image
+                rgb = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
             else:
-                pil_img = PILImage.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+                rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-            pixel_values = _trocr_processor(
-                images=pil_img, return_tensors="pt"
-            ).pixel_values
+            line_boxes = _segment_text_lines(image)
+            if not line_boxes:
+                h, w = image.shape[:2]
+                line_boxes = [[0, 0, w, h]]
 
-            if _trocr_session is not None and hasattr(_trocr_session, 'run'):
-                # ONNX runtime needs numpy
-                np_values = pixel_values.numpy()
-                input_name = _trocr_session.get_inputs()[0].name
-                outputs = _trocr_session.run(None, {input_name: np_values})
-                if outputs and len(outputs) > 0:
-                    text = _trocr_processor.batch_decode(
-                        outputs[0], skip_special_tokens=True)[0]
-                else:
-                    text = ""
-            elif _trocr_session is not None and hasattr(_trocr_session, 'generate'):
-                # Already a PyTorch tensor from return_tensors="pt"
-                generated = _trocr_session.generate(pixel_values, max_new_tokens=512)
-                text = _trocr_processor.batch_decode(
-                    generated, skip_special_tokens=True)[0]
-            else:
+            # Pass 2: small chunk boxes inside each line
+            chunks_per_line: List[List[List[int]]] = [
+                _split_line_into_chunks(gray, lb) for lb in line_boxes]
+
+            crops: List[Any] = []
+            flat_boxes: List[List[int]] = []
+            for chunks in chunks_per_line:
+                for x0, y0, x1, y1 in chunks:
+                    crop = rgb[y0:y1, x0:x1]
+                    ch = y1 - y0
+                    if 0 < ch < _TROCR_MIN_HEIGHT:   # tiny text → upscale
+                        scale = _TROCR_MIN_HEIGHT / ch
+                        crop = cv2.resize(
+                            crop,
+                            (max(1, int((x1 - x0) * scale)),
+                             _TROCR_MIN_HEIGHT),
+                            interpolation=cv2.INTER_CUBIC)
+                    crops.append(PILImage.fromarray(crop))
+                    flat_boxes.append([x0, y0, x1, y1])
+            if not crops:
                 return None
 
+            texts = self._trocr_recognize(crops)
+
+            # Per-chunk segments (pipeline clusters them back into lines)
+            segments: List[Dict[str, Any]] = []
+            full_lines: List[str] = []
+            idx = 0
+            for chunks in chunks_per_line:
+                parts: List[str] = []
+                for _ in chunks:
+                    text = (texts[idx] if idx < len(texts) else "").strip()
+                    box = flat_boxes[idx]
+                    idx += 1
+                    if not text:
+                        continue
+                    parts.append(text)
+                    segments.append({"text": text, "confidence": 0.85,
+                                     "bbox": [float(v) for v in box]})
+                if parts:
+                    full_lines.append(" ".join(parts))
+            if not segments:
+                return None
             return {
-                "text": text.strip(),
-                "confidence": 0.8,
+                "text": "\n".join(full_lines),
+                "confidence": 0.85,
                 "engine_used": "thai_trocr",
-                "lines": [{"text": text.strip(), "confidence": 0.8}],
+                "lines": segments,
             }
         except Exception as exc:
-            logger.warning("Thai-TrOCR error: %s", exc)
+            logger.warning("Thai-TrOCR error: %s — %s", type(exc).__name__, exc)
             return None
 
     # ── Tesseract (pytesseract) ──
@@ -444,22 +828,26 @@ class OCREngine:
 
     def _run_paddle_engine(self, image: np.ndarray,
                            languages: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        paddle = self._get_paddle(languages)
+        lang = languages or self.languages
+        # CRITICAL GUARD: never let an English-only Paddle model "read"
+        # Thai input — it returns ASCII garbage. (Thai normally routes to
+        # Thai-TrOCR; this guard protects explicit OCR_ENGINE=paddleocr
+        # use with Thai input on paddleocr<3.x.)
+        if "tha" in lang and self._paddle_lang(lang) != "th":
+            logger.debug("PaddleOCR skipped: no Thai model on paddleocr<3.x")
+            return None
+        paddle = self._get_paddle(lang)
         if paddle is None:
             return None
-        result = paddle.ocr(image, cls=True)
-        if not result or not result[0]:
+        try:
+            result = paddle.ocr(image, cls=True)
+        except TypeError:           # 3.x removed the cls kwarg
+            result = paddle.ocr(image)
+        lines = self._parse_paddle_result(result)
+        if not lines:
             return None
-        lines = []
-        all_text = []
-        confidences = []
-        for line_info in result[0]:
-            text = line_info[1][0]
-            conf = float(line_info[1][1])
-            bbox = line_info[0]
-            lines.append({"text": text, "confidence": conf, "bbox": bbox})
-            all_text.append(text)
-            confidences.append(conf)
+        all_text = [ln["text"] for ln in lines]
+        confidences = [ln["confidence"] for ln in lines]
         avg_conf = sum(confidences) / len(confidences) if confidences else 0.0
         return {
             "text": "\n".join(all_text),
@@ -468,38 +856,39 @@ class OCREngine:
             "lines": lines,
         }
 
-    # ── PaddleOCR with position data (for table cell OCR) ──
+    # ── OCR with position data (for table cell OCR) ──
 
     def ocr_image_with_positions(self, image: np.ndarray,
                                  languages: Optional[str] = None
                                  ) -> List[Dict[str, Any]]:
-        """Return OCR results with bbox positions for each text line.
+        """Return OCR results with bbox positions for each text segment.
 
         Each item: {"text": str, "confidence": float,
-                    "bbox": [[x0,y0],[x1,y1],[x2,y2],[x3,y3]]}
+                    "bbox": [x0,y0,x1,y1] or [[x,y]..] quad}
         """
         self._ensure_engines()
-        paddle = self._get_paddle(languages)
+        lang = languages or self.languages
+
+        # Strict policy: Thai → Thai-TrOCR (chunk bboxes from segmentation)
+        if self._is_thai(lang):
+            res = self._run_thai_trocr(image, lang)
+            if res and res.get("lines"):
+                return res["lines"]
+            return []
+
+        # Other languages → PaddleOCR (native per-line bboxes)
+        paddle = self._get_paddle(lang)
         if paddle is not None:
             try:
-                result = paddle.ocr(image, cls=True)
-                if result and result[0]:
-                    items = []
-                    for line_info in result[0]:
-                        items.append({
-                            "text": line_info[1][0],
-                            "confidence": float(line_info[1][1]),
-                            "bbox": line_info[0],
-                        })
+                try:
+                    result = paddle.ocr(image, cls=True)
+                except TypeError:   # 3.x removed the cls kwarg
+                    result = paddle.ocr(image)
+                items = self._parse_paddle_result(result)
+                if items:
                     return items
             except Exception:
                 pass
-
-        res = self.ocr_image(image, languages=languages)
-        text = res.get("text", "")
-        if text.strip():
-            return [{"text": text, "confidence": res.get("confidence", 0.5),
-                     "bbox": None}]
         return []
 
     # ── Language helpers ──
@@ -529,12 +918,14 @@ class OCREngine:
         lang = languages or self.languages
         if lang in ("auto", "eng"):
             return "en"
-        # PaddleOCR v2.x supported: ch, ch_doc, en, korean, japan,
-        # chinese_cht, ta, te, ka, latin, arabic, cyrillic, devanagari
-        # NOTE: Thai (tha/th) is NOT supported by PaddleOCR — fallback to 'en'
-        mapping = {"tha": "en", "chi_sim": "ch", "jpn": "japan",
+        first = lang.split("+")[0].strip().lower()
+        # paddleocr>=3.x ships the PP-OCRv5 Thai model (lang="th").
+        # On 2.x Thai is unsupported — return "en" and let
+        # _run_paddle_engine skip Thai input entirely.
+        thai_target = "th" if _paddle_supports_thai() else "en"
+        mapping = {"tha": thai_target, "th": thai_target,
+                   "chi_sim": "ch", "jpn": "japan",
                    "kor": "korean", "ara": "arabic"}
-        first = lang.split("+")[0]
         return mapping.get(first, "en")
 
     # ── Status ──
@@ -542,10 +933,12 @@ class OCREngine:
     def get_available_engines(self) -> Dict[str, bool]:
         self._ensure_engines()
         return {
+            "typhoon": _typhoon_configured(),
             "tesseract": TESSERACT_AVAILABLE,
             "easyocr": EASYOCR_AVAILABLE,
             "thai_trocr": THAI_TROCR_AVAILABLE,
             "paddleocr": PADDLE_AVAILABLE,
+            "paddleocr_thai": PADDLE_AVAILABLE and _paddle_supports_thai(),
         }
 
     def is_available(self) -> bool:

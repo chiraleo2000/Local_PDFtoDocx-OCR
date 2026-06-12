@@ -1,3 +1,3 @@
 """PDF-to-DOCX OCR Pipeline — src package."""
-__version__ = "0.2.1"
+__version__ = "0.5.0"
 __author__ = "BeTime"

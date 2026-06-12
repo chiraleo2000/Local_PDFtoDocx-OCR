@@ -1,5 +1,5 @@
 """
-Document Exporter + Image Extractor — v2.1
+Document Exporter + Image Extractor — v2.2
 HTML-first export: Build positioned HTML → convert to DOCX & TXT.
 Images embedded as base64 in HTML, properly transferred to DOCX via htmldocx.
 Figure numbering: 1-based.
@@ -43,8 +43,10 @@ logger = logging.getLogger(__name__)
 # ── Optional imports ──────────────────────────────────────────────────────────
 try:
     from docx import Document
-    from docx.shared import Inches, Pt, RGBColor
-    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Inches, Pt, RGBColor, Emu
+    from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
     DOCX_AVAILABLE = True
 except ImportError:
     DOCX_AVAILABLE = False
@@ -185,13 +187,51 @@ class DocumentExporter:
                                metadata: str = "",
                                page_size: str = "A4",
                                margin_preset: str = "Normal",
+                               layout_mode: Optional[str] = None,
                                ) -> Dict[str, Optional[str]]:
-        """Create TXT + HTML + DOCX.  HTML is the single source of truth."""
-        html_content = self._build_html(blocks, metadata)
+        """Create TXT + HTML + DOCX.
+
+        layout_mode:
+            "flow" (default) — continuous Word-style document: flowing
+            paragraphs (no text boxes) that preserve alignment, indent,
+            font sizes, inline tables and figures in reading order.
+            "absolute" — every block placed at its exact page position
+            (text frames / positioned tables) mirroring the scan 1:1.
+        """
+        mode = (layout_mode or os.getenv("LAYOUT_MODE", "flow")).lower()
+        has_positions = any(
+            getattr(b, "bbox", None) and getattr(b, "page_width", 0) > 0
+            for b in blocks)
+
+        docx_path: Optional[str] = None
+        if has_positions:
+            try:
+                if mode == "absolute":
+                    # Opt-in: positioned text frames mirroring the scan 1:1
+                    docx_path = self._build_docx_absolute(
+                        blocks, page_size, margin_preset)
+                else:
+                    # Default ("flow"): continuous Word-style document —
+                    # normal flowing paragraphs (no text boxes) that keep
+                    # alignment, indentation, font size and reading order.
+                    docx_path = self._build_docx_flow_structured(
+                        blocks, page_size, margin_preset)
+            except Exception:
+                logger.exception("Structured DOCX failed — falling back")
+
+        if has_positions:
+            html_content = self._build_html_absolute(blocks, metadata)
+        else:
+            html_content = self._build_html(blocks, metadata)
+
+        if docx_path is None:
+            docx_path = self._html_to_docx(
+                self._build_html(blocks, metadata), page_size, margin_preset)
+
         return {
             "txt":  self._blocks_to_txt(blocks, metadata),
             "html": self._save_html(html_content),
-            "docx": self._html_to_docx(html_content, page_size, margin_preset),
+            "docx": docx_path,
         }
 
     # ── HTML builder ──────────────────────────────────────────────────────────
@@ -210,6 +250,119 @@ class DocumentExporter:
 
         parts += ["</body>", "</html>"]
         return "\n".join(parts)
+
+    # ── Absolute-positioned HTML preview (mirrors the DOCX layout) ───────────
+    _PAGE_PREVIEW_PX = 900
+
+    def _build_html_absolute(self, blocks: list, metadata: str = "") -> str:
+        parts: List[str] = [
+            "<!DOCTYPE html>", "<html lang='en'>", "<head>",
+            "<meta charset='utf-8'>", "<title>OCR Result</title>",
+            "<style>",
+            "body { font-family: Tahoma, 'Segoe UI', Arial, sans-serif; "
+            "background: #eef1f5; margin: 0; padding: 1.5rem; }",
+            ".page { position: relative; background: #fff; margin: 0 auto "
+            "1.5rem auto; box-shadow: 0 2px 10px rgba(0,0,0,0.15); "
+            "overflow: hidden; }",
+            ".abs { position: absolute; white-space: pre; line-height: 1.25; "
+            "color: #1e293b; }",
+            ".abs-table { position: absolute; }",
+            ".abs-table table { border-collapse: collapse; width: 100%; "
+            "height: 100%; table-layout: fixed; }",
+            ".abs-table th, .abs-table td { border: 1px solid #94a3b8; "
+            "padding: 1px 4px; vertical-align: top; overflow: hidden; }",
+            ".abs img { width: 100%; height: 100%; object-fit: contain; }",
+            ".page-label { max-width: 900px; margin: 0 auto; color: #64748b; "
+            "font-size: 0.8rem; padding: 0.3rem 0; }",
+            ".meta-info { max-width: 900px; margin: 0 auto 1rem auto; "
+            "color: #64748b; font-size: 0.85rem; white-space: pre-line; }",
+            "</style>", "</head>", "<body>",
+        ]
+        if metadata:
+            parts.append(
+                f"<div class='meta-info'>{html.escape(metadata)}</div>")
+
+        pages: Dict[int, list] = {}
+        for b in blocks:
+            pages.setdefault(b.page, []).append(b)
+
+        for page_num in sorted(pages):
+            page_blocks = pages[page_num]
+            src_w = max((getattr(b, "page_width", 0) for b in page_blocks),
+                        default=0)
+            src_h = max((getattr(b, "page_height", 0) for b in page_blocks),
+                        default=0)
+            parts.append(f"<div class='page-label'>Page {page_num + 1}</div>")
+            if src_w <= 0 or src_h <= 0:
+                parts.append("<div class='page' style='max-width:900px;"
+                             "padding:2rem'>")
+                for b in page_blocks:
+                    parts.extend(self._block_to_html(b))
+                parts.append("</div>")
+                continue
+
+            scale = self._PAGE_PREVIEW_PX / src_w
+            page_h_px = int(src_h * scale)
+            parts.append(
+                f"<div class='page' style='width:{self._PAGE_PREVIEW_PX}px;"
+                f"height:{page_h_px}px'>")
+            for b in page_blocks:
+                parts.extend(self._abs_block_html(b, scale))
+            parts.append("</div>")
+
+        parts += ["</body>", "</html>"]
+        return "\n".join(parts)
+
+    def _abs_block_html(self, b, scale: float) -> List[str]:
+        """Render one positioned block as absolutely-placed HTML."""
+        if not getattr(b, "bbox", None):
+            return self._block_to_html(b)
+        x0, y0, x1, y1 = b.bbox
+        left, top = x0 * scale, y0 * scale
+        width, height = (x1 - x0) * scale, (y1 - y0) * scale
+
+        if b.block_type in ("text", "caption"):
+            out: List[str] = []
+            lines = b.lines or []
+            if not lines:
+                font_px = max(9.0, height * 0.7 / max(
+                    len(b.text.split("\n")), 1))
+                style = (f"left:{left:.1f}px;top:{top:.1f}px;"
+                         f"width:{width:.1f}px;font-size:{font_px:.1f}px;")
+                out.append(f"<div class='abs' style='{style}'>"
+                           f"{html.escape(b.text)}</div>")
+                return out
+            for line in lines:
+                lb = line.get("bbox") or b.bbox
+                lh = (lb[3] - lb[1]) * scale
+                size_pt = float(line.get("size_pt") or 0)
+                font_px = (size_pt * scale * 1.0) if size_pt > 0 \
+                    else max(7.0, lh * 0.72)
+                weight = "bold" if line.get("bold") else "normal"
+                style = (f"left:{lb[0] * scale:.1f}px;"
+                         f"top:{lb[1] * scale:.1f}px;"
+                         f"font-size:{font_px:.1f}px;font-weight:{weight};")
+                out.append(f"<div class='abs' style='{style}'>"
+                           f"{html.escape(line.get('text', ''))}</div>")
+            return out
+
+        if b.block_type == "table" and b.table_html:
+            style = (f"left:{left:.1f}px;top:{top:.1f}px;"
+                     f"width:{width:.1f}px;height:{height:.1f}px;"
+                     f"font-size:{max(7.0, height * 0.55 / max(b.table_html.count('<tr'), 1)):.1f}px;")
+            return [f"<div class='abs-table' style='{style}'>"
+                    f"{b.table_html}</div>"]
+
+        if b.block_type == "figure":
+            b64 = (b.figure or {}).get("base64", "")
+            if not b64 or not _is_valid_base64(b64):
+                return []
+            style = (f"left:{left:.1f}px;top:{top:.1f}px;"
+                     f"width:{width:.1f}px;height:{height:.1f}px;")
+            return [f"<div class='abs' style='{style}'>"
+                    f"<img src='data:image/png;base64,{b64}' alt='Figure'/>"
+                    "</div>"]
+        return []
 
     @staticmethod
     def _html_head() -> List[str]:
@@ -534,6 +687,523 @@ class DocumentExporter:
                     run.font.color.rgb = RGBColor(100, 116, 139)
         except Exception as exc:
             logger.warning("Failed to embed figure in DOCX: %s", exc)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Absolute-position DOCX builder  (v2.2 — layout-faithful export)
+    #
+    # Every ContentBlock is rendered at its exact page coordinates:
+    #   - text/caption → Word text frames (w:framePr) with per-line font size,
+    #     alignment, and indentation derived from OCR line positions
+    #   - table        → real, editable Word table positioned via w:tblpPr
+    #   - figure       → image inside a positioned frame, sized to its bbox
+    # ══════════════════════════════════════════════════════════════════════════
+
+    _MIN_FONT_PT = 5.0
+    _MAX_FONT_PT = 48.0
+    _OCR_FONT_FACTOR = 0.72   # line bbox includes ascender/descender
+
+    def _build_docx_absolute(self, blocks: list,
+                             page_size: str = "A4",
+                             margin_preset: str = "Normal") -> Optional[str]:
+        if not DOCX_AVAILABLE:
+            return None
+
+        doc = Document()
+        style = doc.styles["Normal"]
+        style.font.name = self.FONT_NAME
+        style.font.size = Pt(self.FONT_SIZE_NORMAL)
+        self._set_eastasia_font(style, self.FONT_NAME)
+        self._apply_page_layout(doc, page_size, margin_preset)
+
+        pw_in, ph_in = PAGE_SIZES.get(page_size, PAGE_SIZES["A4"])
+        page_w_tw = int(pw_in * 1440)
+        page_h_tw = int(ph_in * 1440)
+
+        # Group blocks per page (input is already in reading order)
+        pages: Dict[int, list] = {}
+        for b in blocks:
+            pages.setdefault(b.page, []).append(b)
+
+        first = True
+        for page_num in sorted(pages):
+            if not first:
+                br_p = doc.add_paragraph()
+                br_p.add_run().add_break(WD_BREAK.PAGE)
+            first = False
+
+            page_blocks = pages[page_num]
+            src_w = max((getattr(b, "page_width", 0) for b in page_blocks),
+                        default=0)
+            src_h = max((getattr(b, "page_height", 0) for b in page_blocks),
+                        default=0)
+
+            for b in page_blocks:
+                if not getattr(b, "bbox", None) or src_w <= 0 or src_h <= 0:
+                    self._add_flow_block(doc, b)
+                    continue
+                sx = page_w_tw / src_w          # twips per page unit (x)
+                sy = page_h_tw / src_h          # twips per page unit (y)
+                pt_per_unit = (ph_in * 72.0) / src_h
+                if b.block_type in ("text", "caption"):
+                    self._add_text_frame(doc, b, sx, sy, pt_per_unit)
+                elif b.block_type == "table":
+                    self._add_table_absolute(doc, b, sx, sy, pt_per_unit)
+                elif b.block_type == "figure":
+                    self._add_figure_frame(doc, b, sx, sy)
+
+        self._fix_table_borders(doc)
+        self._reorder_table_props(doc)
+        fd, path = tempfile.mkstemp(suffix=".docx", prefix="ocr_")
+        os.close(fd)
+        doc.save(path)
+        logger.info("DOCX created via absolute-position builder")
+        return path
+
+    @staticmethod
+    def _set_eastasia_font(style, font_name: str) -> None:
+        """Set east-asian / complex-script font so Thai renders correctly."""
+        try:
+            rpr = style.element.get_or_add_rPr()
+            rfonts = rpr.find(qn("w:rFonts"))
+            if rfonts is None:
+                rfonts = OxmlElement("w:rFonts")
+                rpr.append(rfonts)
+            rfonts.set(qn("w:eastAsia"), font_name)
+            rfonts.set(qn("w:cs"), font_name)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _set_frame_pr(paragraph, x_tw: int, y_tw: int, w_tw: int) -> None:
+        """Attach w:framePr — absolute page-anchored text frame."""
+        p_pr = paragraph._p.get_or_add_pPr()  # noqa: SLF001
+        frame = p_pr.find(qn("w:framePr"))
+        if frame is None:
+            frame = OxmlElement("w:framePr")
+            p_pr.insert(0, frame)
+        frame.set(qn("w:w"), str(max(w_tw, 144)))
+        frame.set(qn("w:hRule"), "auto")
+        frame.set(qn("w:wrap"), "around")
+        frame.set(qn("w:hAnchor"), "page")
+        frame.set(qn("w:vAnchor"), "page")
+        frame.set(qn("w:x"), str(max(x_tw, 0)))
+        frame.set(qn("w:y"), str(max(y_tw, 0)))
+
+    def _style_frame_paragraph(self, paragraph) -> None:
+        pf = paragraph.paragraph_format
+        pf.space_before = Pt(0)
+        pf.space_after = Pt(0)
+
+    def _line_font_pt(self, line: Dict[str, Any],
+                      pt_per_unit: float) -> float:
+        size = float(line.get("size_pt") or 0)
+        if size <= 0:
+            bb = line.get("bbox") or [0, 0, 0, 0]
+            size = (bb[3] - bb[1]) * pt_per_unit * self._OCR_FONT_FACTOR
+        return max(self._MIN_FONT_PT, min(self._MAX_FONT_PT, size))
+
+    @staticmethod
+    def _line_alignment(line_bbox, block_bbox):
+        """Derive alignment + left indent (page units) for one line."""
+        bx0, _, bx1, _ = block_bbox
+        lx0, _, lx1, _ = line_bbox
+        bw = max(bx1 - bx0, 1e-6)
+        lg = (lx0 - bx0) / bw     # left gap fraction
+        rg = (bx1 - lx1) / bw     # right gap fraction
+        if lg > 0.08 and rg > 0.08 and abs(lg - rg) < 0.08:
+            return WD_ALIGN_PARAGRAPH.CENTER, 0.0
+        if rg < 0.03 and lg > 0.15:
+            return WD_ALIGN_PARAGRAPH.RIGHT, 0.0
+        return WD_ALIGN_PARAGRAPH.LEFT, max(0.0, lx0 - bx0)
+
+    def _add_text_frame(self, doc, b, sx: float, sy: float,
+                        pt_per_unit: float) -> None:
+        """One block → one text frame; lines keep size/alignment/indent."""
+        x0, y0, x1, _ = b.bbox
+        x_tw = int(x0 * sx)
+        y_tw = int(y0 * sy)
+        w_tw = int((x1 - x0) * sx) + 72   # small slack against re-wrap
+
+        lines = b.lines or [
+            {"text": ln, "bbox": b.bbox}
+            for ln in b.text.split("\n") if ln.strip()
+        ]
+        for line in lines:
+            text = line.get("text", "").strip()
+            if not text:
+                continue
+            p = doc.add_paragraph()
+            self._set_frame_pr(p, x_tw, y_tw, w_tw)
+            self._style_frame_paragraph(p)
+
+            align, indent_units = self._line_alignment(
+                line.get("bbox") or b.bbox, b.bbox)
+            p.alignment = align
+            if indent_units > 0:
+                p.paragraph_format.left_indent = Emu(
+                    int(indent_units * sx * 635))  # twips → EMU (×635)
+
+            run = p.add_run(text)
+            run.font.name = self.FONT_NAME
+            run.font.size = Pt(round(self._line_font_pt(line, pt_per_unit), 1))
+            if line.get("bold"):
+                run.bold = True
+
+    def _add_table_absolute(self, doc, b, sx: float, sy: float,
+                            pt_per_unit: float) -> None:
+        """Positioned, real (editable) Word table built from table_html."""
+        if not BS4_AVAILABLE or not b.table_html:
+            # No structure — render plain text in a frame instead
+            if b.text.strip():
+                self._add_text_frame(doc, b, sx, sy, pt_per_unit)
+            return
+        soup = BeautifulSoup(b.table_html, "html.parser")
+        table_el = soup.find("table")
+        if table_el is None:
+            return
+        rows_el = table_el.find_all("tr")
+        max_cols = self._calc_table_col_count(rows_el)
+        if not rows_el or max_cols == 0:
+            return
+
+        x0, y0, x1, y1 = b.bbox
+        tbl_w_tw = max(int((x1 - x0) * sx), 720)
+        row_h_pt = ((y1 - y0) * pt_per_unit) / max(len(rows_el), 1)
+        cell_font = max(6.0, min(12.0, row_h_pt * 0.5))
+
+        tbl = doc.add_table(rows=len(rows_el), cols=max_cols)
+        tbl.style = "Table Grid"
+        tbl.autofit = False
+
+        # Column widths — measured grid proportions when available
+        col_fracs = (b.table_meta or {}).get("col_widths") or []
+        if len(col_fracs) != max_cols:
+            col_fracs = [1.0 / max_cols] * max_cols
+        for ci, col in enumerate(tbl.columns):
+            col.width = Emu(int(tbl_w_tw * col_fracs[ci] * 635))
+
+        for ri, row_el in enumerate(rows_el):
+            col_idx = 0
+            for cell_el in row_el.find_all(["td", "th"]):
+                if col_idx >= max_cols:
+                    break
+                col_idx = self._fill_table_cell(
+                    tbl, ri, col_idx, cell_el, max_cols, len(rows_el))
+            for p in (c.paragraphs[0] for c in tbl.rows[ri].cells):
+                for run in p.runs:
+                    run.font.size = Pt(round(cell_font, 1))
+
+        self._set_table_position(
+            tbl, int(x0 * sx), int(y0 * sy), tbl_w_tw)
+
+    @staticmethod
+    def _set_table_position(table, x_tw: int, y_tw: int, w_tw: int) -> None:
+        """Attach w:tblpPr — absolute page-anchored floating table."""
+        tbl_pr = table._tbl.tblPr  # noqa: SLF001
+        for tag in ("w:tblpPr", "w:tblOverlap", "w:tblLayout", "w:tblW"):
+            old = tbl_pr.find(qn(tag))
+            if old is not None:
+                tbl_pr.remove(old)
+        pos = OxmlElement("w:tblpPr")
+        pos.set(qn("w:leftFromText"), "142")
+        pos.set(qn("w:rightFromText"), "142")
+        pos.set(qn("w:vertAnchor"), "page")
+        pos.set(qn("w:horzAnchor"), "page")
+        pos.set(qn("w:tblpX"), str(max(x_tw, 1)))
+        pos.set(qn("w:tblpY"), str(max(y_tw, 1)))
+        tbl_pr.append(pos)
+        overlap = OxmlElement("w:tblOverlap")
+        overlap.set(qn("w:val"), "never")
+        tbl_pr.append(overlap)
+        # Fixed layout + explicit width so columns match the scan
+        layout = OxmlElement("w:tblLayout")
+        layout.set(qn("w:type"), "fixed")
+        tbl_pr.append(layout)
+        tbl_w = tbl_pr.find(qn("w:tblW"))
+        if tbl_w is None:
+            tbl_w = OxmlElement("w:tblW")
+            tbl_pr.append(tbl_w)
+        tbl_w.set(qn("w:w"), str(w_tw))
+        tbl_w.set(qn("w:type"), "dxa")
+
+    # OOXML schema order for w:tblPr children — Word rejects bad ordering
+    _TBLPR_ORDER = (
+        "tblStyle", "tblpPr", "tblOverlap", "bidiVisual",
+        "tblStyleRowBandSize", "tblStyleColBandSize", "tblW", "jc",
+        "tblCellSpacing", "tblInd", "tblBorders", "shd", "tblLayout",
+        "tblCellMar", "tblLook", "tblCaption", "tblDescription",
+    )
+
+    @classmethod
+    def _reorder_table_props(cls, doc) -> None:
+        """Re-sort every table's tblPr children into OOXML schema order."""
+        rank = {qn(f"w:{tag}"): i for i, tag in enumerate(cls._TBLPR_ORDER)}
+        for table in doc.tables:
+            tbl_pr = table._tbl.tblPr  # noqa: SLF001
+            if tbl_pr is None:
+                continue
+            children = list(tbl_pr)
+            children.sort(key=lambda el: rank.get(el.tag, len(rank)))
+            for el in children:
+                tbl_pr.remove(el)
+            for el in children:
+                tbl_pr.append(el)
+
+    def _add_figure_frame(self, doc, b, sx: float, sy: float) -> None:
+        """Image extracted via OpenCV, framed at its exact page position."""
+        b64 = (b.figure or {}).get("base64", "")
+        if not b64 or not _is_valid_base64(b64):
+            return
+        try:
+            img_bytes = base64.b64decode(b64)
+        except Exception:
+            return
+        x0, y0, x1, y1 = b.bbox
+        x_tw, y_tw = int(x0 * sx), int(y0 * sy)
+        w_tw = max(int((x1 - x0) * sx), 144)
+        h_tw = max(int((y1 - y0) * sy), 144)
+
+        p = doc.add_paragraph()
+        self._set_frame_pr(p, x_tw, y_tw, w_tw)
+        self._style_frame_paragraph(p)
+        run = p.add_run()
+        try:
+            run.add_picture(BytesIO(img_bytes),
+                            width=Emu(w_tw * 635), height=Emu(h_tw * 635))
+        except Exception as exc:
+            logger.warning("Failed to place figure frame: %s", exc)
+
+    def _add_flow_block(self, doc, b) -> None:
+        """Fallback for blocks without position data — normal paragraphs."""
+        if b.block_type in ("text", "caption"):
+            for ln in b.text.split("\n"):
+                if ln.strip():
+                    p = doc.add_paragraph(ln.strip())
+                    for run in p.runs:
+                        run.font.name = self.FONT_NAME
+                        run.font.size = Pt(self.FONT_SIZE_NORMAL)
+        elif b.block_type == "table" and b.table_html and BS4_AVAILABLE:
+            soup = BeautifulSoup(b.table_html, "html.parser")
+            table_el = soup.find("table")
+            if table_el is not None:
+                self._table_el_to_docx(doc, table_el)
+        elif b.block_type == "figure":
+            b64 = (b.figure or {}).get("base64", "")
+            if b64 and _is_valid_base64(b64):
+                try:
+                    doc.add_picture(BytesIO(base64.b64decode(b64)),
+                                    width=Inches(4.0))
+                except Exception:
+                    pass
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Structured flow DOCX builder  (v3.1 — Word-like continuous text)
+    #
+    # Default DOCX output: normal flowing paragraphs (NO text boxes), with
+    # alignment, indentation, font size and bold preserved from the page
+    # geometry. Wrapped lines are merged into continuous paragraphs and
+    # tables/figures are placed inline in reading order.
+    # ══════════════════════════════════════════════════════════════════════════
+
+    _WRAP_RIGHT_REACH = 0.80   # line reaching >=80% of block width = wrapped
+    _LINE_GAP_FACTOR = 0.85    # vert. gap below this x line height = same para
+
+    @staticmethod
+    def _thai_join(parts: List[str]) -> str:
+        """Join text parts; no space inserted between Thai<->Thai boundaries."""
+        out = ""
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            if not out:
+                out = part
+                continue
+            prev_ch, next_ch = out[-1], part[0]
+            if ("\u0e00" <= prev_ch <= "\u0e7f"
+                    and "\u0e00" <= next_ch <= "\u0e7f"):
+                out += part
+            else:
+                out += " " + part
+        return out
+
+    def _merge_lines_to_paragraphs(self, b) -> List[List[Dict[str, Any]]]:
+        """Group a block's visual lines into logical paragraphs.
+
+        A line continues the previous paragraph when the previous line
+        looks wrapped (its right edge reaches the block's right side),
+        the vertical gap is a normal line advance, and the new line is
+        not strongly indented.
+        """
+        lines = b.lines or [{"text": ln, "bbox": (list(b.bbox) or None)}
+                            for ln in b.text.split("\n") if ln.strip()]
+        bb = b.bbox or [0, 0, 0, 0]
+        bx0, bx1 = bb[0], bb[2]
+        bw = max(bx1 - bx0, 1e-6)
+        paras: List[List[Dict[str, Any]]] = []
+        cur: List[Dict[str, Any]] = []
+        prev = None
+        for line in lines:
+            if not (line.get("text") or "").strip():
+                continue
+            lb = line.get("bbox")
+            same_para = False
+            if cur and prev is not None and lb and prev.get("bbox"):
+                pb = prev["bbox"]
+                ph = max(pb[3] - pb[1], 1e-6)
+                gap = lb[1] - pb[3]
+                prev_reach = (pb[2] - bx0) / bw
+                same_para = (gap < ph * self._LINE_GAP_FACTOR
+                             and prev_reach >= self._WRAP_RIGHT_REACH
+                             and (lb[0] - bx0) / bw < 0.35)
+            if same_para:
+                cur.append(line)
+            else:
+                if cur:
+                    paras.append(cur)
+                cur = [line]
+            prev = line
+        if cur:
+            paras.append(cur)
+        return paras
+
+    def _build_docx_flow_structured(self, blocks: list,
+                                    page_size: str = "A4",
+                                    margin_preset: str = "Normal"
+                                    ) -> Optional[str]:
+        """Continuous Word-style DOCX: flowing text, inline tables/figures."""
+        if not DOCX_AVAILABLE:
+            return None
+        doc = Document()
+        style = doc.styles["Normal"]
+        style.font.name = self.FONT_NAME
+        style.font.size = Pt(self.FONT_SIZE_NORMAL)
+        self._set_eastasia_font(style, self.FONT_NAME)
+        self._apply_page_layout(doc, page_size, margin_preset)
+
+        pw_in, ph_in = PAGE_SIZES.get(page_size, PAGE_SIZES["A4"])
+        _, _, ml, mr = MARGIN_PRESETS.get(margin_preset,
+                                          MARGIN_PRESETS["Normal"])
+        usable_w_in = pw_in - ml - mr
+
+        pages: Dict[int, list] = {}
+        for b in blocks:
+            pages.setdefault(b.page, []).append(b)
+
+        first = True
+        for page_num in sorted(pages):
+            if not first:
+                br = doc.add_paragraph()
+                br.add_run().add_break(WD_BREAK.PAGE)
+            first = False
+            page_blocks = pages[page_num]
+            src_w = max((getattr(b, "page_width", 0) for b in page_blocks),
+                        default=0)
+            src_h = max((getattr(b, "page_height", 0) for b in page_blocks),
+                        default=0)
+            pt_per_unit = (ph_in * 72.0) / src_h if src_h > 0 else 0.0
+            for b in page_blocks:
+                if b.block_type in ("text", "caption"):
+                    self._add_structured_text(
+                        doc, b, src_w, usable_w_in, pt_per_unit)
+                elif b.block_type == "table":
+                    self._add_structured_table(doc, b, usable_w_in)
+                elif b.block_type == "figure":
+                    self._add_structured_figure(doc, b, src_w, usable_w_in)
+
+        self._fix_table_borders(doc)
+        fd, path = tempfile.mkstemp(suffix=".docx", prefix="ocr_")
+        os.close(fd)
+        doc.save(path)
+        logger.info("DOCX created via structured flow builder")
+        return path
+
+    def _add_structured_text(self, doc, b, src_w: float,
+                             usable_w_in: float, pt_per_unit: float) -> None:
+        """One block -> flowing paragraphs with alignment/indent/size kept."""
+        for para_lines in self._merge_lines_to_paragraphs(b):
+            first_line = para_lines[0]
+            text = self._thai_join([ln.get("text", "") for ln in para_lines])
+            if not text:
+                continue
+            p = doc.add_paragraph()
+            pf = p.paragraph_format
+            pf.space_before = Pt(0)
+            pf.space_after = Pt(4)
+            if b.bbox and first_line.get("bbox"):
+                align, indent_units = self._line_alignment(
+                    first_line["bbox"], b.bbox)
+                p.alignment = align
+                if indent_units > 0 and src_w > 0:
+                    pf.left_indent = Inches(
+                        min(indent_units / src_w * usable_w_in,
+                            usable_w_in * 0.6))
+            run = p.add_run(text)
+            run.font.name = self.FONT_NAME
+            if pt_per_unit > 0 and first_line.get("bbox"):
+                run.font.size = Pt(round(
+                    self._line_font_pt(first_line, pt_per_unit), 1))
+            if first_line.get("bold"):
+                run.bold = True
+
+    def _add_structured_table(self, doc, b, usable_w_in: float) -> None:
+        """Inline (non-floating) editable Word table in reading order."""
+        if not BS4_AVAILABLE or not b.table_html:
+            if b.text.strip():
+                p = doc.add_paragraph(b.text)
+                for run in p.runs:
+                    run.font.name = self.FONT_NAME
+                    run.font.size = Pt(self.FONT_SIZE_TABLE)
+            return
+        soup = BeautifulSoup(b.table_html, "html.parser")
+        table_el = soup.find("table")
+        if table_el is None:
+            return
+        rows_el = table_el.find_all("tr")
+        max_cols = self._calc_table_col_count(rows_el)
+        if not rows_el or max_cols == 0:
+            return
+        tbl = doc.add_table(rows=len(rows_el), cols=max_cols)
+        tbl.style = "Table Grid"
+        tbl.autofit = False
+        col_fracs = (b.table_meta or {}).get("col_widths") or []
+        if len(col_fracs) != max_cols:
+            col_fracs = [1.0 / max_cols] * max_cols
+        for ci, col in enumerate(tbl.columns):
+            col.width = Inches(usable_w_in * col_fracs[ci])
+        for ri, row_el in enumerate(rows_el):
+            col_idx = 0
+            for cell_el in row_el.find_all(["td", "th"]):
+                if col_idx >= max_cols:
+                    break
+                col_idx = self._fill_table_cell(
+                    tbl, ri, col_idx, cell_el, max_cols, len(rows_el))
+        spacer = doc.add_paragraph()
+        spacer.paragraph_format.space_before = Pt(0)
+        spacer.paragraph_format.space_after = Pt(4)
+
+    def _add_structured_figure(self, doc, b, src_w: float,
+                               usable_w_in: float) -> None:
+        """Inline centred figure, sized from its share of the page width."""
+        b64 = (b.figure or {}).get("base64", "")
+        if not b64 or not _is_valid_base64(b64):
+            return
+        try:
+            img_bytes = base64.b64decode(b64)
+        except Exception:
+            return
+        width_in = usable_w_in * 0.75
+        if b.bbox and src_w > 0:
+            x0, _, x1, _ = b.bbox
+            width_in = max(0.8, min((x1 - x0) / src_w * usable_w_in,
+                                    usable_w_in))
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = p.add_run()
+        try:
+            run.add_picture(BytesIO(img_bytes), width=Inches(width_in))
+        except Exception as exc:
+            logger.warning("Failed to place figure: %s", exc)
 
     # ── TXT from blocks ──────────────────────────────────────────────────────
     def _blocks_to_txt(self, blocks: list, metadata: str = "") -> str:

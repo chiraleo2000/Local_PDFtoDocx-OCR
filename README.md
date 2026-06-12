@@ -4,11 +4,12 @@
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
-![Version](https://img.shields.io/badge/version-0.4.1-purple)
+![Version](https://img.shields.io/badge/version-0.5.0-purple)
 
 ## Features
 
-- **Multi-engine OCR**: EasyOCR, PaddleOCR, Tesseract, Thai-TrOCR
+- **Strict OCR policy**: Thai pages → **Thai-TrOCR** (line-level, per-line positions); all other languages → **PaddleOCR** (PP-OCRv5). EasyOCR/Tesseract available only as explicit overrides.
+- **Layout-faithful output**: every OCR line carries its bbox, so DOCX/HTML output matches the structure, spacing, and alignment of the source pages (`LAYOUT_MODE=absolute`)
 - **YOLO Layout Detection**: Tables, figures, titles, and text regions via DocLayout-YOLO
 - **Multiple Output Formats**: DOCX, TXT, HTML with preserved structure
 - **Dark-themed Desktop GUI**: Modern tkinter interface with live PDF preview

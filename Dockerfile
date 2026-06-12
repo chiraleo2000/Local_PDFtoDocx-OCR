@@ -2,11 +2,13 @@
 # ============================================================
 # LocalOCR - PDF to DOCX Web App
 # CPU-first Docker image with optional CUDA and OpenVINO/NPU builds.
+# v0.6.0 — strict engine policy: Thai → Thai-TrOCR, other → PaddleOCR
 # ============================================================
 FROM python:3.12-slim-bookworm
 
 LABEL maintainer="chiraleo2000"
 LABEL org.opencontainers.image.title="LocalOCR"
+LABEL org.opencontainers.image.version="0.6.0"
 LABEL org.opencontainers.image.description="Thai+English PDF OCR, DocLayout-YOLO, Gradio web UI"
 
 WORKDIR /app
@@ -14,7 +16,7 @@ WORKDIR /app
 # ACCELERATOR values:
 #   cpu  - default, CPU-only PyTorch and OCR runtime
 #   cuda - NVIDIA CUDA PyTorch wheels; run with Docker NVIDIA runtime
-#   npu  - CPU PyTorch plus OpenVINO ONNX Runtime provider for compatible ONNX models
+#   npu  - CPU PyTorch plus OpenVINO ONNX Runtime provider
 ARG ACCELERATOR=cpu
 ARG TORCH_CUDA_INDEX=https://download.pytorch.org/whl/cu121
 ARG TORCH_CPU_INDEX=https://download.pytorch.org/whl/cpu
@@ -24,11 +26,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     ACCELERATOR=${ACCELERATOR} \
+    HOME=/app/home \
     SERVER_HOST=0.0.0.0 \
     SERVER_PORT=7870 \
-    OCR_ENGINE=easyocr \
-    OCR_FALLBACK=paddleocr \
-    DISABLE_TROCR_PRELOAD=1 \
+    OCR_ENGINE=auto \
+    DISABLE_TROCR_PRELOAD=0 \
     CUDA_DEVICE=0 \
     LANGUAGES=tha+eng \
     YOLO_CONFIDENCE=0.25 \
@@ -38,6 +40,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     IMAGE_EXTRACTION=true \
     IMAGE_MIN_AREA=4000 \
     QUALITY_PRESET=accurate \
+    LAYOUT_MODE=flow \
     MAX_PDF_SIZE_MB=200 \
     HISTORY_RETENTION_DAYS=30 \
     CORRECTION_DATA_DIR=/app/correction_data \
@@ -87,11 +90,16 @@ RUN python -m pip install -r requirements.txt dill && \
     fi
 
 COPY src/ ./src/
-COPY app.py ./
+COPY app.py run_e2e_test.py ./
 COPY .env.example ./.env.example
 COPY models/ ./models/
+COPY tests/fixtures/ ./tests/fixtures/
 
-RUN python - <<'PY'
+# ── Bake ALL models into the image (container works offline) ──
+#   1. DocLayout-YOLO  (layout detection)
+#   2. Thai-TrOCR      (Thai recognition — strict-policy primary for Thai)
+#   3. PaddleOCR       (non-Thai recognition)
+RUN mkdir -p /app/home && python - <<'PY'
 from pathlib import Path
 import shutil
 
@@ -109,9 +117,26 @@ else:
     shutil.copy2(cached, model_path)
     print('DocLayout-YOLO model downloaded:', model_path)
 
-import easyocr
-easyocr.Reader(['th', 'en'], gpu=False)
-print('EasyOCR Thai/English models ready')
+# Thai-TrOCR — saved to the local dir src/ocr_engine.py checks first
+trocr_dir = Path('/app/models/thai-trocr')
+if (trocr_dir / 'config.json').exists():
+    print('Thai-TrOCR already present:', trocr_dir)
+else:
+    from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+    proc = TrOCRProcessor.from_pretrained('openthaigpt/thai-trocr')
+    model = VisionEncoderDecoderModel.from_pretrained('openthaigpt/thai-trocr')
+    trocr_dir.mkdir(parents=True, exist_ok=True)
+    proc.save_pretrained(trocr_dir)
+    model.save_pretrained(trocr_dir)
+    print('Thai-TrOCR baked into image:', trocr_dir)
+
+# PaddleOCR PP-OCRv5 models — cached under $HOME=/app/home
+try:
+    from paddleocr import PaddleOCR
+    PaddleOCR(lang='en', use_textline_orientation=True, device='cpu')
+    print('PaddleOCR models cached')
+except Exception as exc:
+    print('PaddleOCR warm-up skipped (runtime will download):', exc)
 PY
 
 ENV LOCALOCR_USER=appuser
@@ -120,6 +145,7 @@ RUN groupadd --gid 1001 appuser \
     && useradd --uid 1001 --gid 1001 --create-home appuser \
     && mkdir -p /tmp/pdf_ocr_history /tmp/pdf_ocr_images \
     && mkdir -p /app/correction_data/images /app/correction_data/labels \
+    && mkdir -p /app/home \
     && chown -R appuser:appuser /app /tmp/pdf_ocr_history /tmp/pdf_ocr_images
 
 VOLUME ["/app/correction_data", "/tmp/pdf_ocr_history"]

@@ -15,9 +15,10 @@ services:
       SERVER_HOST: 0.0.0.0
       SERVER_PORT: "7870"
       QUALITY_PRESET: accurate
-      OCR_ENGINE: easyocr
+      OCR_ENGINE: auto
       DISABLE_TROCR_PRELOAD: "1"
       LANGUAGES: tha+eng
+      LAYOUT_MODE: flow
       CORRECTION_DATA_DIR: /app/correction_data
     ports:
       - "7870:7870"
@@ -44,9 +45,10 @@ services:
       SERVER_HOST: 0.0.0.0
       SERVER_PORT: "7870"
       QUALITY_PRESET: accurate
-      OCR_ENGINE: easyocr
+      OCR_ENGINE: auto
       DISABLE_TROCR_PRELOAD: "1"
       LANGUAGES: tha+eng
+      LAYOUT_MODE: flow
       CORRECTION_DATA_DIR: /app/correction_data
     ports:
       - "7870:7870"
@@ -78,9 +80,10 @@ services:
       SERVER_HOST: 0.0.0.0
       SERVER_PORT: "7870"
       QUALITY_PRESET: balanced
-      OCR_ENGINE: easyocr
+      OCR_ENGINE: auto
       DISABLE_TROCR_PRELOAD: "1"
       LANGUAGES: tha+eng
+      LAYOUT_MODE: flow
       CORRECTION_DATA_DIR: /app/correction_data
     ports:
       - "7870:7870"

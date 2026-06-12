@@ -3,12 +3,12 @@
 # pylint: disable=catching-non-exception
 """
 PDF to DOCX OCR Service — Gradio Web Application
-v0.4.1  |  Thai-optimised OCR  |  Manual correction + auto-retrain
+v0.5.0  |  Thai-optimised OCR  |  Manual correction + auto-retrain
 
 Convert tab: Upload → detect → manual add tables/figures → convert
 Review tab: See detected regions, draw new ones, re-convert
 
-OCR engines: EasyOCR (Thai+English primary) → Thai-TrOCR → PaddleOCR → Tesseract
+OCR engines (strict policy): Thai → Thai-TrOCR (line-level) | other → PaddleOCR
 
 Security:
     - show_error gated on DEBUG_MODE env var
@@ -78,7 +78,7 @@ history.cleanup_old_entries()
 _DEFAULT_QUALITY       = "Balanced (Recommended)"
 _DEFAULT_LANGUAGE      = "Thai + English"
 _DEFAULT_LANGUAGE_CODE = "tha+eng"
-_DEFAULT_ENGINE        = "EasyOCR (Thai+English)"
+_DEFAULT_ENGINE        = "Auto (Thai→TrOCR, other→PaddleOCR)"
 _MSG_UPLOAD_PDF_FIRST  = "Upload a PDF first."
 
 QUALITY_OPTIONS = {
@@ -102,10 +102,11 @@ LANGUAGE_OPTIONS = {
 }
 
 ENGINE_OPTIONS = {
-    "Tesseract (Thai+English)": "tesseract",
-    _DEFAULT_ENGINE: "easyocr",
+    _DEFAULT_ENGINE: "auto",
     "Thai-TrOCR (Line-level)": "thai_trocr",
     "PaddleOCR (Multilingual)": "paddleocr",
+    "EasyOCR (Thai+English)": "easyocr",
+    "Tesseract (Thai+English)": "tesseract",
 }
 
 CLASS_OPTIONS = ["table", "figure"]
@@ -243,7 +244,7 @@ def process_document(pdf_file, quality_label, header_pct, footer_pct,
     pdf_path = str(pdf_file)
     quality = QUALITY_OPTIONS.get(quality_label, "balanced")
     languages = LANGUAGE_OPTIONS.get(language_label, _DEFAULT_LANGUAGE_CODE)
-    engine = ENGINE_OPTIONS.get(engine_label, "easyocr")
+    engine = ENGINE_OPTIONS.get(engine_label, "auto")
     page_size = page_size_label or "A4"
     margin_preset = MARGIN_OPTIONS.get(margin_label, "Normal")
 
@@ -405,7 +406,7 @@ def review_convert_with_corrections(pdf_file, quality_label, header_pct, footer_
     pdf_path = str(pdf_file)
     quality = QUALITY_OPTIONS.get(quality_label, "balanced")
     languages = LANGUAGE_OPTIONS.get(language_label, _DEFAULT_LANGUAGE_CODE)
-    engine = ENGINE_OPTIONS.get(engine_label, "easyocr")
+    engine = ENGINE_OPTIONS.get(engine_label, "auto")
     page_size = page_size_label or "A4"
     margin_preset = MARGIN_OPTIONS.get(margin_label, "Normal")
     pipeline.ocr.primary_engine = engine
@@ -586,9 +587,9 @@ def create_interface():
             <div class="hero-bar">
                 <div>
                     <h1>PDF OCR Pipeline</h1>
-                    <p>EasyOCR | Thai-TrOCR | PaddleOCR | DocLayout-YOLO | HTML-first Export</p>
+                    <p>Thai-TrOCR (Thai) | PaddleOCR (other) | DocLayout-YOLO | Layout-faithful Export</p>
                 </div>
-                <div class="hero-badge">v0.4.1 &middot; Thai-Optimised</div>
+                <div class="hero-badge">v0.5.0 &middot; Thai-Optimised</div>
             </div>
             """)
 
@@ -638,7 +639,7 @@ def create_interface():
                                 choices=list(ENGINE_OPTIONS.keys()),
                                 value=_DEFAULT_ENGINE,
                                 label="OCR Engine",
-                                info="EasyOCR provides best Thai+English accuracy",
+                                info="Auto: Thai → Thai-TrOCR, other languages → PaddleOCR",
                             )
                             yolo_conf_sl = gr.Slider(
                                 0.05, 0.50, 0.30, step=0.05,
@@ -926,7 +927,7 @@ def create_interface():
         gr.HTML("""
         <div style="text-align:center;padding:20px;margin-top:20px;
                     border-top:1px solid #e2e8f0;color:#94a3b8;font-size:0.85rem;">
-            PDF OCR Pipeline v0.4.1 — Apache-2.0 License — Thai-optimised OCR
+            PDF OCR Pipeline v0.5.0 — Apache-2.0 License — Thai-optimised OCR
         </div>
         """)
 

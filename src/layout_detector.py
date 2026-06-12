@@ -614,9 +614,15 @@ class TableExtractor:
             all_text_rows.append("\t".join(row_texts))
 
         html_parts.append("</table>")
+        total_w = max(1, v_lines[-1] - v_lines[0])
+        col_widths = [
+            (v_lines[ci + 1] - v_lines[ci]) / total_w
+            for ci in range(num_cols)
+        ]
         return {
             "html": "\n".join(html_parts),
             "text": "\n".join(all_text_rows),
+            "col_widths": col_widths,
         }
 
     def _try_hough_table(self, gray: np.ndarray, color_img: np.ndarray,
@@ -685,7 +691,9 @@ class TableExtractor:
         if h < 5 or w < 5:
             return ""
 
-        # Use the connected OCR engine if available
+        # Use the connected OCR engine (strict policy: Thai → Thai-TrOCR,
+        # other → PaddleOCR). No hard-coded English-only
+        # fallback — that produced ASCII garbage on Thai cells.
         if self._ocr_engine is not None:
             try:
                 result = self._ocr_engine.ocr_image(cell_img, languages=languages)
@@ -694,18 +702,6 @@ class TableExtractor:
                     return text
             except Exception as exc:
                 logger.debug("Cell OCR via engine failed: %s", exc)
-
-        # Fallback: try PaddleOCR directly
-        try:
-            paddle_ocr_class = getattr(importlib.import_module("paddleocr"), "PaddleOCR")
-            paddle = paddle_ocr_class(use_angle_cls=True, lang="en",
-                                      use_gpu=self.use_gpu, show_log=False)
-            result = paddle.ocr(cell_img, cls=True)
-            if result and result[0]:
-                texts = [line[1][0] for line in result[0]]
-                return " ".join(texts).strip()
-        except Exception:
-            pass
 
         return ""
 

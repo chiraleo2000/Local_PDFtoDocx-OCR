@@ -1,14 +1,13 @@
 # ============================================
 # PDF-to-DOCX OCR Pipeline — Dependencies
-# v0.2.3  |  Thai-optimised, EasyOCR primary + Tesseract fallback
+# v0.5.0  |  Strict policy: Thai → Thai-TrOCR, other → PaddleOCR
 # ============================================
 
 # Core
 gradio>=4.0.0
 huggingface_hub
 python-dotenv>=1.0.0
-easyocr>=1.7.0
-paddlepaddle>=2.6.0
+
 # Image Processing
 Pillow>=10.0.0
 numpy>=1.24.0
@@ -32,13 +31,19 @@ shapely>=2.0.0
 # Network
 requests>=2.31.0
 
-# OCR Engines (v2.3 — EasyOCR primary, Tesseract fallback)
-easyocr>=1.7.0                  # Thai + multilingual OCR (primary for Thai)
+# ── OCR Engines (v3.0 strict policy) ──
+# Thai pages → Thai-TrOCR (openthaigpt/thai-trocr via transformers/ONNX)
+torch>=2.0.0                    # Thai-TrOCR inference (transformers backend)
+transformers>=4.37.0            # TrOCR processor + VisionEncoderDecoderModel
+onnxruntime>=1.17.0             # optional faster Thai-TrOCR ONNX inference
+# Other languages → PaddleOCR PP-OCRv5
 paddlepaddle>=2.6.0             # PaddlePaddle framework (required by paddleocr)
-paddleocr>=2.7.0,<3.0.0
-onnxruntime>=1.17.0
-transformers>=4.37.0
-pytesseract>=0.3.10             # Tesseract OCR fallback (requires tesseract-ocr system package)
+paddleocr>=3.1.0                # PP-OCRv5 multilingual + per-line bboxes
+
+# Optional engines — used ONLY when explicitly selected (OCR_ENGINE=<name>)
+easyocr>=1.7.0                  # explicit override engine
+pytesseract>=0.3.10             # explicit override engine (needs tesseract-ocr system package)
+# typhoon-ocr>=0.3.9            # cloud/self-hosted Typhoon OCR — opt-in only
 
 # Testing
 pytest>=8.0.0
@@ -48,4 +53,3 @@ selenium>=4.15.0
 # OPTIONAL — GPU acceleration
 # ============================================
 # onnxruntime-gpu>=1.17.0 # Thai-TrOCR ONNX GPU inference (replaces onnxruntime)
-# torch>=2.0.0            # Auto-installed by doclayout-yolo

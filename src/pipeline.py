@@ -5,7 +5,7 @@ PDF -> Render -> Layout Detect -> GROUP (text/table/figure)
   -> Build HTML -> HTML->DOCX + HTML->TXT
 
 v2.0 changes:
-    - Tesseract removed; Thai-optimised cascade (TrOCR/PaddleOCR/EasyOCR)
+    - Strict engine policy: Thai → Thai-TrOCR (line-level), other → PaddleOCR
     - Improved table extraction with grid-aware cell alignment
     - OCR engine shared with table extractor for consistent results
 
@@ -67,6 +67,76 @@ class ContentBlock:
     text: str = ""           # extracted text (text/caption blocks, table plain text)
     table_html: str = ""     # HTML markup (table blocks only)
     figure: Dict[str, Any] = field(default_factory=dict)  # figure payload
+    # ── Layout-fidelity payload (v2.1 — absolute positioning) ──
+    bbox: List[float] = field(default_factory=list)   # [x0,y0,x1,y1] page units
+    page_width: float = 0.0   # page width in same units as bbox
+    page_height: float = 0.0  # page height in same units as bbox
+    # Per visual line: {"text", "bbox": [x0,y0,x1,y1], optional "size_pt", "bold"}
+    lines: List[Dict[str, Any]] = field(default_factory=list)
+    table_meta: Dict[str, Any] = field(default_factory=dict)  # e.g. col_widths
+
+
+def _quad_to_rect(bbox) -> Optional[List[float]]:
+    """Normalise an OCR bbox (quad ``[[x,y]..]`` or rect ``[x0,y0,x1,y1]``)."""
+    try:
+        if not bbox:
+            return None
+        if isinstance(bbox[0], (list, tuple)):
+            xs = [float(p[0]) for p in bbox]
+            ys = [float(p[1]) for p in bbox]
+            return [min(xs), min(ys), max(xs), max(ys)]
+        if len(bbox) >= 4:
+            return [float(bbox[0]), float(bbox[1]),
+                    float(bbox[2]), float(bbox[3])]
+    except (TypeError, ValueError, IndexError):
+        pass
+    return None
+
+
+def _segments_to_lines(segments: List[Dict[str, Any]],
+                       languages: str = "eng") -> List[Dict[str, Any]]:
+    """Cluster OCR segments into visual lines (sorted top→bottom, left→right).
+
+    OCR engines return word/phrase segments; this groups segments whose
+    vertical centres overlap into single lines so the exporter can
+    reproduce the original line structure, alignment, and spacing.
+    """
+    entries = []
+    for seg in segments:
+        rect = _quad_to_rect(seg.get("bbox"))
+        txt = (seg.get("text") or "").strip()
+        if rect is None or not txt:
+            continue
+        entries.append({"text": txt, "rect": rect,
+                        "cy": (rect[1] + rect[3]) / 2.0,
+                        "h": rect[3] - rect[1]})
+    if not entries:
+        return []
+
+    entries.sort(key=lambda e: (e["cy"], e["rect"][0]))
+    lines: List[Dict[str, Any]] = []
+    cluster: List[Dict[str, Any]] = [entries[0]]
+
+    def _flush(items: List[Dict[str, Any]]) -> None:
+        items.sort(key=lambda e: e["rect"][0])
+        x0 = min(e["rect"][0] for e in items)
+        y0 = min(e["rect"][1] for e in items)
+        x1 = max(e["rect"][2] for e in items)
+        y1 = max(e["rect"][3] for e in items)
+        text = clean_text(" ".join(e["text"] for e in items), languages)
+        if text:
+            lines.append({"text": text, "bbox": [x0, y0, x1, y1]})
+
+    for entry in entries[1:]:
+        ref = cluster[0]
+        tol = max(ref["h"], entry["h"]) * 0.6
+        if abs(entry["cy"] - ref["cy"]) <= tol:
+            cluster.append(entry)
+        else:
+            _flush(cluster)
+            cluster = [entry]
+    _flush(cluster)
+    return lines
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -86,6 +156,31 @@ def _fix_thai_spacing(text: str) -> str:
             line = _THAI_SPACE_RE.sub(r"\1\2", line)
         lines.append(line)
     return "\n".join(lines)
+
+
+def _embedded_text_reliable(text: str, languages: str) -> bool:
+    """Decide whether a PDF's embedded text layer can be trusted.
+
+    Many scanned Thai PDFs carry a hidden text layer in which Thai glyphs
+    have no Unicode mapping — extraction silently drops every Thai
+    character, leaving only ASCII fragments. Trusting such a layer
+    produces garbage output, so those pages must go through real OCR.
+    """
+    if not text:
+        return False
+    n = len(text)
+    # Broken CMap → replacement characters
+    if text.count("�") / n > 0.05:
+        return False
+    # Mostly digits/punctuation — letters were stripped from the layer
+    letters = sum(ch.isalpha() for ch in text)
+    if letters / n < 0.25:
+        return False
+    # Thai requested but not a single Thai character extracted —
+    # classic symptom of a Thai font without a ToUnicode table.
+    if "tha" in languages and not _THAI_CHAR_RE.search(text):
+        return False
+    return True
 
 
 def clean_text(text: str, languages: str = "eng") -> str:
@@ -139,7 +234,7 @@ class OCRPipeline:
       1. Render page
       2. Layout detection (YOLO / OpenCV)
       3. Group regions: text, table, figure
-      4. OCR text regions (EasyOCR/TrOCR/PaddleOCR cascade)
+      4. OCR text regions (Thai → Thai-TrOCR, other → PaddleOCR)
       5. Extract tables (grid + cell OCR, improved alignment)
       6. Extract figures as images
       7. Sort reading order
@@ -210,9 +305,9 @@ class OCRPipeline:
 
             for page_num in range(page_count):
                 logger.info("Processing page %d/%d", page_num + 1, page_count)
-                direct_block = self._embedded_text_block(doc[page_num], page_num, langs)
-                if direct_block is not None:
-                    all_blocks.append(direct_block)
+                direct_blocks = self._embedded_text_block(doc[page_num], page_num, langs)
+                if direct_blocks is not None:
+                    all_blocks.extend(direct_blocks)
                     self._notify_progress(
                         progress_callback, page_num + 1, progress_total,
                         f"Completed page {page_num + 1}/{page_count}")
@@ -381,21 +476,92 @@ class OCRPipeline:
         txt = clean_text(raw, languages)
         blocks: List[ContentBlock] = []
         if txt.strip():
+            ph, pw = preprocessed.shape[:2]
+            lines = _segments_to_lines(ocr_result.get("lines") or [], languages)
+            if lines:
+                txt = "\n".join(line["text"] for line in lines)
+                x0 = min(line["bbox"][0] for line in lines)
+                y0 = min(line["bbox"][1] for line in lines)
+                x1 = max(line["bbox"][2] for line in lines)
+                y1 = max(line["bbox"][3] for line in lines)
+                bbox = [x0, y0, x1, y1]
+            else:
+                bbox = []
             blocks.append(ContentBlock(
-                block_type="text", page=page_num, y_top=0, x_left=0, text=txt))
+                block_type="text", page=page_num, y_top=0, x_left=0, text=txt,
+                bbox=bbox, page_width=float(pw), page_height=float(ph),
+                lines=lines))
         return blocks, 0, 0
 
     @staticmethod
     def _embedded_text_block(page, page_num: int, languages: str):
-        """Return a text block for simple born-digital PDF pages."""
+        """Return positioned text blocks for simple born-digital PDF pages.
+
+        Uses ``get_text("dict")`` so block/line positions and font sizes are
+        preserved (bbox in PDF points). Returns a list of ContentBlocks, or
+        ``None`` if the page needs the OCR path.
+        """
         raw = page.get_text("text") or ""
-        txt = clean_text(raw, languages)
-        if not txt.strip():
+        cleaned = clean_text(raw, languages)
+        if not cleaned.strip():
             return None
         if page.get_images(full=True):
             return None
-        return ContentBlock(
-            block_type="text", page=page_num, y_top=0, x_left=0, text=txt)
+        # Optional override: always OCR, never trust embedded text
+        if os.getenv("FORCE_OCR", "false").lower() == "true":
+            return None
+        # Broken/incomplete text layer (e.g. Thai glyphs without Unicode
+        # mapping) → route the page through the OCR pipeline instead.
+        if not _embedded_text_reliable(cleaned, languages):
+            logger.warning(
+                "Page %d: embedded text layer looks unreliable "
+                "(missing Thai/letters) — using OCR instead.", page_num + 1)
+            return None
+
+        pw = float(page.rect.width)
+        ph = float(page.rect.height)
+        blocks: List[ContentBlock] = []
+        try:
+            page_dict = page.get_text("dict")
+        except (RuntimeError, ValueError):
+            page_dict = None
+
+        for blk in (page_dict or {}).get("blocks", []):
+            if blk.get("type") != 0:          # text blocks only
+                continue
+            lines: List[Dict[str, Any]] = []
+            for ln in blk.get("lines", []):
+                spans = ln.get("spans", [])
+                line_text = clean_text(
+                    "".join(s.get("text", "") for s in spans), languages)
+                if not line_text:
+                    continue
+                sizes = [float(s.get("size", 0)) for s in spans
+                         if s.get("size")]
+                bold = any((int(s.get("flags", 0)) & 16) for s in spans)
+                lines.append({
+                    "text": line_text,
+                    "bbox": [float(v) for v in ln.get("bbox", blk["bbox"])],
+                    "size_pt": (sum(sizes) / len(sizes)) if sizes else 0.0,
+                    "bold": bold,
+                })
+            if not lines:
+                continue
+            bx = [float(v) for v in blk.get("bbox", [0, 0, 0, 0])]
+            blocks.append(ContentBlock(
+                block_type="text", page=page_num,
+                y_top=bx[1], x_left=bx[0],
+                text="\n".join(line["text"] for line in lines),
+                bbox=bx, page_width=pw, page_height=ph,
+                lines=lines,
+            ))
+
+        if not blocks:   # parsing failed — single flat block fallback
+            txt = clean_text(raw, languages)
+            blocks = [ContentBlock(
+                block_type="text", page=page_num, y_top=0, x_left=0,
+                text=txt, page_width=pw, page_height=ph)]
+        return blocks
 
     def _ocr_regions_to_blocks(self, regions, preprocessed, img, h, w,
                                page_num, block_type, languages, out) -> None:
@@ -413,6 +579,7 @@ class OCRPipeline:
         if not table_dets:
             return 0
         count = 0
+        ih, iw = img.shape[:2]
         for t in self.table_extractor.extract_tables(
                 img, table_dets, languages=languages):
             bbox = t.get("bbox", [0, 0, 0, 0])
@@ -421,6 +588,9 @@ class OCRPipeline:
                 y_top=float(bbox[1]), x_left=float(bbox[0]),
                 text=t.get("text", ""),
                 table_html=t.get("html", ""),
+                bbox=[float(v) for v in bbox],
+                page_width=float(iw), page_height=float(ih),
+                table_meta={"col_widths": t.get("col_widths", [])},
             ))
             count += 1
         return count
@@ -429,6 +599,7 @@ class OCRPipeline:
         """Extract figures and append to *out*. Returns figure count."""
         if not figure_dets:
             return 0
+        ih, iw = img.shape[:2]
         extracted = self.image_extractor.extract_figures(img, figure_dets, page_num)
         for i, fig in enumerate(extracted):
             bbox = (figure_dets[i]["bbox"]
@@ -437,6 +608,8 @@ class OCRPipeline:
                 block_type="figure", page=page_num,
                 y_top=float(bbox[1]), x_left=float(bbox[0]),
                 figure=fig,
+                bbox=[float(v) for v in bbox],
+                page_width=float(iw), page_height=float(ih),
             ))
         return len(extracted)
 
@@ -472,10 +645,24 @@ class OCRPipeline:
         if not txt.strip():
             return None
 
+        # ── Per-line positions (crop coords → page coords) ──
+        lines = _segments_to_lines(ocr_result.get("lines") or [], languages)
+        for line in lines:
+            lx0, ly0, lx1, ly1 = line["bbox"]
+            line["bbox"] = [
+                lx0 / sx + x0, ly0 / sy + y0,
+                lx1 / sx + x0, ly1 / sy + y0,
+            ]
+        if lines:
+            txt = "\n".join(line["text"] for line in lines)
+
         return ContentBlock(
             block_type=block_type, page=page_num,
             y_top=float(y0), x_left=float(x0),
             text=txt,
+            bbox=[float(x0), float(y0), float(x1), float(y1)],
+            page_width=float(w), page_height=float(h),
+            lines=lines,
         )
 
     @staticmethod
@@ -637,9 +824,9 @@ class OCRPipeline:
             for page_num in range(page_count):
                 logger.info("Processing page %d/%d", page_num + 1, page_count)
                 extra = (manual_regions or {}).get(page_num, [])
-                direct_block = self._embedded_text_block(doc[page_num], page_num, langs)
-                if direct_block is not None:
-                    all_blocks.append(direct_block)
+                direct_blocks = self._embedded_text_block(doc[page_num], page_num, langs)
+                if direct_blocks is not None:
+                    all_blocks.extend(direct_blocks)
                     page_rect = doc[page_num].rect
                     correction_image = np.ones(
                         (max(1, int(page_rect.height)),

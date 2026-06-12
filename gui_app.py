@@ -193,10 +193,11 @@ LANGUAGE_OPTIONS = {
 }
 
 ENGINE_OPTIONS = {
-    "Tesseract (Thai+English)": "tesseract",
-    "EasyOCR (Thai+English)": "easyocr",
+    "Auto (Thai→TrOCR, other→PaddleOCR)": "auto",
     "Thai-TrOCR (Line-level)": "thai_trocr",
     "PaddleOCR (Multilingual)": "paddleocr",
+    "EasyOCR (Thai+English)": "easyocr",
+    "Tesseract (Thai+English)": "tesseract",
 }
 
 PAGE_SIZE_OPTIONS = ["A4", "Letter", "Legal", "A3", "B5"]
@@ -579,7 +580,7 @@ class OCRApp(tk.Tk):
     """Desktop GUI for the PDF-to-DOCX OCR Pipeline with modern dark theme."""
 
     APP_TITLE = "LocalOCR — PDF to DOCX Converter"
-    VERSION   = "v0.4.1"
+    VERSION   = "v0.5.0"
     WINDOW_SIZE = "1280x860"
 
     def __init__(self):
@@ -950,7 +951,7 @@ class OCRApp(tk.Tk):
         self._cb_language = _add_combo(
             "Language:", list(LANGUAGE_OPTIONS.keys()), 2)
         self._cb_engine = _add_combo(
-            "OCR Engine:", list(ENGINE_OPTIONS.keys()), 1)
+            "OCR Engine:", list(ENGINE_OPTIONS.keys()), 0)
         self._cb_page_size = _add_combo(
             "Page Size:", PAGE_SIZE_OPTIONS, 0)
         self._cb_margin = _add_combo(
@@ -1248,7 +1249,7 @@ class OCRApp(tk.Tk):
             font=(FONT_FAMILY, 10), anchor="w")
         self._lbl_status.pack(side="left", fill="x", expand=True)
 
-        tk.Label(status_frame, text="LocalOCR v0.4.1",
+        tk.Label(status_frame, text="LocalOCR v0.5.0",
                  bg=Theme.BG_MID, fg=Theme.TEXT_MUTED,
                  font=(FONT_FAMILY, 9)).pack(side="right")
 
@@ -1601,7 +1602,7 @@ class OCRApp(tk.Tk):
             languages = LANGUAGE_OPTIONS.get(
                 self._cb_language.get(), "tha+eng")
             engine = ENGINE_OPTIONS.get(
-                self._cb_engine.get(), "easyocr")
+                self._cb_engine.get(), "auto")
             page_size = self._cb_page_size.get() or "A4"
             margin_preset = MARGIN_OPTIONS.get(
                 self._cb_margin.get(), "Normal")
