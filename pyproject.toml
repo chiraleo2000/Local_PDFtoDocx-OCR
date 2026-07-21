@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "localocr"
+version = "0.5.2"
+description = "Thai-optimised local PDF to DOCX OCR (Docling + Thai-TrOCR + PaddleOCR)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+
+[project.entry-points."docling"]
+localocr = "src.docling_ocr_plugin"
+
+[tool.setuptools.packages.find]
+include = ["src*"]

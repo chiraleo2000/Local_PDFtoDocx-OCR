@@ -51,6 +51,7 @@ python app.py
 ### Docker Deploy
 
 The Docker setup is CPU-only by default and exposes the Gradio web app at <http://localhost:7870>.
+Default layout backend is **Docling** (TableFormer) with Thai-TrOCR + PaddleOCR for text.
 
 ```bash
 # CPU-only build and deploy
@@ -62,6 +63,8 @@ docker compose logs -f localocr
 # Stop
 docker compose down
 ```
+
+Set `LAYOUT_BACKEND=yolo` to roll back to DocLayout-YOLO if needed.
 
 Optional accelerator profiles are included:
 

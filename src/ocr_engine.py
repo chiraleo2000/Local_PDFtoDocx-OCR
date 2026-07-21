@@ -23,7 +23,10 @@ Security:
 import os
 import sys
 import logging
+import threading
 from typing import Optional, List, Dict, Any
+
+from .runtime import model_slot
 
 # Guard stdout/stderr — PaddlePaddle & EasyOCR read sys.stdout.encoding
 if sys.stdout is None:
@@ -76,6 +79,28 @@ def _validate_image(image: np.ndarray) -> bool:
         logger.warning("Image too large: %d x %d pixels", w, h)
         return False
     return True
+
+
+def _ensure_bgr(image: np.ndarray) -> np.ndarray:
+    """Return a contiguous 3-channel BGR image for PaddleOCR / OpenCV models.
+
+    PaddleX doc-unwarping / Normalize crashes with
+    ``IndexError: tuple index out of range`` on grayscale ``(H, W)`` crops
+    (and on ``(H, W, 1)``) because it indexes ``img.shape[2]``.
+    """
+    if image is None or not isinstance(image, np.ndarray) or image.size == 0:
+        return image
+    if image.ndim == 2:
+        return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    if image.ndim == 3:
+        channels = image.shape[2]
+        if channels == 1:
+            return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        if channels == 4:
+            return cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+        if channels == 3:
+            return np.ascontiguousarray(image)
+    return image
 
 
 def _segment_text_lines(image: np.ndarray) -> List[List[int]]:
@@ -375,6 +400,7 @@ class OCREngine:
         self._paddle_instances: Dict[str, Any] = {}
         self._easyocr_reader = None
         self._engines_checked = False
+        self._init_lock = threading.Lock()
 
         logger.info(
             "OCREngine v3.0 — primary=%s, gpu=%s, lang=%s "
@@ -383,17 +409,24 @@ class OCREngine:
         )
 
     def _ensure_engines(self):
-        """Lazy check for available engines."""
+        """Lazy check for available engines (thread-safe)."""
         if self._engines_checked:
             return
-        _check_thai_trocr()
-        self._engines_checked = True
+        with self._init_lock:
+            if self._engines_checked:
+                return
+            _check_thai_trocr()
+            self._engines_checked = True
 
     # ── Lazy loaders ──
 
     def _get_easyocr(self, languages: Optional[str] = None):
         """Lazily initialise EasyOCR with Thai+English."""
-        if self._easyocr_reader is None and EASYOCR_AVAILABLE:
+        if self._easyocr_reader is not None or not EASYOCR_AVAILABLE:
+            return self._easyocr_reader
+        with self._init_lock:
+            if self._easyocr_reader is not None or not EASYOCR_AVAILABLE:
+                return self._easyocr_reader
             try:
                 lang_list = self._easyocr_langs(languages)
                 self._easyocr_reader = _easyocr_mod.Reader(
@@ -410,29 +443,41 @@ class OCREngine:
         if not PADDLE_AVAILABLE:
             return None
         lang = self._paddle_lang(languages)
-        if lang in self._paddle_instances:
-            return self._paddle_instances[lang]
-        instance = None
-        try:
-            if _paddle_version_major() >= 3:
-                # 3.x API: device instead of use_gpu, no show_log
-                instance = _PaddleOCR(
-                    lang=lang,
-                    use_textline_orientation=True,
-                    device="gpu" if self.use_gpu else "cpu",
-                )
-            else:
-                instance = _PaddleOCR(
-                    use_angle_cls=True, lang=lang,
-                    use_gpu=self.use_gpu, show_log=False,
-                )
-            logger.info("PaddleOCR initialised (v%d.x, lang=%s)",
-                        max(_paddle_version_major(), 2), lang)
-        except (ImportError, OSError, RuntimeError, TypeError) as exc:
-            logger.warning("PaddleOCR init failed: %s", type(exc).__name__)
-        if instance is not None:
-            self._paddle_instances[lang] = instance
-        return instance
+        with self._init_lock:
+            if lang in self._paddle_instances:
+                return self._paddle_instances[lang]
+            instance = None
+            try:
+                if _paddle_version_major() >= 3:
+                    # 3.x: disable doc unwarping/orientation — they crash on
+                    # grayscale/small region crops and we already deskew in
+                    # OpenCVPreprocessor.
+                    kwargs = {
+                        "lang": lang,
+                        "use_textline_orientation": True,
+                        "device": "gpu" if self.use_gpu else "cpu",
+                        "use_doc_unwarping": False,
+                        "use_doc_orientation_classify": False,
+                    }
+                    try:
+                        instance = _PaddleOCR(**kwargs)
+                    except TypeError:
+                        # Older 3.x without those kwargs
+                        kwargs.pop("use_doc_unwarping", None)
+                        kwargs.pop("use_doc_orientation_classify", None)
+                        instance = _PaddleOCR(**kwargs)
+                else:
+                    instance = _PaddleOCR(
+                        use_angle_cls=True, lang=lang,
+                        use_gpu=self.use_gpu, show_log=False,
+                    )
+                logger.info("PaddleOCR initialised (v%d.x, lang=%s)",
+                            max(_paddle_version_major(), 2), lang)
+            except (ImportError, OSError, RuntimeError, TypeError) as exc:
+                logger.warning("PaddleOCR init failed: %s", type(exc).__name__)
+            if instance is not None:
+                self._paddle_instances[lang] = instance
+            return instance
 
     @staticmethod
     def _parse_paddle_result(result) -> List[Dict[str, Any]]:
@@ -490,10 +535,12 @@ class OCREngine:
         lang = languages or self.languages
 
         cascade = self._build_cascade(engine, lang)
-        for eng in cascade:
-            result = self._run_engine(image, eng, lang)
-            if result and result.get("text", "").strip():
-                return result
+        # Shared model slot — allows N parallel inferences across users/pages
+        with model_slot():
+            for eng in cascade:
+                result = self._run_engine(image, eng, lang)
+                if result and result.get("text", "").strip():
+                    return result
 
         return {"text": "", "confidence": 0.0, "engine_used": "none", "lines": []}
 
@@ -551,7 +598,7 @@ class OCREngine:
             if engine == "tesseract":
                 return self._run_tesseract(image, lang)
             logger.debug("Unknown engine: %s", engine)
-        except (OSError, ValueError, RuntimeError) as exc:
+        except (OSError, ValueError, RuntimeError, IndexError, TypeError) as exc:
             logger.error("Engine '%s' error: %s — %s", engine, type(exc).__name__, exc)
         return None
 
@@ -841,10 +888,23 @@ class OCREngine:
         paddle = self._get_paddle(lang)
         if paddle is None:
             return None
+        # PaddleX Normalize/unwarp requires HxWx3 — preprocess often yields gray
+        bgr = _ensure_bgr(image)
+        if bgr is None or bgr.size == 0 or bgr.ndim != 3 or bgr.shape[2] != 3:
+            return None
+        if min(bgr.shape[:2]) < 8:
+            return None
         try:
-            result = paddle.ocr(image, cls=True)
+            result = paddle.ocr(bgr, cls=True)
         except TypeError:           # 3.x removed the cls kwarg
-            result = paddle.ocr(image)
+            try:
+                result = paddle.ocr(
+                    bgr,
+                    use_doc_unwarping=False,
+                    use_doc_orientation_classify=False,
+                )
+            except TypeError:
+                result = paddle.ocr(bgr)
         lines = self._parse_paddle_result(result)
         if not lines:
             return None
@@ -879,18 +939,9 @@ class OCREngine:
             return []
 
         # Other languages → PaddleOCR (native per-line bboxes)
-        paddle = self._get_paddle(lang)
-        if paddle is not None:
-            try:
-                try:
-                    result = paddle.ocr(image, cls=True)
-                except TypeError:   # 3.x removed the cls kwarg
-                    result = paddle.ocr(image)
-                items = self._parse_paddle_result(result)
-                if items:
-                    return items
-            except Exception:
-                pass
+        res = self._run_paddle_engine(image, lang)
+        if res and res.get("lines"):
+            return res["lines"]
         return []
 
     # ── Language helpers ──

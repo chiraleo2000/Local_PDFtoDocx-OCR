@@ -947,7 +947,7 @@ class OCRApp(tk.Tk):
             return cb
 
         self._cb_quality = _add_combo(
-            "Quality:", list(QUALITY_OPTIONS.keys()), 1)
+            "Quality:", list(QUALITY_OPTIONS.keys()), 2)  # Best (Accurate)
         self._cb_language = _add_combo(
             "Language:", list(LANGUAGE_OPTIONS.keys()), 2)
         self._cb_engine = _add_combo(

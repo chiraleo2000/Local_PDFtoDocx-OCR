@@ -104,8 +104,17 @@ MARGIN_PRESETS = {
 # Max image display width in HTML (pixels)
 _MAX_IMG_DISPLAY_PX = 550
 
-# Assumed rendering DPI for pixel-to-inch conversion
-_IMG_RENDER_DPI = 150
+# Assumed rendering DPI for pixel-to-inch conversion (overridden per-export)
+_IMG_RENDER_DPI = 720
+
+# Snap OCR/export coordinates to this pixel grid (1 = exact pixels)
+_PIXEL_GRID = max(1, int(os.getenv("PIXEL_GRID", "1")))
+
+
+def _snap_px(value: float, grid: int = _PIXEL_GRID) -> int:
+    """Snap a coordinate to the page pixel grid."""
+    g = max(1, int(grid))
+    return int(round(float(value) / g) * g)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -126,8 +135,19 @@ class ImageExtractor:
         self.min_height = int(os.getenv("IMAGE_MIN_HEIGHT", str(min_height)))
         self.min_area = int(os.getenv("IMAGE_MIN_AREA", str(min_area)))
         self.enabled = os.getenv("IMAGE_EXTRACTION", "true").lower() == "true"
+        self.enhance = os.getenv("ENHANCE_IMAGES", "true").lower() in (
+            "1", "true", "yes", "on")
         self.temp_dir = Path(tempfile.gettempdir()) / "pdf_ocr_images"
         self.temp_dir.mkdir(parents=True, exist_ok=True)
+
+    def _prepare_crop(self, crop: np.ndarray) -> np.ndarray:
+        if not self.enhance:
+            return crop
+        try:
+            from .preprocessor import OpenCVPreprocessor
+            return OpenCVPreprocessor.enhance_figure(crop)
+        except Exception:
+            return crop
 
     @staticmethod
     def encode_png_base64(crop: np.ndarray) -> str:
@@ -162,6 +182,9 @@ class ImageExtractor:
             if w < self.min_width or h < self.min_height or w * h < self.min_area:
                 continue
 
+            crop = self._prepare_crop(crop)
+            h, w = crop.shape[:2]
+
             fig_num = len(figures) + 1                      # 1-based
             fname = f"page{page_number + 1}_fig{fig_num}.png"
             fpath = self.temp_dir / fname
@@ -178,6 +201,7 @@ class ImageExtractor:
                 # mis-aligns figures with detections it filtered out
                 "bbox": [float(x0), float(y0), float(x1), float(y1)],
                 "source": det.get("source", "detected"),
+                "enhanced": self.enhance,
             })
         return figures
 
@@ -208,14 +232,16 @@ class ImageExtractor:
         crop = page_image[y0:y1, x0:x1]
         if crop.size == 0:
             return None
+        crop = self._prepare_crop(crop)
         return {
             "page": page_number,
             "index": 1,
             "base64": self.encode_png_base64(crop),
-            "width": int(x1 - x0),
-            "height": int(y1 - y0),
+            "width": int(crop.shape[1]),
+            "height": int(crop.shape[0]),
             "bbox": [float(x0), float(y0), float(x1), float(y1)],
             "source": "fullpage",
+            "enhanced": self.enhance,
         }
 
 
@@ -237,6 +263,9 @@ class DocumentExporter:
     THAI_FONT = os.getenv("DOCX_THAI_FONT", "TH Sarabun New")
     FONT_SIZE_NORMAL = 11
     FONT_SIZE_TABLE = 10
+
+    def __init__(self) -> None:
+        self._render_dpi = float(_IMG_RENDER_DPI)
 
     # ── Per-script run helpers (v2.4) ────────────────────────────────────────
     @staticmethod
@@ -315,17 +344,28 @@ class DocumentExporter:
                                page_size: str = "A4",
                                margin_preset: str = "Normal",
                                layout_mode: Optional[str] = None,
+                               render_dpi: Optional[float] = None,
                                ) -> Dict[str, Optional[str]]:
         """Create TXT + HTML + DOCX.
 
         layout_mode:
-            "flow" (default) — continuous Word-style document: flowing
-            paragraphs (no text boxes) that preserve alignment, indent,
-            font sizes, inline tables and figures in reading order.
-            "absolute" — every block placed at its exact page position
-            (text frames / positioned tables) mirroring the scan 1:1.
+            "absolute" (default) — every line/block snapped to the page
+            pixel grid and placed at its exact position (text frames /
+            positioned tables / figures) mirroring the scan 1:1.
+            "flow" — continuous Word-style document: flowing paragraphs
+            that preserve alignment, indent, font sizes, inline tables
+            and figures in reading order.
         """
-        mode = (layout_mode or os.getenv("LAYOUT_MODE", "flow")).lower()
+        mode = (layout_mode or os.getenv("LAYOUT_MODE", "absolute")).lower()
+        if render_dpi and render_dpi > 0:
+            self._render_dpi = float(render_dpi)
+        else:
+            env_dpi = os.getenv("RENDER_DPI", "").strip()
+            try:
+                self._render_dpi = float(env_dpi) if env_dpi else _IMG_RENDER_DPI
+            except ValueError:
+                self._render_dpi = _IMG_RENDER_DPI
+
         has_positions = any(
             getattr(b, "bbox", None) and getattr(b, "page_width", 0) > 0
             for b in blocks)
@@ -334,13 +374,11 @@ class DocumentExporter:
         if has_positions:
             try:
                 if mode == "absolute":
-                    # Opt-in: positioned text frames mirroring the scan 1:1
+                    # Pixel-grid frames mirroring the scan 1:1
                     docx_path = self._build_docx_absolute(
                         blocks, page_size, margin_preset)
                 else:
-                    # Default ("flow"): continuous Word-style document —
-                    # normal flowing paragraphs (no text boxes) that keep
-                    # alignment, indentation, font size and reading order.
+                    # Continuous Word-style document
                     docx_path = self._build_docx_flow_structured(
                         blocks, page_size, margin_preset)
             except Exception:
@@ -941,12 +979,13 @@ class DocumentExporter:
 
     def _add_text_frame(self, doc, b, sx: float, sy: float,
                         pt_per_unit: float) -> None:
-        """One block → one text frame; lines keep size/alignment/indent."""
-        x0, y0, x1, _ = b.bbox
-        x_tw = int(x0 * sx)
-        y_tw = int(y0 * sy)
-        w_tw = int((x1 - x0) * sx) + 72   # small slack against re-wrap
+        """Place each OCR line on the page pixel grid at its own bbox.
 
+        Previously every line reused the block's top-left, which stacked
+        all lines on one Y and destroyed original layout. Each line is now
+        snapped to PIXEL_GRID and framed independently.
+        """
+        bx0, by0, bx1, by1 = b.bbox
         lines = b.lines or [
             {"text": ln, "bbox": b.bbox}
             for ln in b.text.split("\n") if ln.strip()
@@ -955,12 +994,21 @@ class DocumentExporter:
             text = line.get("text", "").strip()
             if not text:
                 continue
+            lb = line.get("bbox") or b.bbox
+            lx0 = _snap_px(lb[0])
+            ly0 = _snap_px(lb[1])
+            lx1 = _snap_px(lb[2])
+            # Prefer measured line width; fall back to block width
+            line_w = max(lx1 - lx0, _snap_px(bx1) - _snap_px(bx0), 8)
+            x_tw = int(lx0 * sx)
+            y_tw = int(ly0 * sy)
+            w_tw = int(line_w * sx) + 72   # small slack against re-wrap
+
             p = doc.add_paragraph()
             self._set_frame_pr(p, x_tw, y_tw, w_tw)
             self._style_frame_paragraph(p)
 
-            align, indent_units = self._line_alignment(
-                line.get("bbox") or b.bbox, b.bbox)
+            align, indent_units = self._line_alignment(lb, b.bbox)
             p.alignment = align
             if indent_units > 0:
                 p.paragraph_format.left_indent = Emu(
@@ -974,21 +1022,39 @@ class DocumentExporter:
     def _add_table_absolute(self, doc, b, sx: float, sy: float,
                             pt_per_unit: float) -> None:
         """Positioned, real (editable) Word table built from table_html."""
-        if not BS4_AVAILABLE or not b.table_html:
-            # No structure — render plain text in a frame instead
-            if b.text.strip():
+        html = b.table_html or ""
+        if not html and (b.text or "").strip():
+            # Rebuild minimal HTML from plain text so export never drops
+            # a counted table block.
+            import html as html_module
+            rows = [r for r in b.text.split("\n") if r.strip()]
+            cells = [[c for c in r.split("\t")] for r in rows] or [[b.text]]
+            html = "<table>" + "".join(
+                "<tr>" + "".join(
+                    f"<td>{html_module.escape(c)}</td>" for c in row)
+                + "</tr>" for row in cells) + "</table>"
+            b.table_html = html
+        if not BS4_AVAILABLE or not html:
+            if (b.text or "").strip():
                 self._add_text_frame(doc, b, sx, sy, pt_per_unit)
             return
-        soup = BeautifulSoup(b.table_html, "html.parser")
+        soup = BeautifulSoup(html, "html.parser")
         table_el = soup.find("table")
         if table_el is None:
+            if (b.text or "").strip():
+                self._add_text_frame(doc, b, sx, sy, pt_per_unit)
             return
         rows_el = table_el.find_all("tr")
         max_cols = self._calc_table_col_count(rows_el)
         if not rows_el or max_cols == 0:
+            if (b.text or "").strip():
+                self._add_text_frame(doc, b, sx, sy, pt_per_unit)
             return
 
-        x0, y0, x1, y1 = b.bbox
+        x0 = _snap_px(b.bbox[0])
+        y0 = _snap_px(b.bbox[1])
+        x1 = _snap_px(b.bbox[2])
+        y1 = _snap_px(b.bbox[3])
         tbl_w_tw = max(int((x1 - x0) * sx), 720)
         row_h_pt = ((y1 - y0) * pt_per_unit) / max(len(rows_el), 1)
         cell_font = max(6.0, min(12.0, row_h_pt * 0.5))
@@ -1080,7 +1146,10 @@ class DocumentExporter:
             img_bytes = base64.b64decode(b64)
         except Exception:
             return
-        x0, y0, x1, y1 = b.bbox
+        x0 = _snap_px(b.bbox[0])
+        y0 = _snap_px(b.bbox[1])
+        x1 = _snap_px(b.bbox[2])
+        y1 = _snap_px(b.bbox[3])
         x_tw, y_tw = int(x0 * sx), int(y0 * sy)
         w_tw = max(int((x1 - x0) * sx), 144)
         h_tw = max(int((y1 - y0) * sy), 144)
@@ -1442,7 +1511,8 @@ class DocumentExporter:
         try:
             img = Image.open(BytesIO(img_bytes))
             w_px, _ = img.size
-            w_inches = w_px / _IMG_RENDER_DPI
+            dpi = getattr(self, "_render_dpi", None) or _IMG_RENDER_DPI
+            w_inches = w_px / max(float(dpi), 72.0)
             return min(w_inches, usable_width)
         except Exception:
             return min(4.0, usable_width)

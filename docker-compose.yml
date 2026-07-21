@@ -5,8 +5,8 @@ services:
       dockerfile: Dockerfile
       args:
         ACCELERATOR: cpu
-    image: localocr:0.5.1-cpu
-    container_name: localocr-cpu-0.5.0
+    image: localocr:0.5.2-cpu
+    container_name: localocr-cpu-0.5.2
     restart: unless-stopped
     environment:
       ACCELERATOR: cpu
@@ -18,7 +18,27 @@ services:
       OCR_ENGINE: auto
       DISABLE_TROCR_PRELOAD: "0"
       LANGUAGES: tha+eng
-      LAYOUT_MODE: flow
+      LAYOUT_MODE: absolute
+      LAYOUT_BACKEND: docling
+      DOCLING_USE_LOCALOCR_PLUGIN: "1"
+      ENHANCE_IMAGES: "true"
+      ENHANCE_BINARIZE: "0"
+      PIXEL_GRID: "1"
+      YOLO_CONFIDENCE: "0.25"
+      YOLO_NMS: "0.40"
+      YOLO_IMGSZ: "1600"
+      TABLE_ENGINE: paddleocr
+      TABLE_DETECTION: "true"
+      IMAGE_EXTRACTION: "true"
+      # Multi-CPU / multi-user (0 or unset = auto from container CPU count)
+      MAX_CONCURRENT_JOBS: "0"
+      PAGE_WORKERS: "0"
+      MODEL_SLOTS: "0"
+      OMP_NUM_THREADS: "1"
+      TORCH_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      QUEUE_MAX_SIZE: "64"
       CORRECTION_DATA_DIR: /app/correction_data
     ports:
       - "7870:7870"
@@ -48,7 +68,26 @@ services:
       OCR_ENGINE: auto
       DISABLE_TROCR_PRELOAD: "0"
       LANGUAGES: tha+eng
-      LAYOUT_MODE: flow
+      LAYOUT_MODE: absolute
+      LAYOUT_BACKEND: docling
+      DOCLING_USE_LOCALOCR_PLUGIN: "1"
+      ENHANCE_IMAGES: "true"
+      ENHANCE_BINARIZE: "0"
+      PIXEL_GRID: "1"
+      YOLO_CONFIDENCE: "0.25"
+      YOLO_NMS: "0.40"
+      YOLO_IMGSZ: "1600"
+      TABLE_ENGINE: paddleocr
+      TABLE_DETECTION: "true"
+      IMAGE_EXTRACTION: "true"
+      MAX_CONCURRENT_JOBS: "0"
+      PAGE_WORKERS: "0"
+      MODEL_SLOTS: "0"
+      OMP_NUM_THREADS: "1"
+      TORCH_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      QUEUE_MAX_SIZE: "64"
       CORRECTION_DATA_DIR: /app/correction_data
     ports:
       - "7870:7870"
@@ -79,11 +118,30 @@ services:
       ONNX_PROVIDERS: OpenVINOExecutionProvider,CPUExecutionProvider
       SERVER_HOST: 0.0.0.0
       SERVER_PORT: "7870"
-      QUALITY_PRESET: balanced
+      QUALITY_PRESET: accurate
       OCR_ENGINE: auto
       DISABLE_TROCR_PRELOAD: "0"
       LANGUAGES: tha+eng
-      LAYOUT_MODE: flow
+      LAYOUT_MODE: absolute
+      LAYOUT_BACKEND: docling
+      DOCLING_USE_LOCALOCR_PLUGIN: "1"
+      ENHANCE_IMAGES: "true"
+      ENHANCE_BINARIZE: "0"
+      PIXEL_GRID: "1"
+      YOLO_CONFIDENCE: "0.25"
+      YOLO_NMS: "0.40"
+      YOLO_IMGSZ: "1600"
+      TABLE_ENGINE: paddleocr
+      TABLE_DETECTION: "true"
+      IMAGE_EXTRACTION: "true"
+      MAX_CONCURRENT_JOBS: "0"
+      PAGE_WORKERS: "0"
+      MODEL_SLOTS: "0"
+      OMP_NUM_THREADS: "1"
+      TORCH_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      QUEUE_MAX_SIZE: "64"
       CORRECTION_DATA_DIR: /app/correction_data
     ports:
       - "7870:7870"

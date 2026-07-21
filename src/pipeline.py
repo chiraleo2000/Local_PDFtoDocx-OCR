@@ -18,10 +18,12 @@ Security:
 import os
 import re
 import base64
+import html as html_module
 import logging
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, List, Optional, Callable, Tuple
 
 import numpy as np
 import fitz  # PyMuPDF
@@ -31,6 +33,7 @@ from .ocr_engine import OCREngine
 from .layout_detector import LayoutDetector, TableExtractor
 from .exporter import ImageExtractor, DocumentExporter
 from .correction_store import CorrectionStore
+from .runtime import PAGE_WORKERS, summary as runtime_summary
 
 logger = logging.getLogger(__name__)
 
@@ -322,15 +325,32 @@ class OCRPipeline:
     Security: PDF inputs validated, file size limited, all paths checked.
     """
 
+    # PDF base is 72 DPI. Scales map to target render DPI:
+    #   fast=360, balanced=540, accurate=720.
+    # Override any preset with env RENDER_DPI_SCALE (e.g. 10.0 → 720 DPI).
     QUALITY_MAP = {
-        "fast":     {"dpi_scale": 1.5, "quality": "fast"},
-        "balanced": {"dpi_scale": 2.0, "quality": "balanced"},
-        "accurate": {"dpi_scale": 2.5, "quality": "accurate"},
+        "fast":     {"dpi_scale": 5.0, "quality": "fast"},       # 360 DPI
+        "balanced": {"dpi_scale": 7.5, "quality": "balanced"},   # 540 DPI
+        "accurate": {"dpi_scale": 10.0, "quality": "accurate"},  # 720 DPI
     }
 
+    @classmethod
+    def _resolve_dpi_scale(cls, quality: str) -> float:
+        """Return render scale for *quality*, honouring RENDER_DPI_SCALE."""
+        cfg = cls.QUALITY_MAP.get(quality, cls.QUALITY_MAP["accurate"])
+        scale = float(cfg["dpi_scale"])
+        override = os.getenv("RENDER_DPI_SCALE", "").strip()
+        if override:
+            try:
+                scale = max(1.0, min(float(override), 20.0))
+            except ValueError:
+                pass
+        return scale
+
     def __init__(self) -> None:
-        quality = os.getenv("QUALITY_PRESET", "balanced")
+        quality = os.getenv("QUALITY_PRESET", "accurate")
         self.languages = os.getenv("LANGUAGES", _DEFAULT_LANGUAGES)
+        self.layout_mode = os.getenv("LAYOUT_MODE", "absolute").lower()
         self.preprocessor = OpenCVPreprocessor(quality=quality)
         self.ocr = OCREngine()
         self.layout = LayoutDetector()
@@ -339,14 +359,45 @@ class OCRPipeline:
         self.image_extractor = ImageExtractor()
         self.exporter = DocumentExporter()
         self.corrections = CorrectionStore()
-        logger.info("OCR Pipeline initialised (v2.0 — Thai-optimised, HTML-first, trainable)")
+        self.docling = None
+        self.layout_backend = "yolo"
+        try:
+            from .docling_backend import (
+                DoclingBackend, docling_ready, layout_backend)
+            self.layout_backend = layout_backend()
+            if docling_ready():
+                scale = self._resolve_dpi_scale(quality)
+                self.docling = DoclingBackend(
+                    ocr_engine=self.ocr,
+                    images_scale=max(1.0, scale / 2.0))
+                if self.docling.available:
+                    self.layout_backend = "docling"
+                else:
+                    self.docling = None
+                    self.layout_backend = "yolo"
+                    logger.warning(
+                        "LAYOUT_BACKEND=docling but converter failed — "
+                        "falling back to YOLO")
+            elif self.layout_backend == "docling":
+                logger.warning(
+                    "Docling not installed — falling back to YOLO layout")
+                self.layout_backend = "yolo"
+        except Exception:  # noqa: BLE001
+            logger.exception("Docling backend init failed — using YOLO")
+            self.docling = None
+            self.layout_backend = "yolo"
+        logger.info(
+            "OCR Pipeline initialised (v2.6 — layout=%s, absolute pixel "
+            "layout, Thai-TrOCR/PaddleOCR, Docling+OpenCV)",
+            self.layout_backend)
 
-    def process_pdf(self, pdf_path: str, quality: str = "balanced",
+    def process_pdf(self, pdf_path: str, quality: str = "accurate",
                     header_trim: float = 0, footer_trim: float = 0,
                     languages: Optional[str] = None,
                     yolo_confidence: Optional[float] = None,
                     page_size: str = "A4",
                     margin_preset: str = "Normal",
+                    layout_mode: Optional[str] = None,
                     progress_callback: Optional[ProgressCallback] = None,
                     ) -> Dict[str, Any]:
         """Process a PDF end-to-end.
@@ -357,6 +408,7 @@ class OCRPipeline:
             yolo_confidence: Override YOLO threshold (lower = more regions).
             page_size: Output page size (A4, Letter, Legal, A3, B5).
             margin_preset: Output margin preset (Normal, Narrow, Moderate, Wide).
+            layout_mode: ``absolute`` (pixel-grid) or ``flow``; default from env.
         """
         # ── Input validation ──
         validation_error = _validate_pdf_path(pdf_path)
@@ -370,53 +422,40 @@ class OCRPipeline:
         doc = None
         try:
             langs = languages or self.languages
-            cfg = self.QUALITY_MAP.get(quality, self.QUALITY_MAP["balanced"])
-            scale = cfg["dpi_scale"]
+            cfg = self.QUALITY_MAP.get(quality, self.QUALITY_MAP["accurate"])
+            scale = self._resolve_dpi_scale(quality)
             q = cfg["quality"]
+            mode = (layout_mode or self.layout_mode or "absolute").lower()
 
             doc = fitz.open(pdf_path)
             page_count = len(doc)
+            doc.close()
+            doc = None
+
             progress_total = page_count + 1
-            all_blocks: List[ContentBlock] = []
-            total_tables = 0
-            total_figures = 0
-
-            for page_num in range(page_count):
-                logger.info("Processing page %d/%d", page_num + 1, page_count)
-                direct_blocks = self._embedded_text_block(doc[page_num], page_num, langs)
-                if direct_blocks is not None:
-                    all_blocks.extend(direct_blocks)
-                    total_figures += sum(
-                        1 for b in direct_blocks if b.block_type == "figure")
-                    self._notify_progress(
-                        progress_callback, page_num + 1, progress_total,
-                        f"Completed page {page_num + 1}/{page_count}")
-                    continue
-
-                img = self._render_page_image(
-                    doc[page_num], scale, header_trim, footer_trim)
-                h, w = img.shape[:2]
-                preprocessed = self.preprocessor.preprocess(img, quality=q)
-
-                page_blocks, n_tables, n_figures = self._process_single_page(
-                    img, preprocessed, h, w, page_num, langs, yolo_confidence)
-
-                all_blocks.extend(page_blocks)
-                total_tables += n_tables
-                total_figures += n_figures
-                self._notify_progress(
-                    progress_callback, page_num + 1, progress_total,
-                    f"Completed page {page_num + 1}/{page_count}")
+            all_blocks, total_tables, total_figures = (
+                self._run_layout_pipeline(
+                    pdf_path, page_count, scale, q, langs,
+                    header_trim, footer_trim, yolo_confidence,
+                    progress_callback=progress_callback,
+                    progress_total=progress_total,
+                ))
 
             full_text = self._blocks_to_text(all_blocks)
 
             engines = self.ocr.get_available_engines()
             active_engines = [k for k, v in engines.items() if v]
+            rt = runtime_summary()
             meta_str = (
                 f"Pages: {page_count}\n"
                 f"Quality: {quality}\n"
+                f"Render scale: {scale:.1f}x (~{int(scale * 72)} DPI)\n"
+                f"Layout: {mode}\n"
+                f"Layout backend: {self.layout_backend}\n"
                 f"Language: {langs}\n"
                 f"OCR Engine: {', '.join(active_engines)}\n"
+                f"Parallel: {rt['page_workers']} page workers, "
+                f"{rt['max_concurrent_jobs']} concurrent jobs\n"
                 f"Tables: {total_tables}\n"
                 f"Figures: {total_figures}"
             )
@@ -425,7 +464,8 @@ class OCRPipeline:
                 "Exporting output files")
             files = self.exporter.create_all_from_blocks(
                 all_blocks, meta_str,
-                page_size=page_size, margin_preset=margin_preset)
+                page_size=page_size, margin_preset=margin_preset,
+                layout_mode=mode, render_dpi=scale * 72.0)
             self._notify_progress(
                 progress_callback, progress_total, progress_total,
                 "Exported output files")
@@ -440,6 +480,11 @@ class OCRPipeline:
                     "engines": engines,
                     "quality": quality,
                     "languages": langs,
+                    "layout_mode": mode,
+                    "layout_backend": self.layout_backend,
+                    "dpi_scale": scale,
+                    "page_workers": rt["page_workers"],
+                    "max_concurrent_jobs": rt["max_concurrent_jobs"],
                 },
                 "error": None,
             }
@@ -452,6 +497,240 @@ class OCRPipeline:
             }
         finally:
             if doc:
+                doc.close()
+
+    def _run_layout_pipeline(
+            self, pdf_path: str, page_count: int, scale: float, q: str,
+            langs: str, header_trim: float, footer_trim: float,
+            yolo_confidence: Optional[float],
+            extra_regions_by_page: Optional[Dict[int, List[Dict]]] = None,
+            progress_callback: Optional[ProgressCallback] = None,
+            progress_total: Optional[int] = None,
+            pdf_name: str = "",
+    ) -> Tuple[List[ContentBlock], int, int]:
+        """Run Docling (default) or YOLO page-parallel layout → blocks."""
+        # Docling whole-PDF path (manual extras still merged via YOLO fallback
+        # when present, or applied post-hoc below).
+        if (self.layout_backend == "docling" and self.docling
+                and self.docling.available
+                and not (extra_regions_by_page or {})):
+            self._notify_progress(
+                progress_callback, 0, progress_total or (page_count + 1),
+                "Docling layout + TableFormer")
+            try:
+                page_images: Dict[int, np.ndarray] = {}
+                doc = fitz.open(pdf_path)
+                try:
+                    for i in range(len(doc)):
+                        page_images[i] = self._render_page_image(
+                            doc[i], scale, header_trim, footer_trim)
+                        if q:
+                            page_images[i] = self.preprocessor.preprocess(
+                                page_images[i], quality=q)
+                finally:
+                    doc.close()
+                blocks, n_tables, n_figures = self.docling.convert_to_blocks(
+                    pdf_path, languages=langs, page_images=page_images)
+                self._notify_progress(
+                    progress_callback, page_count,
+                    progress_total or (page_count + 1),
+                    f"Docling done — tables={n_tables}, figures={n_figures}")
+                logger.info(
+                    "Docling convert: blocks=%d tables=%d figures=%d",
+                    len(blocks), n_tables, n_figures)
+                if blocks:
+                    return blocks, n_tables, n_figures
+                logger.warning(
+                    "Docling returned no blocks — falling back to YOLO path")
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Docling convert failed — falling back to YOLO path")
+
+        page_results = self._process_pages_parallel(
+            pdf_path, page_count, scale, q, langs,
+            header_trim, footer_trim, yolo_confidence,
+            extra_regions_by_page=extra_regions_by_page,
+            progress_callback=progress_callback,
+            progress_total=progress_total,
+            pdf_name=pdf_name,
+        )
+        all_blocks: List[ContentBlock] = []
+        total_tables = 0
+        total_figures = 0
+        for page_num in range(page_count):
+            blocks, n_tables, n_figures, err = page_results[page_num]
+            if err:
+                logger.error("Page %d failed: %s", page_num + 1, err)
+            all_blocks.extend(blocks)
+            total_tables += n_tables
+            total_figures += n_figures
+        return all_blocks, total_tables, total_figures
+
+    def _process_pages_parallel(
+            self, pdf_path: str, page_count: int, scale: float, q: str,
+            langs: str, header_trim: float, footer_trim: float,
+            yolo_confidence: Optional[float],
+            extra_regions_by_page: Optional[Dict[int, List[Dict]]] = None,
+            progress_callback: Optional[ProgressCallback] = None,
+            progress_total: Optional[int] = None,
+            pdf_name: str = "",
+    ) -> Dict[int, Tuple[List[ContentBlock], int, int, Optional[str]]]:
+        """Process PDF pages in parallel (each worker opens its own Document)."""
+        workers = max(1, min(PAGE_WORKERS, page_count))
+        progress_total = progress_total or (page_count + 1)
+        results: Dict[int, Tuple[List[ContentBlock], int, int, Optional[str]]] = {}
+        name = pdf_name or os.path.basename(pdf_path)
+
+        if workers <= 1 or page_count <= 1:
+            for page_num in range(page_count):
+                results[page_num] = self._process_page_job(
+                    pdf_path, page_num, scale, q, langs,
+                    header_trim, footer_trim, yolo_confidence,
+                    (extra_regions_by_page or {}).get(page_num, []),
+                    pdf_name=name,
+                )
+                self._notify_progress(
+                    progress_callback, page_num + 1, progress_total,
+                    f"Completed page {page_num + 1}/{page_count}")
+            return results
+
+        logger.info(
+            "Parallel page processing: %d pages · %d workers",
+            page_count, workers)
+        completed = 0
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(
+                    self._process_page_job,
+                    pdf_path, page_num, scale, q, langs,
+                    header_trim, footer_trim, yolo_confidence,
+                    (extra_regions_by_page or {}).get(page_num, []),
+                    name,
+                ): page_num
+                for page_num in range(page_count)
+            }
+            for fut in as_completed(futures):
+                page_num = futures[fut]
+                try:
+                    results[page_num] = fut.result()
+                except Exception as exc:
+                    logger.exception("Page %d worker crashed", page_num + 1)
+                    results[page_num] = ([], 0, 0, str(exc))
+                completed += 1
+                self._notify_progress(
+                    progress_callback, completed, progress_total,
+                    f"Completed {completed}/{page_count} pages")
+        return results
+
+    def _process_page_job(
+            self, pdf_path: str, page_num: int, scale: float, q: str,
+            langs: str, header_trim: float, footer_trim: float,
+            yolo_confidence: Optional[float],
+            extra_regions: Optional[List[Dict]] = None,
+            pdf_name: str = "",
+    ) -> Tuple[List[ContentBlock], int, int, Optional[str]]:
+        """Render + OCR one page. Thread-safe (own fitz.Document)."""
+        doc = None
+        try:
+            logger.info("Processing page %d", page_num + 1)
+            doc = fitz.open(pdf_path)
+            if page_num < 0 or page_num >= len(doc):
+                return [], 0, 0, "Invalid page number"
+            extras = extra_regions or []
+            # Always render + run layout/table/figure extraction. Embedded
+            # text may supply body text, but never skip structure — Review
+            # can show tables while convert used to report Tables: 0.
+            img = self._render_page_image(
+                doc[page_num], scale, header_trim, footer_trim)
+            h, w = img.shape[:2]
+            preprocessed = self.preprocessor.preprocess(img, quality=q)
+
+            direct_blocks = self._embedded_text_block(
+                doc[page_num], page_num, langs)
+            page_blocks, n_tables, n_figures = self._process_single_page(
+                img, preprocessed, h, w, page_num, langs, yolo_confidence,
+                extra_regions=extras)
+
+            if direct_blocks is not None and n_tables == 0 and n_figures == 0:
+                # Born-digital with no detected structure — keep embedded
+                # text/figures (already includes embedded images).
+                page_blocks, n_tables, n_figures = (
+                    direct_blocks,
+                    sum(1 for b in direct_blocks if b.block_type == "table"),
+                    sum(1 for b in direct_blocks if b.block_type == "figure"),
+                )
+            elif direct_blocks is not None and (n_tables > 0 or n_figures > 0):
+                # Hybrid: keep extracted tables/figures; prefer OCR/layout
+                # text only outside structure boxes so we don't lose tables.
+                struct = [b for b in page_blocks
+                          if b.block_type in ("table", "figure")]
+                struct_boxes = [b.bbox for b in struct if b.bbox]
+                text_keep = []
+                for b in direct_blocks:
+                    if b.block_type != "text" or not b.bbox:
+                        if b.block_type == "text":
+                            text_keep.append(b)
+                        continue
+                    if any(_bbox_overlap_frac(b.bbox, sb) > 0.40
+                           for sb in struct_boxes):
+                        continue
+                    text_keep.append(b)
+                # Drop OCR text that duplicates embedded text / sits in
+                # table-figure regions; keep captions from layout path.
+                ocr_extra = [
+                    b for b in page_blocks
+                    if b.block_type in ("text", "caption")
+                    and b.bbox
+                    and not any(_bbox_overlap_frac(b.bbox, sb) > 0.40
+                                for sb in struct_boxes)
+                    and not any(
+                        _DEDUP_WS_RE.sub("", b.text)
+                        == _DEDUP_WS_RE.sub("", t.text)
+                        for t in text_keep if t.text.strip())
+                ]
+                # Scale embedded PDF-point coords to render pixels when
+                # page_width differs (embedded uses PDF pts; layout uses px).
+                emb_pw = next(
+                    (b.page_width for b in direct_blocks if b.page_width), 0.0)
+                emb_ph = next(
+                    (b.page_height for b in direct_blocks if b.page_height), 0.0)
+                if emb_pw > 0 and emb_ph > 0 and abs(emb_pw - w) > 1.0:
+                    sx_e, sy_e = w / emb_pw, h / emb_ph
+                    for b in text_keep:
+                        if b.bbox and len(b.bbox) >= 4:
+                            b.bbox = [b.bbox[0] * sx_e, b.bbox[1] * sy_e,
+                                      b.bbox[2] * sx_e, b.bbox[3] * sy_e]
+                            b.y_top, b.x_left = b.bbox[1], b.bbox[0]
+                        for ln in b.lines or []:
+                            lb = ln.get("bbox")
+                            if lb and len(lb) >= 4:
+                                ln["bbox"] = [
+                                    lb[0] * sx_e, lb[1] * sy_e,
+                                    lb[2] * sx_e, lb[3] * sy_e]
+                        b.page_width, b.page_height = float(w), float(h)
+                merged = text_keep + ocr_extra + struct
+                page_blocks = _dedup_blocks(_sort_reading_order(merged, w))
+                n_tables = sum(1 for b in page_blocks if b.block_type == "table")
+                n_figures = sum(
+                    1 for b in page_blocks if b.block_type == "figure")
+
+            if extras and pdf_name:
+                for mr in extras:
+                    self.corrections.log_correction(
+                        page_image=img,
+                        bbox=mr["bbox"],
+                        region_class=mr.get("class", "figure"),
+                        page_number=page_num,
+                        pdf_name=pdf_name,
+                        action="add",
+                        source="manual",
+                    )
+            return page_blocks, n_tables, n_figures, None
+        except Exception as exc:
+            logger.exception("Page %d error", page_num + 1)
+            return [], 0, 0, str(exc)
+        finally:
+            if doc is not None:
                 doc.close()
 
     # ── Single-page processing (group-first) ─────────────────────────────────
@@ -482,12 +761,14 @@ class OCRPipeline:
         figure_dets  = self.layout.dedup_regions(figure_dets)
         caption_dets = self.layout.dedup_regions(caption_dets)
 
+        _method = (
+            "Docling" if self.layout_backend == "docling"
+            else ("YOLO" if self.layout.model_loaded else "OpenCV"))
         logger.info(
             "Detected: page %d — text=%d, tables=%d, figures=%d, captions=%d"
             " (method=%s)",
             page_num + 1, len(text_regions), len(table_dets),
-            len(figure_dets), len(caption_dets),
-            "YOLO" if self.layout.model_loaded else "OpenCV",
+            len(figure_dets), len(caption_dets), _method,
         )
 
         # ── Step 1b: Merge manual corrections ────────────────────────
@@ -730,7 +1011,7 @@ class OCRPipeline:
 
     # ── Embedded image / vector-logo extraction (v2.3) ───────────────────────
 
-    _EMBED_RENDER_SCALE = 3.0       # render embedded figures at 3× for quality
+    _EMBED_RENDER_SCALE = 10.0      # embedded figures match accurate (720 DPI)
     _EMBED_MIN_SIDE_PT = 12.0       # smallest figure side (PDF points)
     _EMBED_MIN_AREA_PT = 900.0      # smallest figure area (PDF points²)
     _MAX_VECTOR_PRIMITIVES = 500    # skip vector clustering on huge art pages
@@ -906,16 +1187,36 @@ class OCRPipeline:
         for t in self.table_extractor.extract_tables(
                 img, table_dets, languages=languages):
             bbox = t.get("bbox", [0, 0, 0, 0])
+            html = t.get("html", "") or ""
+            text = t.get("text", "") or ""
+            if not html and text.strip():
+                # Rebuild a minimal HTML table so absolute export does not
+                # silently drop structured content.
+                rows = [r for r in text.split("\n") if r.strip()]
+                cells = [[c for c in r.split("\t")] for r in rows] or [[text]]
+                html = "<table>" + "".join(
+                    "<tr>" + "".join(
+                        f"<td>{html_module.escape(c)}</td>" for c in row)
+                    + "</tr>" for row in cells) + "</table>"
+            if not html and not text.strip():
+                logger.warning(
+                    "Page %d: table detection produced empty extraction "
+                    "at bbox=%s — skipping count", page_num + 1, bbox)
+                continue
             out.append(ContentBlock(
                 block_type="table", page=page_num,
                 y_top=float(bbox[1]), x_left=float(bbox[0]),
-                text=t.get("text", ""),
-                table_html=t.get("html", ""),
+                text=text,
+                table_html=html,
                 bbox=[float(v) for v in bbox],
                 page_width=float(iw), page_height=float(ih),
                 table_meta={"col_widths": t.get("col_widths", [])},
             ))
             count += 1
+        if table_dets and count == 0:
+            logger.warning(
+                "Page %d: %d table region(s) detected but none extracted",
+                page_num + 1, len(table_dets))
         return count
 
     def _extract_figure_blocks(self, img, figure_dets, page_num, out) -> int:
@@ -1050,7 +1351,7 @@ class OCRPipeline:
     # ══════════════════════════════════════════════════════════════════════════
 
     def detect_page_regions(self, pdf_path: str, page_num: int,
-                            quality: str = "balanced",
+                            quality: str = "accurate",
                             yolo_confidence: Optional[float] = None,
                             ) -> Dict[str, Any]:
         """Detect layout on a single page and return regions + rendered image.
@@ -1063,22 +1364,35 @@ class OCRPipeline:
 
         doc = None
         try:
-            cfg = self.QUALITY_MAP.get(quality, self.QUALITY_MAP["balanced"])
-            scale = cfg["dpi_scale"]
+            scale = self._resolve_dpi_scale(quality)
             doc = fitz.open(pdf_path)
             if page_num < 0 or page_num >= len(doc):
                 return {"success": False, "error": "Invalid page number"}
             img = self._render_page_image(doc[page_num], scale, 0, 0)
 
-            layout_result = self.layout.detect_layout(
-                img, page_num, confidence=yolo_confidence)
-            detections = layout_result.get("detections", {})
+            detections = None
+            method = "YOLO" if self.layout.model_loaded else "OpenCV"
+            if (self.layout_backend == "docling" and self.docling
+                    and self.docling.available):
+                try:
+                    detections = self.docling.detect_page(
+                        pdf_path, page_num, page_img=img)
+                    method = "Docling"
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "Docling detect_page failed — using YOLO")
+                    detections = None
+            if detections is None:
+                layout_result = self.layout.detect_layout(
+                    img, page_num, confidence=yolo_confidence)
+                detections = layout_result.get("detections", {})
 
             return {
                 "success": True,
                 "page_image": img,
                 "detections": detections,
                 "image_shape": list(img.shape),
+                "layout_backend": method.lower(),
             }
         except (OSError, RuntimeError, ValueError) as exc:
             logger.exception("detect_page_regions error")
@@ -1109,12 +1423,13 @@ class OCRPipeline:
     def process_pdf_with_corrections(
             self, pdf_path: str,
             manual_regions: Optional[Dict[int, List[Dict]]] = None,
-            quality: str = "balanced",
+            quality: str = "accurate",
             header_trim: float = 0, footer_trim: float = 0,
             languages: Optional[str] = None,
             yolo_confidence: Optional[float] = None,
             page_size: str = "A4",
             margin_preset: str = "Normal",
+            layout_mode: Optional[str] = None,
             progress_callback: Optional[ProgressCallback] = None,
     ) -> Dict[str, Any]:
         """Process PDF with optional manual region corrections.
@@ -1123,6 +1438,7 @@ class OCRPipeline:
             manual_regions: ``{page_num: [{"bbox": [x0,y0,x1,y1], "class": "table"|"figure"}, ...]}``
             page_size: Output page size (A4, Letter, Legal, A3, B5).
             margin_preset: Output margin preset (Normal, Narrow, Moderate, Wide).
+            layout_mode: ``absolute`` (pixel-grid) or ``flow``; default from env.
         """
         # ── Input validation ──
         validation_error = _validate_pdf_path(pdf_path)
@@ -1136,83 +1452,42 @@ class OCRPipeline:
         doc = None
         try:
             langs = languages or self.languages
-            cfg = self.QUALITY_MAP.get(quality, self.QUALITY_MAP["balanced"])
-            scale = cfg["dpi_scale"]
+            cfg = self.QUALITY_MAP.get(quality, self.QUALITY_MAP["accurate"])
+            scale = self._resolve_dpi_scale(quality)
             q = cfg["quality"]
+            mode = (layout_mode or self.layout_mode or "absolute").lower()
 
             doc = fitz.open(pdf_path)
             page_count = len(doc)
+            doc.close()
+            doc = None
+
             progress_total = page_count + 1
-            all_blocks: List[ContentBlock] = []
-            total_tables = 0
-            total_figures = 0
             pdf_name = os.path.basename(pdf_path)
-
-            for page_num in range(page_count):
-                logger.info("Processing page %d/%d", page_num + 1, page_count)
-                extra = (manual_regions or {}).get(page_num, [])
-                direct_blocks = self._embedded_text_block(doc[page_num], page_num, langs)
-                if direct_blocks is not None:
-                    all_blocks.extend(direct_blocks)
-                    total_figures += sum(
-                        1 for b in direct_blocks if b.block_type == "figure")
-                    page_rect = doc[page_num].rect
-                    correction_image = np.ones(
-                        (max(1, int(page_rect.height)),
-                         max(1, int(page_rect.width)), 3),
-                        dtype=np.uint8) * 255
-                    for mr in extra:
-                        self.corrections.log_correction(
-                            page_image=correction_image,
-                            bbox=mr["bbox"],
-                            region_class=mr.get("class", "figure"),
-                            page_number=page_num,
-                            pdf_name=pdf_name,
-                            action="add",
-                            source="manual",
-                        )
-                    self._notify_progress(
-                        progress_callback, page_num + 1, progress_total,
-                        f"Completed page {page_num + 1}/{page_count}")
-                    continue
-
-                img = self._render_page_image(
-                    doc[page_num], scale, header_trim, footer_trim)
-                h, w = img.shape[:2]
-                preprocessed = self.preprocessor.preprocess(img, quality=q)
-
-                # Merge manual regions into detection
-                page_blocks, n_tables, n_figures = self._process_single_page(
-                    img, preprocessed, h, w, page_num, langs,
-                    yolo_confidence, extra_regions=extra)
-
-                # Log manual corrections to the store
-                for mr in extra:
-                    self.corrections.log_correction(
-                        page_image=img,
-                        bbox=mr["bbox"],
-                        region_class=mr.get("class", "figure"),
-                        page_number=page_num,
-                        pdf_name=pdf_name,
-                        action="add",
-                        source="manual",
-                    )
-
-                all_blocks.extend(page_blocks)
-                total_tables += n_tables
-                total_figures += n_figures
-                self._notify_progress(
-                    progress_callback, page_num + 1, progress_total,
-                    f"Completed page {page_num + 1}/{page_count}")
+            all_blocks, total_tables, total_figures = (
+                self._run_layout_pipeline(
+                    pdf_path, page_count, scale, q, langs,
+                    header_trim, footer_trim, yolo_confidence,
+                    extra_regions_by_page=manual_regions or {},
+                    progress_callback=progress_callback,
+                    progress_total=progress_total,
+                    pdf_name=pdf_name,
+                ))
 
             full_text = self._blocks_to_text(all_blocks)
             engines = self.ocr.get_available_engines()
             active_engines = [k for k, v in engines.items() if v]
+            rt = runtime_summary()
             meta_str = (
                 f"Pages: {page_count}\n"
                 f"Quality: {quality}\n"
+                f"Render scale: {scale:.1f}x (~{int(scale * 72)} DPI)\n"
+                f"Layout: {mode}\n"
+                f"Layout backend: {self.layout_backend}\n"
                 f"Language: {langs}\n"
                 f"OCR Engine: {', '.join(active_engines)}\n"
+                f"Parallel: {rt['page_workers']} page workers, "
+                f"{rt['max_concurrent_jobs']} concurrent jobs\n"
                 f"Tables: {total_tables}\n"
                 f"Figures: {total_figures}"
             )
@@ -1221,7 +1496,8 @@ class OCRPipeline:
                 "Exporting output files")
             files = self.exporter.create_all_from_blocks(
                 all_blocks, meta_str,
-                page_size=page_size, margin_preset=margin_preset)
+                page_size=page_size, margin_preset=margin_preset,
+                layout_mode=mode, render_dpi=scale * 72.0)
             self._notify_progress(
                 progress_callback, progress_total, progress_total,
                 "Exported output files")
@@ -1236,6 +1512,11 @@ class OCRPipeline:
                     "engines": engines,
                     "quality": quality,
                     "languages": langs,
+                    "layout_mode": mode,
+                    "layout_backend": self.layout_backend,
+                    "dpi_scale": scale,
+                    "page_workers": rt["page_workers"],
+                    "max_concurrent_jobs": rt["max_concurrent_jobs"],
                     "manual_corrections": sum(
                         len(v) for v in (manual_regions or {}).values()),
                 },
@@ -1262,4 +1543,5 @@ class OCRPipeline:
             "table_extraction": self.table_extractor.enabled,
             "image_extraction": self.image_extractor.enabled,
             "corrections": correction_stats,
+            "runtime": runtime_summary(),
         }

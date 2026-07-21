@@ -61,6 +61,11 @@ def test_absolute_docx(blocks):
     # Text placed in page-anchored frames at exact coordinates
     assert "framePr" in xml
     assert 'vAnchor="page"' in xml
+    # Per-line pixel grid: each OCR line gets its own Y (not stacked)
+    ys = [el.get(qn("w:y")) for el in doc.element.iter(qn("w:framePr"))
+          if el.get(qn("w:y")) is not None]
+    assert len(ys) >= 2
+    assert len(set(ys)) >= 2, f"expected distinct line Y positions, got {ys}"
 
     # Table is a real editable Word table, absolutely positioned
     assert "tblpPr" in xml

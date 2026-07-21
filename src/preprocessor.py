@@ -1,11 +1,17 @@
 """
-OpenCV Pre-processing Pipeline — v1.0
-Deskew, denoise, binarise, CLAHE contrast, morphological ops.
+OpenCV Pre-processing Pipeline — v1.1
+Deskew, denoise, CLAHE contrast, upscale, sharpen.
 
-Quality presets: fast (denoise only), balanced (+ deskew, CLAHE),
-accurate (+ binarise, morphology).
+Quality presets:
+  fast     — denoise + light CLAHE
+  balanced — denoise, deskew, CLAHE, upscale, sharpen
+  accurate — above + stronger enhance (OCR-friendly; optional binarise)
+
+Neural OCR (Thai-TrOCR / PaddleOCR) prefers grayscale contrast enhancement
+over hard binarisation. Set ENHANCE_BINARIZE=1 to restore adaptive threshold.
 """
 import logging
+import os
 from typing import List, Optional
 
 import cv2
@@ -17,7 +23,7 @@ logger = logging.getLogger(__name__)
 class OpenCVPreprocessor:
     """Full OpenCV pre-processing pipeline for page images before OCR."""
 
-    def __init__(self, quality: str = "balanced") -> None:
+    def __init__(self, quality: str = "accurate") -> None:
         self.quality = quality
         logger.info("OpenCV Preprocessor — quality=%s", quality)
 
@@ -42,13 +48,50 @@ class OpenCVPreprocessor:
         return result
 
     @staticmethod
+    def enhance_figure(image: np.ndarray) -> np.ndarray:
+        """Enhance a cropped figure/logo for clearer DOCX/HTML embedding.
+
+        Soft denoise + CLAHE + mild unsharp — keeps colour when present.
+        """
+        if image is None or image.size == 0:
+            return image
+        try:
+            colour = len(image.shape) == 3 and image.shape[2] >= 3
+            if colour:
+                lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+                l_ch, a_ch, b_ch = cv2.split(lab)
+                l_ch = cv2.fastNlMeansDenoising(l_ch, None, 6, 5, 15)
+                clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+                l_ch = clahe.apply(l_ch)
+                blur = cv2.GaussianBlur(l_ch, (0, 0), 0.8)
+                l_ch = cv2.addWeighted(l_ch, 1.35, blur, -0.35, 0)
+                merged = cv2.merge([l_ch, a_ch, b_ch])
+                return cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)
+            gray = image if len(image.shape) == 2 else cv2.cvtColor(
+                image, cv2.COLOR_BGR2GRAY)
+            gray = cv2.fastNlMeansDenoising(gray, None, 6, 5, 15)
+            clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+            gray = clahe.apply(gray)
+            blur = cv2.GaussianBlur(gray, (0, 0), 0.8)
+            return cv2.addWeighted(gray, 1.35, blur, -0.35, 0)
+        except (cv2.error, ValueError, RuntimeError) as exc:
+            logger.warning("Figure enhance failed: %s", type(exc).__name__)
+            return image
+
+    @staticmethod
     def _steps_for_quality(q: str) -> List[str]:
+        binarize = os.getenv("ENHANCE_BINARIZE", "0").strip().lower() in (
+            "1", "true", "yes", "on")
         if q == "fast":
-            return ["denoise"]
-        elif q == "accurate":
-            return ["denoise", "deskew", "clahe", "upscale", "sharpen",
-                    "binarise", "morphology"]
-        return ["denoise", "deskew", "clahe", "upscale"]
+            return ["denoise", "clahe"]
+        if q == "accurate":
+            steps = ["denoise", "deskew", "clahe", "upscale", "sharpen",
+                     "enhance"]
+            if binarize:
+                steps.extend(["binarise", "morphology"])
+            return steps
+        # balanced
+        return ["denoise", "deskew", "clahe", "upscale", "sharpen"]
 
     # ── Individual steps ──
 
@@ -90,14 +133,14 @@ class OpenCVPreprocessor:
     @staticmethod
     def _step_clahe(img: np.ndarray) -> np.ndarray:
         gray = img if len(img.shape) == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
         return clahe.apply(gray)
 
     # Small renders make Thai tone/vowel marks only 1-2 px tall, which
     # both Thai-TrOCR and PaddleOCR misread. Upscale low-resolution pages
     # so the shortest side reaches a workable size before recognition.
-    _UPSCALE_MIN_SHORT_SIDE = 1500
-    _UPSCALE_MAX_FACTOR = 2.0
+    _UPSCALE_MIN_SHORT_SIDE = 2200
+    _UPSCALE_MAX_FACTOR = 2.5
 
     @classmethod
     def _step_upscale(cls, img: np.ndarray) -> np.ndarray:
@@ -115,8 +158,20 @@ class OpenCVPreprocessor:
     @staticmethod
     def _step_sharpen(img: np.ndarray) -> np.ndarray:
         """Unsharp mask — crisper glyph edges after denoise/upscale."""
-        blur = cv2.GaussianBlur(img, (0, 0), 1.0)
-        return cv2.addWeighted(img, 1.5, blur, -0.5, 0)
+        blur = cv2.GaussianBlur(img, (0, 0), 0.9)
+        return cv2.addWeighted(img, 1.45, blur, -0.45, 0)
+
+    @staticmethod
+    def _step_enhance(img: np.ndarray) -> np.ndarray:
+        """Accurate-mode boost: gentle gamma + local contrast for faint ink."""
+        gray = img if len(img.shape) == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        # Mild gamma stretch toward mid-tones (helps washed scans)
+        table = np.array(
+            [((i / 255.0) ** 0.90) * 255 for i in range(256)],
+            dtype=np.uint8)
+        stretched = cv2.LUT(gray, table)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4))
+        return clahe.apply(stretched)
 
     @staticmethod
     def _step_binarise(img: np.ndarray) -> np.ndarray:

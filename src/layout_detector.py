@@ -20,6 +20,7 @@ import os
 import html
 import importlib
 import logging
+import threading
 from typing import Dict, List, Any, Optional, Tuple
 
 import numpy as np
@@ -107,12 +108,15 @@ class LayoutDetector:
     TEXT_CLASSES = {"title", _PLAIN_TEXT}
 
     def __init__(self, model_path: Optional[str] = None,
-                 confidence_threshold: float = 0.30,
-                 iou_threshold: float = 0.45) -> None:
+                 confidence_threshold: float = 0.25,
+                 iou_threshold: float = 0.40) -> None:
         self.confidence = float(os.getenv("YOLO_CONFIDENCE", str(confidence_threshold)))
         self.iou = float(os.getenv("YOLO_NMS", str(iou_threshold)))
+        # Higher imgsz helps small Thai regions on high-DPI page renders
+        self.imgsz = int(os.getenv("YOLO_IMGSZ", "1600"))
         self.model = None
         self.model_loaded = False
+        self._predict_lock = threading.Lock()
 
         if YOLO_AVAILABLE:
             self._try_load_model(model_path)
@@ -209,8 +213,14 @@ class LayoutDetector:
             tmp = os.path.join(tempfile.gettempdir(), f"yolo_{uuid.uuid4().hex}.png")
             try:
                 cv2.imwrite(tmp, image)
-                results = self.model.predict(tmp, imgsz=1280,
-                                             conf=conf, iou=self.iou)
+                # Cap imgsz by the longer page side so we don't waste
+                # compute on already-smaller renders, but never go below 1280.
+                long_side = max(image.shape[:2]) if image is not None else 1600
+                imgsz = max(1280, min(self.imgsz, int(long_side)))
+                # One YOLO predict at a time (shared weights are not thread-safe)
+                with self._predict_lock:
+                    results = self.model.predict(
+                        tmp, imgsz=imgsz, conf=conf, iou=self.iou)
             finally:
                 try:
                     os.remove(tmp)
@@ -567,7 +577,7 @@ class TableExtractor:
 
     def __init__(self):
         self.use_gpu = os.getenv("USE_GPU", "true").lower() == "true"
-        self.engine = os.getenv("TABLE_ENGINE", "opencv").lower()
+        self.engine = os.getenv("TABLE_ENGINE", "paddleocr").lower()
         self._pp_structure = None
         self.enabled = os.getenv("TABLE_DETECTION", "true").lower() == "true"
         self._ocr_engine = None  # Will be set by pipeline

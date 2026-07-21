@@ -41,7 +41,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     IMAGE_EXTRACTION=true \
     IMAGE_MIN_AREA=4000 \
     QUALITY_PRESET=accurate \
-    LAYOUT_MODE=flow \
+    LAYOUT_MODE=absolute \
+    ENHANCE_IMAGES=true \
+    ENHANCE_BINARIZE=0 \
+    PIXEL_GRID=1 \
+    YOLO_IMGSZ=1600 \
     MAX_PDF_SIZE_MB=200 \
     HISTORY_RETENTION_DAYS=30 \
     CORRECTION_DATA_DIR=/app/correction_data \
@@ -68,6 +72,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fi
 
 COPY requirements.txt ./
+COPY pyproject.toml ./
 RUN python -m pip install -r requirements.txt dill && \
     if [ "$ACCELERATOR" = "npu" ]; then \
         python -m pip uninstall -y onnxruntime && \
@@ -95,14 +100,25 @@ COPY app.py run_e2e_test.py ./
 COPY .env.example ./.env.example
 COPY models/ ./models/
 COPY tests/fixtures/ ./tests/fixtures/
+RUN python -m pip install -e .
 
 # ── Bake ALL models into the image (container works offline) ──
-#   1. DocLayout-YOLO  (layout detection)
-#   2. Thai-TrOCR      (Thai recognition — strict-policy primary for Thai)
-#   3. PaddleOCR       (non-Thai recognition)
+#   1. Docling layout + TableFormer
+#   2. DocLayout-YOLO  (layout rollback)
+#   3. Thai-TrOCR      (Thai recognition — strict-policy primary for Thai)
+#   4. PaddleOCR       (non-Thai recognition)
+ENV LAYOUT_BACKEND=docling \
+    DOCLING_USE_LOCALOCR_PLUGIN=1
 RUN mkdir -p /app/home && python - <<'PY'
 from pathlib import Path
 import shutil
+
+# Docling layout + TableFormer warm-up
+try:
+    from src.docling_backend import warm_docling_models
+    warm_docling_models()
+except Exception as exc:
+    print('Docling warm-up skipped:', exc)
 
 model_dir = Path('/app/models/DocLayout-YOLO-DocStructBench')
 model_dir.mkdir(parents=True, exist_ok=True)

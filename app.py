@@ -17,19 +17,34 @@ Security:
 """
 import os
 
-_CPU_WORKERS = max(1, min(os.cpu_count() or 1, 8))
-os.environ.setdefault("OMP_NUM_THREADS", "1")
-os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
-os.environ.setdefault("MKL_NUM_THREADS", str(_CPU_WORKERS))
-os.environ.setdefault("NUMEXPR_NUM_THREADS", str(_CPU_WORKERS))
 os.environ.setdefault("USE_GPU", "false")
 os.environ.setdefault("ACCELERATOR", "cpu")
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
 os.environ.setdefault("DISABLE_TROCR_PRELOAD", "0")
 os.environ.setdefault("OCR_ENGINE", "auto")
 os.environ.setdefault("QUALITY_PRESET", "accurate")
+os.environ.setdefault("LAYOUT_MODE", "absolute")
+os.environ.setdefault("ENHANCE_IMAGES", "true")
+os.environ.setdefault("ENHANCE_BINARIZE", "0")
+os.environ.setdefault("YOLO_CONFIDENCE", "0.25")
+os.environ.setdefault("YOLO_NMS", "0.40")
+os.environ.setdefault("YOLO_IMGSZ", "1600")
+os.environ.setdefault("TABLE_ENGINE", "paddleocr")
 os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+
+from dotenv import load_dotenv
+load_dotenv()
+
+# Configure multi-CPU / multi-user runtime before heavy native libs bind threads
+from src.runtime import (  # noqa: E402
+    MAX_CONCURRENT_JOBS,
+    PAGE_WORKERS,
+    QUEUE_MAX_SIZE,
+    configure_native_threads,
+    summary as runtime_summary,
+)
+configure_native_threads()
 
 import json
 import logging
@@ -37,9 +52,6 @@ import logging
 import cv2
 import numpy as np
 import fitz
-
-from dotenv import load_dotenv
-load_dotenv()
 
 _DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 
@@ -94,8 +106,8 @@ SIMPLE_LANGUAGE_OPTIONS = {
 
 QUALITY_OPTIONS = {
     "Standard (Fast)": "fast",
-    _DEFAULT_QUALITY: "balanced",
-    "Best (Accurate)": "accurate",
+    "Balanced": "balanced",
+    _DEFAULT_QUALITY: "accurate",
 }
 
 LANGUAGE_OPTIONS = {
@@ -267,8 +279,6 @@ def process_document(pdf_file, quality_label, header_pct, footer_pct,
     page_size = page_size_label or "A4"
     margin_preset = MARGIN_OPTIONS.get(margin_label, "Normal")
 
-    pipeline.ocr.primary_engine = "auto"
-
     result = pipeline.process_pdf(
         pdf_path, quality=quality,
         header_trim=header_pct, footer_trim=footer_pct,
@@ -427,7 +437,6 @@ def review_convert_with_corrections(pdf_file, quality_label, header_pct, footer_
                  or LANGUAGE_OPTIONS.get(language_label, _DEFAULT_LANGUAGE_CODE))
     page_size = page_size_label or "A4"
     margin_preset = MARGIN_OPTIONS.get(margin_label, "Normal")
-    pipeline.ocr.primary_engine = "auto"
 
     # Build manual_regions dict: {page_num: [{"bbox": ..., "class": ...}]}
     mr_dict: dict = {}
@@ -864,7 +873,11 @@ def create_interface():
         )
 
         convert_btn.click(
-            fn=lambda: "**Processing...** Using Thai-TrOCR + PaddleOCR.",
+            fn=lambda: (
+                f"**Processing...** Thai-TrOCR + PaddleOCR · "
+                f"up to {MAX_CONCURRENT_JOBS} parallel users · "
+                f"{PAGE_WORKERS} page workers"
+            ),
             outputs=[status_md],
         ).then(
             fn=process_document,
@@ -872,6 +885,8 @@ def create_interface():
                     language_dd, page_size_dd, margin_dd],
             outputs=[text_output, status_md, dl_txt, dl_docx,
                      download_section, history_table],
+            concurrency_limit=MAX_CONCURRENT_JOBS,
+            concurrency_id="ocr_jobs",
         )
 
         # ══════════════════════════════════════════════════════════════
@@ -937,7 +952,11 @@ def create_interface():
         )
 
         rv_convert_btn.click(
-            fn=lambda: "**Processing with corrections...**",
+            fn=lambda: (
+                f"**Processing with corrections...** "
+                f"({MAX_CONCURRENT_JOBS} parallel users · "
+                f"{PAGE_WORKERS} page workers)"
+            ),
             outputs=[rv_status_md],
         ).then(
             fn=review_convert_with_corrections,
@@ -946,6 +965,8 @@ def create_interface():
                     rv_manual_regions, rv_page_size_dd, rv_margin_dd],
             outputs=[rv_text_output, rv_status_md, rv_dl_txt, rv_dl_docx,
                      rv_download_section, history_table],
+            concurrency_limit=MAX_CONCURRENT_JOBS,
+            concurrency_id="ocr_jobs",
         )
 
         # ══════════════════════════════════════════════════════════════
@@ -972,9 +993,21 @@ def main():
     port = int(os.getenv("SERVER_PORT", "7870"))
     host = os.getenv("SERVER_HOST", "127.0.0.1")
     share = os.getenv("SHARE_GRADIO", "false").lower() == "true"
-    app.queue()
-    app.launch(server_name=host, server_port=port, share=share,
-               show_error=_DEBUG_MODE, theme=theme)
+    rt = runtime_summary()
+    logger.info("Launching with runtime: %s", rt)
+    app.queue(
+        default_concurrency_limit=MAX_CONCURRENT_JOBS,
+        max_size=QUEUE_MAX_SIZE,
+    )
+    max_threads = max(40, MAX_CONCURRENT_JOBS * PAGE_WORKERS + 16)
+    app.launch(
+        server_name=host,
+        server_port=port,
+        share=share,
+        show_error=_DEBUG_MODE,
+        theme=theme,
+        max_threads=max_threads,
+    )
 
 
 if __name__ == "__main__":
