@@ -56,6 +56,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
         fontconfig \
         fonts-noto-core \
+        fonts-noto-extra \
         fonts-noto-cjk \
         libgl1 \
         libglib2.0-0 \
@@ -79,9 +80,12 @@ RUN python -m pip install -r requirements.txt dill && \
         python -m pip install onnxruntime-openvino openvino; \
     fi && \
     if [ "$ACCELERATOR" = "cuda" ] || [ "$ACCELERATOR" = "gpu" ]; then \
+        # Keep CPU onnxruntime for RapidOCR. Docling layout/TableFormer use
+        # PyTorch CUDA (cu121 wheels). onnxruntime-gpu needs host CUDA toolkit
+        # libs (e.g. libcudart.so.13) that are not in python:slim images.
         printf '%s\n' \
           'export USE_GPU=${USE_GPU:-true}' \
-          'export ONNX_PROVIDERS=${ONNX_PROVIDERS:-CUDAExecutionProvider,CPUExecutionProvider}' \
+          'export ONNX_PROVIDERS=${ONNX_PROVIDERS:-CPUExecutionProvider}' \
           > /etc/profile.d/localocr-accelerator.sh; \
     elif [ "$ACCELERATOR" = "npu" ]; then \
         printf '%s\n' \
@@ -100,6 +104,7 @@ COPY app.py run_e2e_test.py ./
 COPY .env.example ./.env.example
 COPY models/ ./models/
 COPY tests/fixtures/ ./tests/fixtures/
+COPY tests/Expected-output-testocr-demon.docx ./tests/Expected-output-testocr-demon.docx
 RUN python -m pip install -e .
 
 # ── Bake ALL models into the image (container works offline) ──
@@ -108,7 +113,7 @@ RUN python -m pip install -e .
 #   3. Thai-TrOCR      (Thai recognition — strict-policy primary for Thai)
 #   4. PaddleOCR       (non-Thai recognition)
 ENV LAYOUT_BACKEND=docling \
-    DOCLING_USE_LOCALOCR_PLUGIN=1
+    DOCLING_USE_LOCALOCR_PLUGIN=0
 RUN mkdir -p /app/home && python - <<'PY'
 from pathlib import Path
 import shutil

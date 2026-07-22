@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ══════════════════════════════════════════════════════════════════════════════
-#  LocalOCR — Installer for Linux & macOS  (v0.5.0)
+#  LocalOCR — Installer for Linux & macOS  (v0.5.5)
 #
 #  Usage:
 #    bash install.sh                # Interactive install
@@ -24,7 +24,7 @@ header()  { echo -e "\n${BOLD}${CYAN}══  $*  ${RESET}"; }
 # ── Banner ────────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}${CYAN}╔══════════════════════════════════════════════════════╗${RESET}"
-echo -e "${BOLD}${CYAN}║   LocalOCR v0.5.0        |  Linux & macOS             ║${RESET}"
+echo -e "${BOLD}${CYAN}║   LocalOCR v0.5.5        |  Linux & macOS             ║${RESET}"
 echo -e "${BOLD}${CYAN}╚══════════════════════════════════════════════════════╝${RESET}"
 echo ""
 

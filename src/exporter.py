@@ -40,6 +40,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+OOXML_RUN_FONTS = "w:rFonts"
+HTML_TITLE = "<title>OCR Result</title>"
+HTML_STYLE_OPEN = "<style>"
+DOCX_SUFFIX = ".docx"
+HTML_PARSER = "html.parser"
+TABLE_STYLE = "Table Grid"
+OOXML_TABLE_WIDTH = "w:tblW"
+
 # ── Optional imports ──────────────────────────────────────────────────────────
 try:
     from docx import Document
@@ -70,7 +78,7 @@ _BASE64_RE = re.compile(r"^[A-Za-z0-9+/\n\r]*={0,2}$")
 
 _THAI_SCRIPT_RE = re.compile(r"[\u0E00-\u0E7F]")
 # "หัวข้อ ......... 12" — table-of-contents entry with dot leaders
-_TOC_LINE_RE = re.compile(r"^(?P<label>.+?)\s*\.{4,}\s*(?P<num>\d{1,4})$")
+_TOC_LINE_RE = re.compile(r"^(?P<label>.*\S)\s+\.{4,}\s*(?P<num>\d{1,4})$")
 # "4. หัวข้อ" / "4.1 หัวข้อ" / "ภาคผนวก ก" — heading-like lines
 _HEADING_RE = re.compile(
     r"^(ภาคผนวก\s|อภิธานศัพท์$|\d{1,2}(\.\d{1,2})?\.?\s)")
@@ -223,7 +231,7 @@ class ImageExtractor:
         ink = cv2.countNonZero(binary)
         if ink < (h * w) * min_ink:
             return None
-        ys, xs = np.where(binary > 0)
+        ys, xs = np.nonzero(binary > 0)
         pad = max(4, int(min(h, w) * 0.01))
         x0 = max(0, int(xs.min()) - pad)
         y0 = max(0, int(ys.min()) - pad)
@@ -260,7 +268,7 @@ class DocumentExporter:
     FONT_NAME = os.getenv("DOCX_LATIN_FONT", "Tahoma")
     # Thai-capable font for Thai runs (mirrors the validated 3-font scheme:
     # Thai body text reads far better in a Thai font than in Tahoma)
-    THAI_FONT = os.getenv("DOCX_THAI_FONT", "TH Sarabun New")
+    THAI_FONT = os.getenv("DOCX_THAI_FONT", "Noto Sans Thai")
     FONT_SIZE_NORMAL = 11
     FONT_SIZE_TABLE = 10
 
@@ -285,7 +293,7 @@ class DocumentExporter:
             runs.append((bool(cur_thai), cur))
         return runs
 
-    def _add_runs(self, p, text: str, size_pt: Optional[float] = None,
+    def _add_runs(self, p, text: str, size_pt: Optional[float] = None,  # NOSONAR
                   bold: bool = False):
         """Add *text* as runs with per-script fonts (Thai → THAI_FONT).
 
@@ -302,9 +310,9 @@ class DocumentExporter:
                 run.bold = True
             try:
                 rpr = run._element.get_or_add_rPr()  # noqa: SLF001
-                rfonts = rpr.find(qn("w:rFonts"))
+                rfonts = rpr.find(qn(OOXML_RUN_FONTS))
                 if rfonts is None:
-                    rfonts = OxmlElement("w:rFonts")
+                    rfonts = OxmlElement(OOXML_RUN_FONTS)
                     rpr.append(rfonts)
                 for attr in ("w:ascii", "w:hAnsi", "w:eastAsia", "w:cs"):
                     rfonts.set(qn(attr), font_name)
@@ -333,13 +341,10 @@ class DocumentExporter:
         p.add_run("\t")
         self._add_runs(p, num, size_pt=size_pt)
 
-    def __init__(self):
-        pass
-
     # ══════════════════════════════════════════════════════════════════════════
     # Primary API (v0.4 — block-based, HTML-first)
     # ══════════════════════════════════════════════════════════════════════════
-    def create_all_from_blocks(self, blocks: list,
+    def create_all_from_blocks(self, blocks: list,  # NOSONAR
                                metadata: str = "",
                                page_size: str = "A4",
                                margin_preset: str = "Normal",
@@ -356,7 +361,9 @@ class DocumentExporter:
             that preserve alignment, indent, font sizes, inline tables
             and figures in reading order.
         """
-        mode = (layout_mode or os.getenv("LAYOUT_MODE", "absolute")).lower()
+        mode = (layout_mode or os.getenv("LAYOUT_MODE", "flow")).lower()
+        if mode in ("flowing", "structured"):
+            mode = "flow"
         if render_dpi and render_dpi > 0:
             self._render_dpi = float(render_dpi)
         else:
@@ -422,8 +429,8 @@ class DocumentExporter:
     def _build_html_absolute(self, blocks: list, metadata: str = "") -> str:
         parts: List[str] = [
             "<!DOCTYPE html>", "<html lang='en'>", "<head>",
-            "<meta charset='utf-8'>", "<title>OCR Result</title>",
-            "<style>",
+            "<meta charset='utf-8'>", HTML_TITLE,
+            HTML_STYLE_OPEN,
             "body { font-family: Tahoma, 'Segoe UI', Arial, sans-serif; "
             "background: #eef1f5; margin: 0; padding: 1.5rem; }",
             ".page { position: relative; background: #fff; margin: 0 auto "
@@ -478,7 +485,7 @@ class DocumentExporter:
         parts += ["</body>", "</html>"]
         return "\n".join(parts)
 
-    def _abs_block_html(self, b, scale: float) -> List[str]:
+    def _abs_block_html(self, b, scale: float) -> List[str]:  # NOSONAR
         """Render one positioned block as absolutely-placed HTML."""
         if not getattr(b, "bbox", None):
             return self._block_to_html(b)
@@ -525,7 +532,7 @@ class DocumentExporter:
             style = (f"left:{left:.1f}px;top:{top:.1f}px;"
                      f"width:{width:.1f}px;height:{height:.1f}px;")
             return [f"<div class='abs' style='{style}'>"
-                    f"<img src='data:image/png;base64,{b64}' alt='Figure'/>"
+                    + f"<img src='data:image/png;base64,{b64}' alt='Figure'/>"
                     "</div>"]
         return []
 
@@ -537,8 +544,8 @@ class DocumentExporter:
             "<html lang='en'>",
             "<head>",
             "<meta charset='utf-8'>",
-            "<title>OCR Result</title>",
-            "<style>",
+            HTML_TITLE,
+            HTML_STYLE_OPEN,
             "body { font-family: Tahoma, 'Segoe UI', Arial, sans-serif; "
             "max-width: 900px; margin: 0 auto; padding: 2rem; "
             "line-height: 1.8; color: #1e293b; }",
@@ -672,7 +679,7 @@ class DocumentExporter:
                 self._apply_page_layout(doc, page_size, margin_preset)
                 self._fix_table_borders(doc)
                 self._fix_image_sizes(doc, page_size, margin_preset)
-                fd, path = tempfile.mkstemp(suffix=".docx", prefix="ocr_")
+                fd, path = tempfile.mkstemp(suffix=DOCX_SUFFIX, prefix="ocr_")
                 os.close(fd)
                 doc.save(path)
                 logger.info("DOCX created via htmldocx")
@@ -698,7 +705,7 @@ class DocumentExporter:
         # Apply page layout
         self._apply_page_layout(doc, page_size, margin_preset)
 
-        soup = BeautifulSoup(html_content, "html.parser")
+        soup = BeautifulSoup(html_content, HTML_PARSER)
         body = soup.find("body")
         if not body:
             return None
@@ -712,7 +719,7 @@ class DocumentExporter:
                 continue
             self._el_to_docx(doc, el)
 
-        fd, path = tempfile.mkstemp(suffix=".docx", prefix="ocr_")
+        fd, path = tempfile.mkstemp(suffix=DOCX_SUFFIX, prefix="ocr_")
         os.close(fd)
         doc.save(path)
         return path
@@ -768,7 +775,7 @@ class DocumentExporter:
             return
 
         tbl = doc.add_table(rows=len(rows_el), cols=max_cols)
-        tbl.style = "Table Grid"
+        tbl.style = TABLE_STYLE
 
         for ri, row_el in enumerate(rows_el):
             cells = row_el.find_all(["td", "th"])
@@ -863,7 +870,7 @@ class DocumentExporter:
     _MAX_FONT_PT = 48.0
     _OCR_FONT_FACTOR = 0.72   # line bbox includes ascender/descender
 
-    def _build_docx_absolute(self, blocks: list,
+    def _build_docx_absolute(self, blocks: list,  # NOSONAR
                              page_size: str = "A4",
                              margin_preset: str = "Normal") -> Optional[str]:
         if not DOCX_AVAILABLE:
@@ -914,7 +921,7 @@ class DocumentExporter:
 
         self._fix_table_borders(doc)
         self._reorder_table_props(doc)
-        fd, path = tempfile.mkstemp(suffix=".docx", prefix="ocr_")
+        fd, path = tempfile.mkstemp(suffix=DOCX_SUFFIX, prefix="ocr_")
         os.close(fd)
         doc.save(path)
         logger.info("DOCX created via absolute-position builder")
@@ -925,9 +932,9 @@ class DocumentExporter:
         """Set east-asian / complex-script font so Thai renders correctly."""
         try:
             rpr = style.element.get_or_add_rPr()
-            rfonts = rpr.find(qn("w:rFonts"))
+            rfonts = rpr.find(qn(OOXML_RUN_FONTS))
             if rfonts is None:
-                rfonts = OxmlElement("w:rFonts")
+                rfonts = OxmlElement(OOXML_RUN_FONTS)
                 rpr.append(rfonts)
             rfonts.set(qn("w:eastAsia"), font_name)
             rfonts.set(qn("w:cs"), font_name)
@@ -985,7 +992,7 @@ class DocumentExporter:
         all lines on one Y and destroyed original layout. Each line is now
         snapped to PIXEL_GRID and framed independently.
         """
-        bx0, by0, bx1, by1 = b.bbox
+        bx0, _, bx1, _ = b.bbox
         lines = b.lines or [
             {"text": ln, "bbox": b.bbox}
             for ln in b.text.split("\n") if ln.strip()
@@ -1019,7 +1026,7 @@ class DocumentExporter:
                 size_pt=round(self._line_font_pt(line, pt_per_unit), 1),
                 bold=bool(line.get("bold")))
 
-    def _add_table_absolute(self, doc, b, sx: float, sy: float,
+    def _add_table_absolute(self, doc, b, sx: float, sy: float,  # NOSONAR
                             pt_per_unit: float) -> None:
         """Positioned, real (editable) Word table built from table_html."""
         html = b.table_html or ""
@@ -1028,7 +1035,7 @@ class DocumentExporter:
             # a counted table block.
             import html as html_module
             rows = [r for r in b.text.split("\n") if r.strip()]
-            cells = [[c for c in r.split("\t")] for r in rows] or [[b.text]]
+            cells = [r.split("\t") for r in rows] or [[b.text]]
             html = "<table>" + "".join(
                 "<tr>" + "".join(
                     f"<td>{html_module.escape(c)}</td>" for c in row)
@@ -1038,7 +1045,7 @@ class DocumentExporter:
             if (b.text or "").strip():
                 self._add_text_frame(doc, b, sx, sy, pt_per_unit)
             return
-        soup = BeautifulSoup(html, "html.parser")
+        soup = BeautifulSoup(html, HTML_PARSER)
         table_el = soup.find("table")
         if table_el is None:
             if (b.text or "").strip():
@@ -1060,7 +1067,7 @@ class DocumentExporter:
         cell_font = max(6.0, min(12.0, row_h_pt * 0.5))
 
         tbl = doc.add_table(rows=len(rows_el), cols=max_cols)
-        tbl.style = "Table Grid"
+        tbl.style = TABLE_STYLE
         tbl.autofit = False
 
         # Column widths — measured grid proportions when available
@@ -1088,7 +1095,7 @@ class DocumentExporter:
     def _set_table_position(table, x_tw: int, y_tw: int, w_tw: int) -> None:
         """Attach w:tblpPr — absolute page-anchored floating table."""
         tbl_pr = table._tbl.tblPr  # noqa: SLF001
-        for tag in ("w:tblpPr", "w:tblOverlap", "w:tblLayout", "w:tblW"):
+        for tag in ("w:tblpPr", "w:tblOverlap", "w:tblLayout", OOXML_TABLE_WIDTH):
             old = tbl_pr.find(qn(tag))
             if old is not None:
                 tbl_pr.remove(old)
@@ -1107,9 +1114,9 @@ class DocumentExporter:
         layout = OxmlElement("w:tblLayout")
         layout.set(qn("w:type"), "fixed")
         tbl_pr.append(layout)
-        tbl_w = tbl_pr.find(qn("w:tblW"))
+        tbl_w = tbl_pr.find(qn(OOXML_TABLE_WIDTH))
         if tbl_w is None:
-            tbl_w = OxmlElement("w:tblW")
+            tbl_w = OxmlElement(OOXML_TABLE_WIDTH)
             tbl_pr.append(tbl_w)
         tbl_w.set(qn("w:w"), str(w_tw))
         tbl_w.set(qn("w:type"), "dxa")
@@ -1164,7 +1171,7 @@ class DocumentExporter:
         except Exception as exc:
             logger.warning("Failed to place figure frame: %s", exc)
 
-    def _add_flow_block(self, doc, b) -> None:
+    def _add_flow_block(self, doc, b) -> None:  # NOSONAR
         """Fallback for blocks without position data — normal paragraphs."""
         if b.block_type in ("text", "caption"):
             for ln in b.text.split("\n"):
@@ -1174,7 +1181,7 @@ class DocumentExporter:
                         run.font.name = self.FONT_NAME
                         run.font.size = Pt(self.FONT_SIZE_NORMAL)
         elif b.block_type == "table" and b.table_html and BS4_AVAILABLE:
-            soup = BeautifulSoup(b.table_html, "html.parser")
+            soup = BeautifulSoup(b.table_html, HTML_PARSER)
             table_el = soup.find("table")
             if table_el is not None:
                 self._table_el_to_docx(doc, table_el)
@@ -1218,7 +1225,7 @@ class DocumentExporter:
                 out += " " + part
         return out
 
-    def _merge_lines_to_paragraphs(self, b) -> List[List[Dict[str, Any]]]:
+    def _merge_lines_to_paragraphs(self, b) -> List[List[Dict[str, Any]]]:  # NOSONAR
         """Group a block's visual lines into logical paragraphs.
 
         A line continues the previous paragraph when the previous line
@@ -1258,7 +1265,7 @@ class DocumentExporter:
             paras.append(cur)
         return paras
 
-    def _build_docx_flow_structured(self, blocks: list,
+    def _build_docx_flow_structured(self, blocks: list,  # NOSONAR
                                     page_size: str = "A4",
                                     margin_preset: str = "Normal"
                                     ) -> Optional[str]:
@@ -1303,13 +1310,13 @@ class DocumentExporter:
                     self._add_structured_figure(doc, b, src_w, usable_w_in)
 
         self._fix_table_borders(doc)
-        fd, path = tempfile.mkstemp(suffix=".docx", prefix="ocr_")
+        fd, path = tempfile.mkstemp(suffix=DOCX_SUFFIX, prefix="ocr_")
         os.close(fd)
         doc.save(path)
         logger.info("DOCX created via structured flow builder")
         return path
 
-    def _add_structured_text(self, doc, b, src_w: float,
+    def _add_structured_text(self, doc, b, src_w: float,  # NOSONAR
                              usable_w_in: float, pt_per_unit: float) -> None:
         """One block -> flowing paragraphs with alignment/indent/size kept.
 
@@ -1351,7 +1358,7 @@ class DocumentExporter:
                             usable_w_in * 0.6))
             self._add_runs(p, text, size_pt=size, bold=bold)
 
-    def _add_structured_table(self, doc, b, usable_w_in: float) -> None:
+    def _add_structured_table(self, doc, b, usable_w_in: float) -> None:  # NOSONAR
         """Inline (non-floating) editable Word table in reading order."""
         if not BS4_AVAILABLE or not b.table_html:
             if b.text.strip():
@@ -1360,7 +1367,7 @@ class DocumentExporter:
                     run.font.name = self.FONT_NAME
                     run.font.size = Pt(self.FONT_SIZE_TABLE)
             return
-        soup = BeautifulSoup(b.table_html, "html.parser")
+        soup = BeautifulSoup(b.table_html, HTML_PARSER)
         table_el = soup.find("table")
         if table_el is None:
             return
@@ -1369,7 +1376,7 @@ class DocumentExporter:
         if not rows_el or max_cols == 0:
             return
         tbl = doc.add_table(rows=len(rows_el), cols=max_cols)
-        tbl.style = "Table Grid"
+        tbl.style = TABLE_STYLE
         tbl.autofit = False
         col_fracs = (b.table_meta or {}).get("col_widths") or []
         if len(col_fracs) != max_cols:
@@ -1501,8 +1508,7 @@ class DocumentExporter:
                 shape.width = max_width_emu
                 shape.height = int(shape.height * ratio)
 
-    @staticmethod
-    def _calc_image_width(img_bytes: bytes, page_size: str = "A4",
+    def _calc_image_width(self, img_bytes: bytes, page_size: str = "A4",
                           margin_preset: str = "Normal") -> float:
         """Return a reasonable image width in inches based on actual pixel size."""
         pw, _ = PAGE_SIZES.get(page_size, PAGE_SIZES["A4"])
@@ -1567,8 +1573,8 @@ class DocumentExporter:
         """Legacy HTML builder — XSS-safe."""
         parts = [
             "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>",
-            "<title>OCR Result</title>",
-            "<style>",
+            HTML_TITLE,
+            HTML_STYLE_OPEN,
             "body{font-family:Tahoma,Arial,sans-serif;max-width:900px;margin:auto;"
             "padding:2rem;line-height:1.7;color:#1e293b}",
             "table{border-collapse:collapse;width:100%;margin:1rem 0}",

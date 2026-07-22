@@ -947,15 +947,15 @@ class OCRApp(tk.Tk):
             return cb
 
         self._cb_quality = _add_combo(
-            "Quality:", list(QUALITY_OPTIONS.keys()), 2)  # Best (Accurate)
+            "Quality:", list(QUALITY_OPTIONS.keys()), 0)  # Standard (Fast)
         self._cb_language = _add_combo(
-            "Language:", list(LANGUAGE_OPTIONS.keys()), 2)
+            "Language:", list(LANGUAGE_OPTIONS.keys()), 2)  # Thai + English
         self._cb_engine = _add_combo(
             "OCR Engine:", list(ENGINE_OPTIONS.keys()), 0)
         self._cb_page_size = _add_combo(
-            "Page Size:", PAGE_SIZE_OPTIONS, 0)
+            "Page Size:", PAGE_SIZE_OPTIONS, 0)  # A4
         self._cb_margin = _add_combo(
-            "Margins:", list(MARGIN_OPTIONS.keys()), 0)
+            "Margins:", list(MARGIN_OPTIONS.keys()), 2)  # Moderate
 
         # YOLO confidence
         ttk.Label(settings_lf, text="Detection Conf:",
@@ -1605,7 +1605,7 @@ class OCRApp(tk.Tk):
                 self._cb_engine.get(), "auto")
             page_size = self._cb_page_size.get() or "A4"
             margin_preset = MARGIN_OPTIONS.get(
-                self._cb_margin.get(), "Normal")
+                self._cb_margin.get(), "Moderate")
             yolo_conf = self._var_yolo.get()
             header_pct = self._var_header.get()
             footer_pct = self._var_footer.get()
@@ -1657,6 +1657,7 @@ class OCRApp(tk.Tk):
                     yolo_confidence=yolo_conf,
                     page_size=page_size,
                     margin_preset=margin_preset,
+                    layout_mode=os.getenv("LAYOUT_MODE", "flow"),
                 )
             finally:
                 _pipe_logger.removeHandler(_handler)

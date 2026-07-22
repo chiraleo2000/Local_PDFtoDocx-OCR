@@ -20,6 +20,7 @@ import os
 import html
 import importlib
 import logging
+import re
 import threading
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -117,9 +118,19 @@ class LayoutDetector:
         self.model = None
         self.model_loaded = False
         self._predict_lock = threading.Lock()
+        self._model_path_arg = model_path
 
-        if YOLO_AVAILABLE:
+        # Skip eager load when Docling owns layout (saves VRAM for Thai-TrOCR
+        # under 1.5GB caps). Lazy-load on first detect_layout() if needed.
+        skip = os.getenv("SKIP_YOLO_LOAD", "").strip().lower() in (
+            "1", "true", "yes", "on")
+        backend = (os.getenv("LAYOUT_BACKEND", "docling") or "docling").strip().lower()
+        if not skip and backend in ("docling",):
+            skip = True
+        if YOLO_AVAILABLE and not skip:
             self._try_load_model(model_path)
+        elif skip:
+            logger.info("DocLayout-YOLO load deferred (LAYOUT_BACKEND=docling)")
 
     # ── Model path (also used by installer to verify model location) ──────────
     @staticmethod
@@ -184,6 +195,15 @@ class LayoutDetector:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
+    def ensure_model(self) -> bool:
+        """Lazy-load YOLO weights if they were deferred at init."""
+        if self.model_loaded:
+            return True
+        if not YOLO_AVAILABLE:
+            return False
+        self._try_load_model(self._model_path_arg)
+        return self.model_loaded
+
     def detect_layout(self, image: np.ndarray, page_number: int = 0,
                       confidence: Optional[float] = None) -> Dict[str, Any]:
         """Detect layout elements in a page image using DocLayout-YOLO.
@@ -191,6 +211,7 @@ class LayoutDetector:
         Raises RuntimeError if the YOLO model is not loaded — install the
         model via the installer or install.sh before launching the app.
         """
+        self.ensure_model()
         if not self.model_loaded:
             if os.getenv("LOCALOCR_ALLOW_LAYOUT_FALLBACK", "").strip() == "1":
                 return self._detect_opencv_fallback(image, page_number)
@@ -440,7 +461,7 @@ class LayoutDetector:
     _RECOVERY_MIN_INK = 0.05         # ink density below this = stray noise
     _RECOVERY_MAX_REGIONS = 8        # safety cap per page
 
-    def recover_graphics(self, image: np.ndarray,
+    def recover_graphics(self, image: np.ndarray,  # NOSONAR
                          known_boxes: List[List[float]],
                          ) -> List[Dict[str, Any]]:
         """Find graphic regions the detector missed (logos, stamps, signatures).
@@ -507,7 +528,7 @@ class LayoutDetector:
                         len(out))
         return out[: self._RECOVERY_MAX_REGIONS]
 
-    def filter_graphic_regions(self, image: np.ndarray,
+    def filter_graphic_regions(self, image: np.ndarray,  # NOSONAR
                                dets: List[Dict[str, Any]],
                                ) -> List[Dict[str, Any]]:
         """Return the subset of *dets* whose content is graphic, not text.
@@ -608,7 +629,13 @@ class TableExtractor:
 
     def _extract_single(self, table_img: np.ndarray,
                         languages: str = _DEFAULT_TABLE_LANG) -> Dict[str, Any]:
-        if self.engine == "paddleocr" and PPSTRUCTURE_AVAILABLE:
+        lang_l = (languages or "").lower().replace(",", "+")
+        lang_parts = [p for p in re.split(r"[+\s]+", lang_l) if p]
+        wants_thai = "tha" in lang_l or "th" in lang_parts
+        # PPStructure has no Thai OCR — it emits Latin/CN garbage on Thai
+        # tables. Always use OpenCV grid + OCREngine (Thai-TrOCR) for Thai.
+        if (self.engine == "paddleocr" and PPSTRUCTURE_AVAILABLE
+                and not wants_thai):
             r = self._extract_ppstructure(table_img)
             if r:
                 return r

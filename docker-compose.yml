@@ -5,8 +5,8 @@ services:
       dockerfile: Dockerfile
       args:
         ACCELERATOR: cpu
-    image: localocr:0.5.2-cpu
-    container_name: localocr-cpu-0.5.2
+    image: localocr:0.5.5-cpu
+    container_name: localocr-cpu-0.5.5
     restart: unless-stopped
     environment:
       ACCELERATOR: cpu
@@ -14,31 +14,37 @@ services:
       ONNX_PROVIDERS: CPUExecutionProvider
       SERVER_HOST: 0.0.0.0
       SERVER_PORT: "7870"
-      QUALITY_PRESET: accurate
+      # Match UI defaults: Standard Fast + flowing DOCX + Thai
+      QUALITY_PRESET: fast
       OCR_ENGINE: auto
       DISABLE_TROCR_PRELOAD: "0"
       LANGUAGES: tha+eng
-      LAYOUT_MODE: absolute
+      LAYOUT_MODE: flow
       LAYOUT_BACKEND: docling
-      DOCLING_USE_LOCALOCR_PLUGIN: "1"
+      DOCLING_USE_LOCALOCR_PLUGIN: "0"
+      DOCLING_REOCR: "1"
+      DOCLING_SPARSE_RECOVERY: text
+      DOCLING_TABLE_MODE: fast
+      DOCLING_IMAGES_SCALE: "1.5"
       ENHANCE_IMAGES: "true"
       ENHANCE_BINARIZE: "0"
       PIXEL_GRID: "1"
       YOLO_CONFIDENCE: "0.25"
       YOLO_NMS: "0.40"
-      YOLO_IMGSZ: "1600"
-      TABLE_ENGINE: paddleocr
+      YOLO_IMGSZ: "1280"
+      # opencv + Thai-TrOCR for Thai tables (PPStructure has no Thai)
+      TABLE_ENGINE: opencv
       TABLE_DETECTION: "true"
       IMAGE_EXTRACTION: "true"
-      # Multi-CPU / multi-user (0 or unset = auto from container CPU count)
-      MAX_CONCURRENT_JOBS: "0"
-      PAGE_WORKERS: "0"
-      MODEL_SLOTS: "0"
+      DOCX_THAI_FONT: "Noto Sans Thai"
+      MAX_CONCURRENT_JOBS: "2"
+      PAGE_WORKERS: "2"
+      MODEL_SLOTS: "2"
       OMP_NUM_THREADS: "1"
       TORCH_NUM_THREADS: "1"
       OPENBLAS_NUM_THREADS: "1"
       MKL_NUM_THREADS: "1"
-      QUEUE_MAX_SIZE: "64"
+      QUEUE_MAX_SIZE: "32"
       CORRECTION_DATA_DIR: /app/correction_data
     ports:
       - "7870:7870"
@@ -53,53 +59,84 @@ services:
       dockerfile: Dockerfile
       args:
         ACCELERATOR: cuda
-    image: localocr:cuda
-    container_name: localocr-gpu
+    image: localocr:0.5.5-cuda
+    container_name: localocr-gpu-0.5.5
     restart: unless-stopped
     environment:
       ACCELERATOR: cuda
       USE_GPU: "true"
-      ONNX_PROVIDERS: CUDAExecutionProvider,CPUExecutionProvider
-      NVIDIA_VISIBLE_DEVICES: all
+      # CPU ORT — onnxruntime-gpu needs libcudart not in slim image
+      ONNX_PROVIDERS: CPUExecutionProvider
+      NVIDIA_VISIBLE_DEVICES: "0"
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      # Cap PyTorch CUDA for Docling layout/TableFormer at ~1.5 GiB
+      MAX_VRAM_MB: "1536"
+      PYTORCH_CUDA_ALLOC_CONF: "max_split_size_mb:64,expandable_segments:True"
+      CUDA_DEVICE: "0"
+      # Docling on GPU; Thai-TrOCR on CPU (sharing 1.5GB makes TrOCR garbage)
+      TROCR_DEVICE: cpu
+      DOCLING_DEVICE: cuda
+      SKIP_YOLO_LOAD: "1"
       SERVER_HOST: 0.0.0.0
       SERVER_PORT: "7870"
-      QUALITY_PRESET: accurate
+      # Fast path: ~10s/page budget under 1.5GB VRAM
+      SPEED_MODE: "1"
+      TARGET_SEC_PER_PAGE: "10"
+      SPEED_BAND_OCR: "1"
+      SPEED_OCR_BANDS: "2"
+      SPEED_BAND_SCALE: "4.0"
+      THAI_FAST_MIN_SCALE: "6.0"
+      QUALITY_PRESET: fast
       OCR_ENGINE: auto
       DISABLE_TROCR_PRELOAD: "0"
       LANGUAGES: tha+eng
-      LAYOUT_MODE: absolute
+      LAYOUT_MODE: flow
       LAYOUT_BACKEND: docling
-      DOCLING_USE_LOCALOCR_PLUGIN: "1"
+      DOCLING_USE_LOCALOCR_PLUGIN: "0"
+      DOCLING_REOCR: "1"
+      # off under SPEED_MODE (YOLO recovery exceeds 10s/page); use always for quality
+      DOCLING_SPARSE_RECOVERY: "0"
+      DOCLING_FULLPAGE_SUPPLEMENT: "0"
+      # Keep Docling OCR ON for text *region detection* (RapidOCR text is
+      # discarded; Thai-TrOCR re-reads). Off collapses list lines to "3)" only.
+      DOCLING_DO_OCR: "1"
+      DOCLING_TABLE_MODE: fast
+      DOCLING_IMAGES_SCALE: "1.5"
+      DOCLING_NUM_THREADS: "2"
+      DOCLING_WARMUP: "1"
+      SKIP_PADDLE_PRELOAD: "1"
       ENHANCE_IMAGES: "true"
       ENHANCE_BINARIZE: "0"
       PIXEL_GRID: "1"
-      YOLO_CONFIDENCE: "0.25"
+      YOLO_CONFIDENCE: "0.30"
       YOLO_NMS: "0.40"
-      YOLO_IMGSZ: "1600"
-      TABLE_ENGINE: paddleocr
+      YOLO_IMGSZ: "960"
+      TABLE_ENGINE: opencv
       TABLE_DETECTION: "true"
       IMAGE_EXTRACTION: "true"
-      MAX_CONCURRENT_JOBS: "0"
-      PAGE_WORKERS: "0"
-      MODEL_SLOTS: "0"
+      DOCX_THAI_FONT: "Noto Sans Thai"
+      # Serialize GPU work so 1.5 GB VRAM is enough
+      MAX_CONCURRENT_JOBS: "1"
+      PAGE_WORKERS: "1"
+      MODEL_SLOTS: "1"
       OMP_NUM_THREADS: "1"
       TORCH_NUM_THREADS: "1"
       OPENBLAS_NUM_THREADS: "1"
       MKL_NUM_THREADS: "1"
-      QUEUE_MAX_SIZE: "64"
+      QUEUE_MAX_SIZE: "16"
       CORRECTION_DATA_DIR: /app/correction_data
     ports:
       - "7870:7870"
     volumes:
       - localocr_correction_data:/app/correction_data
       - localocr_history:/tmp/pdf_ocr_history
+    gpus: "all"
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              count: 1
               capabilities: [gpu]
 
   localocr-npu:
@@ -131,9 +168,11 @@ services:
       YOLO_CONFIDENCE: "0.25"
       YOLO_NMS: "0.40"
       YOLO_IMGSZ: "1600"
-      TABLE_ENGINE: paddleocr
+      TABLE_ENGINE: opencv
       TABLE_DETECTION: "true"
       IMAGE_EXTRACTION: "true"
+      DOCX_THAI_FONT: "Noto Sans Thai"
+      DOCLING_REOCR: "1"
       MAX_CONCURRENT_JOBS: "0"
       PAGE_WORKERS: "0"
       MODEL_SLOTS: "0"

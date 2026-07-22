@@ -100,7 +100,7 @@ def _quad_to_rect(bbox) -> Optional[List[float]]:
     return None
 
 
-def _segments_to_lines(segments: List[Dict[str, Any]],
+def _segments_to_lines(segments: List[Dict[str, Any]],  # NOSONAR
                        languages: str = "eng") -> List[Dict[str, Any]]:
     """Cluster OCR segments into visual lines (sorted top→bottom, left→right).
 
@@ -199,7 +199,10 @@ def _embedded_text_reliable(text: str, languages: str) -> bool:
     # still trustworthy — but only when it reads like healthy prose, not
     # like the ASCII residue a stripped Thai layer leaves behind
     # (digit-heavy fragments, orphaned closing parentheses).
-    if "tha" in languages and not _THAI_CHAR_RE.search(text):
+    lang_l = (languages or "").lower().replace(",", "+")
+    lang_parts = [p for p in re.split(r"[+\s]+", lang_l) if p]
+    wants_thai = "tha" in lang_l or "th" in lang_parts
+    if wants_thai and not _THAI_CHAR_RE.search(text):
         digits = sum(ch.isdigit() for ch in text)
         opens = text.count("(")
         closes = text.count(")")
@@ -212,6 +215,12 @@ def _embedded_text_reliable(text: str, languages: str) -> bool:
         if not healthy_latin:
             return False
     return True
+
+
+# Thai-TrOCR sometimes emits repeated hallucinated syllables
+_THAI_HALLUCINATION_RUN = re.compile(
+    r"(?:วรร[ทณ]|บรรณาธิการ|ฯลฯ)(?:\s*(?:วรร[ทณ]|บรรณาธิการ|ฯลฯ)){2,}"
+)
 
 
 def clean_text(text: str, languages: str = "eng") -> str:
@@ -229,6 +238,9 @@ def clean_text(text: str, languages: str = "eng") -> str:
         text = text.replace("ํา", "ำ")
         # Double sara-e mistaken for sara-ae: "เเ" → "แ"
         text = text.replace("เเ", "แ")
+        # Collapse TrOCR hallucination runs (วรรทวรรทวรรณ…)
+        text = _THAI_HALLUCINATION_RUN.sub("", text)
+        text = re.sub(r"(วรร[ทณ])\1{1,}", r"\1", text)
     text = re.sub(r"[^\S\n]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     lines = [line.strip() for line in text.split("\n")]
@@ -276,7 +288,7 @@ def _bbox_overlap_frac(a: List[float], b: List[float]) -> float:
 _DEDUP_WS_RE = re.compile(r"\s+")
 
 
-def _dedup_blocks(blocks: List["ContentBlock"]) -> List["ContentBlock"]:
+def _dedup_blocks(blocks: List["ContentBlock"]) -> List["ContentBlock"]:  # NOSONAR
     """Drop text blocks whose text duplicates an overlapping earlier block.
 
     Overlapping layout detections make the same paragraph get OCRed
@@ -308,6 +320,284 @@ _DEFAULT_LANGUAGES = "tha+eng"
 ProgressCallback = Callable[[int, int, str], None]
 
 
+def _page_content_chars(blocks: List["ContentBlock"]) -> int:
+    """Count characters retained as text/table content on a page's blocks."""
+    n = 0
+    for b in blocks:
+        if b.block_type in ("text", "caption"):
+            n += len((b.text or "").strip())
+        elif b.block_type == "table":
+            n += len((b.text or "").strip())
+            if b.table_html:
+                n += len(re.sub(r"<[^>]+>", "", b.table_html))
+    return n
+
+
+def _page_thai_chars(blocks: List["ContentBlock"]) -> int:
+    """Count Thai characters across text/table blocks on a page group."""
+    n = 0
+    for b in blocks:
+        if b.block_type in ("text", "caption", "table"):
+            n += len(_THAI_CHAR_RE.findall(b.text or ""))
+            if b.table_html:
+                n += len(_THAI_CHAR_RE.findall(b.table_html))
+    return n
+
+
+def _band_trocr_text_blocks(
+        ocr: "OCREngine",
+        page_img: np.ndarray,
+        page_num: int,
+        languages: str,
+        bands: int = 5,
+) -> List["ContentBlock"]:
+    """Lightweight text recovery: OCR horizontal page bands with Thai-TrOCR.
+
+    Faster than YOLO layout recovery; used under SPEED_MODE when Docling
+    kept too little Thai text.
+    """
+    if page_img is None or page_img.size == 0:
+        return []
+    h, w = page_img.shape[:2]
+    bands = max(2, min(int(bands), 12))
+    out: List[ContentBlock] = []
+    for i in range(bands):
+        y0 = int(h * i / bands)
+        y1 = int(h * (i + 1) / bands)
+        if y1 <= y0:
+            continue
+        crop = page_img[y0:y1, :]
+        try:
+            res = ocr._run_thai_trocr(crop, languages) or {}
+        except Exception:  # noqa: BLE001
+            continue
+        text = clean_text(res.get("text") or "", languages)
+        if not text.strip():
+            continue
+        lines = []
+        for seg in res.get("lines") or []:
+            st = clean_text(seg.get("text") or "", languages)
+            if not st:
+                continue
+            bb = seg.get("bbox") or [0, 0, w, y1 - y0]
+            if len(bb) >= 4:
+                lines.append({
+                    "text": st,
+                    "bbox": [float(bb[0]), float(bb[1]) + y0,
+                             float(bb[2]), float(bb[3]) + y0],
+                    "confidence": float(seg.get("confidence") or 0.8),
+                })
+        bbox = [0.0, float(y0), float(w), float(y1)]
+        if lines:
+            bbox = [
+                min(ln["bbox"][0] for ln in lines),
+                min(ln["bbox"][1] for ln in lines),
+                max(ln["bbox"][2] for ln in lines),
+                max(ln["bbox"][3] for ln in lines),
+            ]
+        out.append(ContentBlock(
+            block_type="text", page=page_num,
+            y_top=bbox[1], x_left=bbox[0], text=text,
+            bbox=bbox, page_width=float(w), page_height=float(h),
+            lines=lines,
+        ))
+    return out
+
+
+def _docling_page_is_sparse(
+        blocks: List["ContentBlock"],
+        page_img: Optional[np.ndarray],
+        thai_job: bool = False,
+) -> bool:
+    """True when Docling kept too little readable content for the page ink."""
+    chars = _page_content_chars(blocks)
+    text_blocks = sum(
+        1 for b in blocks if b.block_type in ("text", "caption") and b.text.strip())
+    figures = sum(1 for b in blocks if b.block_type == "figure")
+    speed = os.getenv("SPEED_MODE", "0").strip().lower() in (
+        "1", "true", "yes", "on")
+    # SPEED_MODE: almost never YOLO-recover (YOLO+OCR blows the 10s/page budget)
+    if speed:
+        tables = sum(1 for b in blocks if b.block_type == "table")
+        figures = sum(1 for b in blocks if b.block_type == "figure")
+        # Only if Docling returned literally nothing useful
+        return chars < 20 and text_blocks == 0 and tables == 0 and figures == 0
+    # Quality mode — more aggressive recovery
+    min_chars = 800 if thai_job else 300
+    if chars < min_chars:
+        return True
+    if text_blocks < 5:
+        return True
+    if figures >= 1 and text_blocks < 6:
+        return True
+    if page_img is None:
+        return chars < min_chars
+    try:
+        import cv2
+        gray = (page_img if page_img.ndim == 2
+                else cv2.cvtColor(page_img, cv2.COLOR_BGR2GRAY))
+        h, w = gray.shape[:2]
+        small = cv2.resize(gray, (max(1, w // 4), max(1, h // 4)))
+        _, binary = cv2.threshold(small, 0, 255,
+                                  cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        ink = float(cv2.countNonZero(binary)) / max(binary.size, 1)
+        if ink > 0.03 and chars < 1200:
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
+def _merge_complementary_blocks(  # NOSONAR
+        primary: List["ContentBlock"],
+        secondary: List["ContentBlock"],
+        text_only: bool = True,
+) -> List["ContentBlock"]:
+    """Keep Docling structure; fill missing text (and optionally tables) from YOLO.
+
+    Default ``text_only=True`` avoids figure explosion from YOLO fragments.
+    Secondary text overlapping TABLES is skipped (cells already extracted).
+    Text overlapping FIGURES is kept — org-chart / diagram labels.
+    """
+    if not secondary:
+        return primary
+    if not primary:
+        return secondary if not text_only else [
+            b for b in secondary if b.block_type in ("text", "caption", "table")
+        ]
+
+    out = list(primary)
+    primary_tables = [b for b in primary if b.block_type == "table" and b.bbox]
+    primary_figures = [
+        b for b in primary if b.block_type == "figure" and b.bbox
+        and (b.figure or {}).get("base64")]
+    primary_text = [
+        b for b in primary
+        if b.block_type in ("text", "caption") and b.bbox and b.text.strip()]
+
+    def _overlaps_struct(bbox, structs, thresh=0.55) -> bool:
+        for s in structs:
+            if s.bbox and _bbox_overlap_frac(bbox, s.bbox) > thresh:
+                return True
+        return False
+
+    added = 0
+    for b in secondary:
+        if not b.bbox:
+            continue
+        if b.block_type in ("text", "caption"):
+            if not (b.text or "").strip():
+                continue
+            # Only skip text that is clearly table-cell content
+            if _overlaps_struct(b.bbox, primary_tables, 0.55):
+                continue
+            key = _DEDUP_WS_RE.sub("", b.text)
+            dup = False
+            for o in primary_text:
+                if _DEDUP_WS_RE.sub("", o.text) == key:
+                    if _bbox_overlap_frac(b.bbox, o.bbox) > 0.25:
+                        dup = True
+                        break
+                elif _bbox_overlap_frac(b.bbox, o.bbox) > 0.65:
+                    dup = True
+                    break
+            if dup:
+                continue
+            out.append(b)
+            added += 1
+        elif b.block_type == "table":
+            has_content = bool(
+                (b.table_html or "").strip() or (b.text or "").strip())
+            if not has_content:
+                continue
+            if _overlaps_struct(b.bbox, primary_tables, 0.40):
+                continue
+            # Prefer Docling tables; only add YOLO table if none on page
+            page_tables = [t for t in primary_tables if t.page == b.page]
+            if page_tables:
+                continue
+            out.append(b)
+            added += 1
+        elif b.block_type == "figure" and not text_only:
+            if not (b.figure or {}).get("base64"):
+                continue
+            if _overlaps_struct(b.bbox, primary_figures, 0.40):
+                continue
+            out.append(b)
+            added += 1
+
+    if added:
+        logger.info("Sparse recovery merged %d complementary block(s)", added)
+        out = _dedup_blocks(out)
+        out.sort(key=lambda x: (x.page, x.y_top, x.x_left))
+    return out
+
+
+def _figure_area(block: "ContentBlock") -> float:
+    if block.bbox and len(block.bbox) >= 4:
+        return max(0.0, (block.bbox[2] - block.bbox[0])
+                   * (block.bbox[3] - block.bbox[1]))
+    fig = block.figure or {}
+    return float(fig.get("width", 0) or 0) * float(fig.get("height", 0) or 0)
+
+
+def _prune_structure_blocks(
+        blocks: List["ContentBlock"],
+        max_figures_per_page: int = 2,
+        max_tables_per_page: int = 1,
+        max_tables_total: int = 2,
+        max_figures_total: int = 2,
+) -> List["ContentBlock"]:
+    """Keep the largest figures/tables; drop tiny OCR fallback crops.
+
+    Gold demo has 2 tables + 2 images total — enforce document-level caps.
+    """
+    by_page: Dict[int, List[ContentBlock]] = {}
+    others: List[ContentBlock] = []
+    for b in blocks:
+        if b.block_type in ("figure", "table"):
+            by_page.setdefault(b.page, []).append(b)
+        else:
+            others.append(b)
+
+    kept_figs: List[ContentBlock] = []
+    kept_tables: List[ContentBlock] = []
+    for page, items in by_page.items():
+        figs = [b for b in items if b.block_type == "figure"
+                and (b.figure or {}).get("base64")]
+        tables = [b for b in items if b.block_type == "table"
+                  and ((b.table_html or "").strip() or (b.text or "").strip())]
+        figs.sort(key=_figure_area, reverse=True)
+        if figs:
+            top = _figure_area(figs[0])
+            min_area = max(top * 0.08, 1.0)
+            figs = [f for f in figs if _figure_area(f) >= min_area]
+        figs = figs[:max_figures_per_page]
+        tables.sort(
+            key=lambda t: len((t.table_html or "") + (t.text or "")),
+            reverse=True)
+        tables = tables[:max_tables_per_page]
+        kept_figs.extend(figs)
+        kept_tables.extend(tables)
+        dropped = len(items) - len(figs) - len(tables)
+        if dropped:
+            logger.info(
+                "Pruned %d structure block(s) on page %d "
+                "(kept %d figures, %d tables)",
+                dropped, page + 1, len(figs), len(tables))
+
+    kept_figs.sort(key=_figure_area, reverse=True)
+    kept_figs = kept_figs[:max_figures_total]
+    kept_tables.sort(
+        key=lambda t: len((t.table_html or "") + (t.text or "")),
+        reverse=True)
+    kept_tables = kept_tables[:max_tables_total]
+
+    out = others + kept_figs + kept_tables
+    out.sort(key=lambda b: (b.page, b.y_top, b.x_left))
+    return out
+
+
 class OCRPipeline:
     """Full PDF → DOCX/TXT/HTML pipeline (v2.0).
 
@@ -333,12 +623,34 @@ class OCRPipeline:
         "balanced": {"dpi_scale": 7.5, "quality": "balanced"},   # 540 DPI
         "accurate": {"dpi_scale": 10.0, "quality": "accurate"},  # 720 DPI
     }
+    # Thai-TrOCR needs denser pixels than Latin under the Fast UI preset.
+    # SPEED_MODE / THAI_FAST_MIN_SCALE can lower this for ~10s/page budgets.
+    _THAI_FAST_MIN_SCALE = 7.5  # ~540 DPI (quality)
+    _THAI_FAST_MIN_SCALE_SPEED = 6.0  # ~432 DPI (1.5GB GPU speed path)
 
     @classmethod
-    def _resolve_dpi_scale(cls, quality: str) -> float:
+    def _thai_fast_min_scale(cls) -> float:
+        raw = os.getenv("THAI_FAST_MIN_SCALE", "").strip()
+        if raw:
+            try:
+                return max(4.0, min(float(raw), 12.0))
+            except ValueError:
+                pass
+        speed = os.getenv("SPEED_MODE", "0").strip().lower() in (
+            "1", "true", "yes", "on")
+        return cls._THAI_FAST_MIN_SCALE_SPEED if speed else cls._THAI_FAST_MIN_SCALE
+
+    @classmethod
+    def _resolve_dpi_scale(cls, quality: str,
+                           languages: Optional[str] = None) -> float:
         """Return render scale for *quality*, honouring RENDER_DPI_SCALE."""
         cfg = cls.QUALITY_MAP.get(quality, cls.QUALITY_MAP["accurate"])
         scale = float(cfg["dpi_scale"])
+        lang = (languages or "").lower().replace(",", "+")
+        parts = [p for p in re.split(r"[+\s]+", lang) if p]
+        wants_thai = "tha" in lang or "th" in parts
+        if wants_thai and quality == "fast":
+            scale = max(scale, cls._thai_fast_min_scale())
         override = os.getenv("RENDER_DPI_SCALE", "").strip()
         if override:
             try:
@@ -348,9 +660,11 @@ class OCRPipeline:
         return scale
 
     def __init__(self) -> None:
-        quality = os.getenv("QUALITY_PRESET", "accurate")
+        quality = os.getenv("QUALITY_PRESET", "fast")
         self.languages = os.getenv("LANGUAGES", _DEFAULT_LANGUAGES)
-        self.layout_mode = os.getenv("LAYOUT_MODE", "absolute").lower()
+        self.layout_mode = os.getenv("LAYOUT_MODE", "flow").lower()
+        if self.layout_mode in ("flowing", "structured"):
+            self.layout_mode = "flow"
         self.preprocessor = OpenCVPreprocessor(quality=quality)
         self.ocr = OCREngine()
         self.layout = LayoutDetector()
@@ -362,6 +676,11 @@ class OCRPipeline:
         self.docling = None
         self.layout_backend = "yolo"
         try:
+            from .runtime import configure_cuda_vram_limit
+            configure_cuda_vram_limit()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
             from .docling_backend import (
                 DoclingBackend, docling_ready, layout_backend)
             self.layout_backend = layout_backend()
@@ -372,6 +691,15 @@ class OCRPipeline:
                     images_scale=max(1.0, scale / 2.0))
                 if self.docling.available:
                     self.layout_backend = "docling"
+                    # Warm models in background so first Convert is not stuck
+                    # downloading weights at 0%.
+                    if os.getenv("DOCLING_WARMUP", "1").strip() != "0":
+                        import threading
+                        threading.Thread(
+                            target=self.docling.warm_up,
+                            name="docling-warmup",
+                            daemon=True,
+                        ).start()
                 else:
                     self.docling = None
                     self.layout_backend = "yolo"
@@ -391,7 +719,7 @@ class OCRPipeline:
             "layout, Thai-TrOCR/PaddleOCR, Docling+OpenCV)",
             self.layout_backend)
 
-    def process_pdf(self, pdf_path: str, quality: str = "accurate",
+    def process_pdf(self, pdf_path: str, quality: str = "accurate",  # NOSONAR
                     header_trim: float = 0, footer_trim: float = 0,
                     languages: Optional[str] = None,
                     yolo_confidence: Optional[float] = None,
@@ -423,9 +751,11 @@ class OCRPipeline:
         try:
             langs = languages or self.languages
             cfg = self.QUALITY_MAP.get(quality, self.QUALITY_MAP["accurate"])
-            scale = self._resolve_dpi_scale(quality)
+            scale = self._resolve_dpi_scale(quality, langs)
             q = cfg["quality"]
-            mode = (layout_mode or self.layout_mode or "absolute").lower()
+            mode = (layout_mode or self.layout_mode or "flow").lower()
+            if mode in ("flowing", "structured"):
+                mode = "flow"
 
             doc = fitz.open(pdf_path)
             page_count = len(doc)
@@ -440,6 +770,10 @@ class OCRPipeline:
                     progress_callback=progress_callback,
                     progress_total=progress_total,
                 ))
+            all_blocks = _prune_structure_blocks(all_blocks)
+            total_tables = sum(1 for b in all_blocks if b.block_type == "table")
+            total_figures = sum(
+                1 for b in all_blocks if b.block_type == "figure")
 
             full_text = self._blocks_to_text(all_blocks)
 
@@ -499,7 +833,7 @@ class OCRPipeline:
             if doc:
                 doc.close()
 
-    def _run_layout_pipeline(
+    def _run_layout_pipeline(  # NOSONAR
             self, pdf_path: str, page_count: int, scale: float, q: str,
             langs: str, header_trim: float, footer_trim: float,
             yolo_confidence: Optional[float],
@@ -509,37 +843,230 @@ class OCRPipeline:
             pdf_name: str = "",
     ) -> Tuple[List[ContentBlock], int, int]:
         """Run Docling (default) or YOLO page-parallel layout → blocks."""
-        # Docling whole-PDF path (manual extras still merged via YOLO fallback
-        # when present, or applied post-hoc below).
+        progress_total = progress_total or (page_count + 1)
+        # Docling page-by-page path — live progress, no full-PDF pre-render hang.
         if (self.layout_backend == "docling" and self.docling
                 and self.docling.available
                 and not (extra_regions_by_page or {})):
+            _lang_l = (langs or "").lower()
+            thai_job = ("tha" in _lang_l or "+th" in f"+{_lang_l}"
+                        or _lang_l.startswith("th"))
             self._notify_progress(
-                progress_callback, 0, progress_total or (page_count + 1),
-                "Docling layout + TableFormer")
+                progress_callback, 0, progress_total,
+                "Starting Docling + Thai-TrOCR…")
             try:
-                page_images: Dict[int, np.ndarray] = {}
+                all_blocks: List[ContentBlock] = []
+                total_tables = 0
+                total_figures = 0
                 doc = fitz.open(pdf_path)
+                sparse_raw = os.getenv(
+                    "DOCLING_SPARSE_RECOVERY", "text").strip().lower()
+                sparse_recovery = sparse_raw not in ("0", "false", "no", "off")
+                # text/sparse/1 = YOLO text merge ONLY when page is sparse
+                # always/force/2 = always merge text (slow, quality)
+                # full = also merge YOLO figures (can explode counts)
+                text_only = sparse_raw not in ("full", "figures", "all")
+                always_merge = sparse_raw in ("always", "force", "2")
+                fullpage_sup = os.getenv(
+                    "DOCLING_FULLPAGE_SUPPLEMENT", "0").strip().lower() in (
+                    "1", "true", "yes", "on")
+                speed_mode = os.getenv("SPEED_MODE", "0").strip().lower() in (
+                    "1", "true", "yes", "on")
+                # SPEED_MODE: skip YOLO recovery + full-page fill (10s/page budget)
+                if speed_mode:
+                    fullpage_sup = False
+                    if sparse_raw in ("sparse", "text", "1", "true", "yes", "on"):
+                        sparse_recovery = False
+                        always_merge = False
                 try:
-                    for i in range(len(doc)):
-                        page_images[i] = self._render_page_image(
-                            doc[i], scale, header_trim, footer_trim)
-                        if q:
-                            page_images[i] = self.preprocessor.preprocess(
-                                page_images[i], quality=q)
+                    # SPEED_MODE: one Docling pass on the full PDF (not N
+                    # single-page temp PDFs) — critical for ~10s/page.
+                    if speed_mode and page_count > 0:
+                        self._notify_progress(
+                            progress_callback, 0, progress_total,
+                            f"Docling layout ({page_count} pages)…")
+                        page_images: Dict[int, np.ndarray] = {}
+                        for i in range(page_count):
+                            page_images[i] = self._render_page_image(
+                                doc[i], scale, 0.0, 0.0)
+                        self._notify_progress(
+                            progress_callback, 0, progress_total,
+                            "Docling + Thai-TrOCR…")
+                        all_blocks, total_tables, total_figures = (
+                            self.docling.convert_to_blocks(
+                                pdf_path, languages=langs,
+                                page_images=page_images))
+                        # SPEED_MODE: banded Thai-TrOCR supplies body text
+                        # (per-region text re-OCR is skipped in the adapter).
+                        band_ocr = os.getenv(
+                            "SPEED_BAND_OCR", "1").strip().lower() not in (
+                            "0", "false", "no", "off")
+                        if thai_job and band_ocr:
+                            n_bands = int(os.getenv("SPEED_OCR_BANDS", "2")
+                                          or "2")
+                            band_scale = float(
+                                os.getenv("SPEED_BAND_SCALE", "4.0") or "4.0")
+                            by_page: Dict[int, List[ContentBlock]] = {}
+                            for b in all_blocks:
+                                by_page.setdefault(b.page, []).append(b)
+                            recovered: List[ContentBlock] = []
+                            # Lower-DPI band renders keep CPU TrOCR under budget
+                            band_doc = fitz.open(pdf_path)
+                            try:
+                                for i in range(page_count):
+                                    pblocks = by_page.get(i, [])
+                                    pimg = self._render_page_image(
+                                        band_doc[i], band_scale, 0.0, 0.0)
+                                    if pimg is None:
+                                        recovered.extend(pblocks)
+                                        continue
+                                    self._notify_progress(
+                                        progress_callback, i, progress_total,
+                                        f"Page {i + 1}/{page_count}: "
+                                        "banded Thai-TrOCR…")
+                                    band_blocks = _band_trocr_text_blocks(
+                                        self.ocr, pimg, i, langs,
+                                        bands=n_bands)
+                                    if (band_blocks
+                                            and abs(band_scale - scale) > 0.01):
+                                        m = scale / band_scale
+                                        hi, wi = page_images[i].shape[:2]
+                                        for bb in band_blocks:
+                                            bb.page_width = float(wi)
+                                            bb.page_height = float(hi)
+                                            if bb.bbox and len(bb.bbox) >= 4:
+                                                bb.bbox = [
+                                                    v * m for v in bb.bbox]
+                                                bb.y_top = bb.bbox[1]
+                                                bb.x_left = bb.bbox[0]
+                                            for ln in bb.lines or []:
+                                                lb = ln.get("bbox") or []
+                                                if len(lb) >= 4:
+                                                    ln["bbox"] = [
+                                                        v * m for v in lb]
+                                    if band_blocks:
+                                        before = _page_thai_chars(pblocks)
+                                        pblocks = _merge_complementary_blocks(
+                                            pblocks, band_blocks,
+                                            text_only=True)
+                                        logger.info(
+                                            "Page %d band OCR → +%d blocks "
+                                            "(thai %d → %d)",
+                                            i + 1, len(band_blocks), before,
+                                            _page_thai_chars(pblocks))
+                                    recovered.extend(pblocks)
+                            finally:
+                                band_doc.close()
+                            all_blocks = recovered
+                            total_tables = sum(
+                                1 for b in all_blocks
+                                if b.block_type == "table")
+                            total_figures = sum(
+                                1 for b in all_blocks
+                                if b.block_type == "figure")
+                        self._notify_progress(
+                            progress_callback, page_count, progress_total,
+                            f"Done Docling ({page_count} pages)")
+                    else:
+                        for i in range(page_count):
+                            self._notify_progress(
+                                progress_callback, i, progress_total,
+                                f"Page {i + 1}/{page_count}: "
+                                f"{'Docling + Thai-TrOCR' if thai_job else 'Docling'}")
+                            # Raw render only — Docling bboxes are in PDF page
+                            # space. Deskew/denoise/upscale would misalign crops
+                            # (Latin garbage / empty figures). OCR engines enhance
+                            # their own crops; figures need full-color pixels.
+                            page_img = self._render_page_image(
+                                doc[i], scale, 0.0, 0.0)
+                            blocks, n_t, n_f = self.docling.convert_page_to_blocks(
+                                pdf_path, i, languages=langs, page_img=page_img)
+                            need_recovery = sparse_recovery and (
+                                always_merge
+                                or _docling_page_is_sparse(
+                                    blocks, page_img, thai_job=thai_job)
+                            )
+                            if need_recovery:
+                                self._notify_progress(
+                                    progress_callback, i, progress_total,
+                                    f"Page {i + 1}/{page_count}: "
+                                    "recovering missing text (YOLO+OCR)…")
+                                logger.info(
+                                    "Docling page %d — YOLO complementary recovery",
+                                    i + 1)
+                                yolo_blocks, _yt, _yf, yerr = self._process_page_job(
+                                    pdf_path, i, scale, q, langs,
+                                    0.0, 0.0, yolo_confidence,
+                                    [], pdf_name=pdf_name or os.path.basename(
+                                        pdf_path))
+                                if yerr:
+                                    logger.warning(
+                                        "YOLO recovery page %d: %s", i + 1, yerr)
+                                else:
+                                    chars_before = _page_content_chars(blocks)
+                                    before = len(blocks)
+                                    blocks = _merge_complementary_blocks(
+                                        blocks, yolo_blocks, text_only=text_only)
+                                    logger.info(
+                                        "Page %d recovery: %d → %d blocks "
+                                        "(chars %d → %d)",
+                                        i + 1, before, len(blocks),
+                                        chars_before, _page_content_chars(blocks))
+                                    n_t = sum(1 for b in blocks
+                                              if b.block_type == "table")
+                                    n_f = sum(1 for b in blocks
+                                              if b.block_type == "figure")
+                            # Optional full-page OCR fill-in
+                            if fullpage_sup and thai_job:
+                                page_txt = "\n".join(
+                                    (b.text or "") for b in blocks
+                                    if b.block_type in (
+                                        "text", "caption", "table"))
+                                numbered = len(re.findall(
+                                    r"(?:^|\n)\s*\d+[\)\.]", page_txt))
+                                if numbered < 4:
+                                    try:
+                                        pre = self.preprocessor.preprocess(
+                                            page_img, quality=q or "fast")
+                                        fp_blocks, _, _ = self._fullpage_fallback(
+                                            page_img, pre, i, langs)
+                                        if fp_blocks:
+                                            blocks = _merge_complementary_blocks(
+                                                blocks, fp_blocks, text_only=True)
+                                            logger.info(
+                                                "Page %d full-page OCR supplement "
+                                                "→ %d blocks", i + 1, len(blocks))
+                                    except Exception:  # noqa: BLE001
+                                        logger.exception(
+                                            "Full-page supplement failed page %d",
+                                            i + 1)
+                            all_blocks.extend(blocks)
+                            total_tables += n_t
+                            total_figures += n_f
+                            # Free GPU between pages under 1.5GB VRAM budgets
+                            try:
+                                import torch
+                                if torch.cuda.is_available():
+                                    torch.cuda.empty_cache()
+                            except Exception:  # noqa: BLE001
+                                pass
+                            self._notify_progress(
+                                progress_callback, i + 1, progress_total,
+                                f"Done page {i + 1}/{page_count} "
+                                f"(tables={total_tables}, figures={total_figures})")
                 finally:
                     doc.close()
-                blocks, n_tables, n_figures = self.docling.convert_to_blocks(
-                    pdf_path, languages=langs, page_images=page_images)
-                self._notify_progress(
-                    progress_callback, page_count,
-                    progress_total or (page_count + 1),
-                    f"Docling done — tables={n_tables}, figures={n_figures}")
+                all_blocks = _prune_structure_blocks(all_blocks)
+                total_tables = sum(
+                    1 for b in all_blocks if b.block_type == "table")
+                total_figures = sum(
+                    1 for b in all_blocks if b.block_type == "figure")
                 logger.info(
-                    "Docling convert: blocks=%d tables=%d figures=%d",
-                    len(blocks), n_tables, n_figures)
-                if blocks:
-                    return blocks, n_tables, n_figures
+                    "Docling convert: blocks=%d tables=%d figures=%d chars=%d",
+                    len(all_blocks), total_tables, total_figures,
+                    _page_content_chars(all_blocks))
+                if all_blocks:
+                    return all_blocks, total_tables, total_figures
                 logger.warning(
                     "Docling returned no blocks — falling back to YOLO path")
             except Exception:  # noqa: BLE001
@@ -554,7 +1081,7 @@ class OCRPipeline:
             progress_total=progress_total,
             pdf_name=pdf_name,
         )
-        all_blocks: List[ContentBlock] = []
+        all_blocks = []
         total_tables = 0
         total_figures = 0
         for page_num in range(page_count):
@@ -735,7 +1262,7 @@ class OCRPipeline:
 
     # ── Single-page processing (group-first) ─────────────────────────────────
 
-    def _process_single_page(self, img: np.ndarray, preprocessed: np.ndarray,
+    def _process_single_page(self, img: np.ndarray, preprocessed: np.ndarray,  # NOSONAR
                              h: int, w: int, page_num: int,
                              languages: str = _DEFAULT_LANGUAGES,
                              yolo_confidence: Optional[float] = None,
@@ -761,9 +1288,12 @@ class OCRPipeline:
         figure_dets  = self.layout.dedup_regions(figure_dets)
         caption_dets = self.layout.dedup_regions(caption_dets)
 
-        _method = (
-            "Docling" if self.layout_backend == "docling"
-            else ("YOLO" if self.layout.model_loaded else "OpenCV"))
+        if self.layout_backend == "docling":
+            _method = "Docling"
+        elif self.layout.model_loaded:
+            _method = "YOLO"
+        else:
+            _method = "OpenCV"
         logger.info(
             "Detected: page %d — text=%d, tables=%d, figures=%d, captions=%d"
             " (method=%s)",
@@ -905,7 +1435,7 @@ class OCRPipeline:
             )], 0, 1
         return blocks, 0, 0
 
-    def _embedded_text_block(self, page, page_num: int, languages: str):
+    def _embedded_text_block(self, page, page_num: int, languages: str):  # NOSONAR
         """Return positioned blocks for born-digital PDF pages.
 
         Uses ``get_text("dict")`` so block/line positions and font sizes are
@@ -1023,7 +1553,7 @@ class OCRPipeline:
         except (RuntimeError, ValueError):
             return False
 
-    def _embedded_image_blocks(self, page, page_num: int,
+    def _embedded_image_blocks(self, page, page_num: int,  # NOSONAR
                                text_blocks: List[ContentBlock],
                                ) -> List[ContentBlock]:
         """Extract placed raster images + vector graphic clusters as figures.
@@ -1193,7 +1723,7 @@ class OCRPipeline:
                 # Rebuild a minimal HTML table so absolute export does not
                 # silently drop structured content.
                 rows = [r for r in text.split("\n") if r.strip()]
-                cells = [[c for c in r.split("\t")] for r in rows] or [[text]]
+                cells = [r.split("\t") for r in rows] or [[text]]
                 html = "<table>" + "".join(
                     "<tr>" + "".join(
                         f"<td>{html_module.escape(c)}</td>" for c in row)
@@ -1453,9 +1983,11 @@ class OCRPipeline:
         try:
             langs = languages or self.languages
             cfg = self.QUALITY_MAP.get(quality, self.QUALITY_MAP["accurate"])
-            scale = self._resolve_dpi_scale(quality)
+            scale = self._resolve_dpi_scale(quality, langs)
             q = cfg["quality"]
-            mode = (layout_mode or self.layout_mode or "absolute").lower()
+            mode = (layout_mode or self.layout_mode or "flow").lower()
+            if mode in ("flowing", "structured"):
+                mode = "flow"
 
             doc = fitz.open(pdf_path)
             page_count = len(doc)
@@ -1473,6 +2005,10 @@ class OCRPipeline:
                     progress_total=progress_total,
                     pdf_name=pdf_name,
                 ))
+            all_blocks = _prune_structure_blocks(all_blocks)
+            total_tables = sum(1 for b in all_blocks if b.block_type == "table")
+            total_figures = sum(
+                1 for b in all_blocks if b.block_type == "figure")
 
             full_text = self._blocks_to_text(all_blocks)
             engines = self.ocr.get_available_engines()

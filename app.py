@@ -17,24 +17,34 @@ Security:
 """
 import os
 
+# Defaults for local/CPU runs. Do NOT force CUDA_VISIBLE_DEVICES=-1 here —
+# that would hide the GPU even when Docker sets USE_GPU=true.
 os.environ.setdefault("USE_GPU", "false")
 os.environ.setdefault("ACCELERATOR", "cpu")
-os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
 os.environ.setdefault("DISABLE_TROCR_PRELOAD", "0")
 os.environ.setdefault("OCR_ENGINE", "auto")
-os.environ.setdefault("QUALITY_PRESET", "accurate")
-os.environ.setdefault("LAYOUT_MODE", "absolute")
+os.environ.setdefault("QUALITY_PRESET", "fast")
+os.environ.setdefault("LAYOUT_MODE", "flow")
 os.environ.setdefault("ENHANCE_IMAGES", "true")
 os.environ.setdefault("ENHANCE_BINARIZE", "0")
 os.environ.setdefault("YOLO_CONFIDENCE", "0.25")
 os.environ.setdefault("YOLO_NMS", "0.40")
 os.environ.setdefault("YOLO_IMGSZ", "1600")
-os.environ.setdefault("TABLE_ENGINE", "paddleocr")
+os.environ.setdefault("TABLE_ENGINE", "opencv")
+os.environ.setdefault("DOCLING_REOCR", "1")
+os.environ.setdefault("DOCLING_SPARSE_RECOVERY", "text")
+os.environ.setdefault("DOCX_THAI_FONT", "Noto Sans Thai")
 os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
 from dotenv import load_dotenv
 load_dotenv()
+
+# Only hide CUDA when explicitly running CPU mode (and not already set).
+_acc = (os.getenv("ACCELERATOR") or "cpu").strip().lower()
+_use_gpu = (os.getenv("USE_GPU") or "false").strip().lower() == "true"
+if _acc in ("cpu",) and not _use_gpu:
+    os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
 
 # Configure multi-CPU / multi-user runtime before heavy native libs bind threads
 from src.runtime import (  # noqa: E402
@@ -90,7 +100,7 @@ history.cleanup_old_entries()
 
 # ── Option maps ──────────────────────────────────────────────────────────────
 # UI label constants — centralised to satisfy S1192 (no duplicate string literals)
-_DEFAULT_QUALITY       = "Best (Accurate)"
+_DEFAULT_QUALITY       = "Standard (Fast)"
 _DEFAULT_LANGUAGE      = "Thai + English"
 _DEFAULT_LANGUAGE_CODE = "tha+eng"
 _DEFAULT_ENGINE        = "Auto (Thai→TrOCR, other→PaddleOCR)"
@@ -105,9 +115,9 @@ SIMPLE_LANGUAGE_OPTIONS = {
 }
 
 QUALITY_OPTIONS = {
-    "Standard (Fast)": "fast",
+    _DEFAULT_QUALITY: "fast",
     "Balanced": "balanced",
-    _DEFAULT_QUALITY: "accurate",
+    "Best (Accurate)": "accurate",
 }
 
 LANGUAGE_OPTIONS = {
@@ -136,24 +146,40 @@ CLASS_OPTIONS = ["table", "figure"]
 
 PAGE_SIZE_OPTIONS = ["A4", "Letter", "Legal", "A3", "B5"]
 
-_DEFAULT_MARGIN_LABEL = "Normal (1\" all sides)"
+_DEFAULT_MARGIN_LABEL = "Moderate (0.75\" left/right)"
 
 MARGIN_OPTIONS = {
-    _DEFAULT_MARGIN_LABEL: "Normal",
+    "Normal (1\" all sides)": "Normal",
     "Narrow (0.5\" all sides)": "Narrow",
-    "Moderate (0.75\" left/right)": "Moderate",
+    _DEFAULT_MARGIN_LABEL: "Moderate",
     "Wide (1.5\" left/right)": "Wide",
 }
 
 _PAGE_ZERO = "Page 0 / 0"
 _LOCAL_USER = "local"
 
-# Preload best OCR models: Thai-TrOCR (Thai) + PaddleOCR PP-OCRv5 (other)
+# Preload OCR models (skip heavy Paddle when Docling handles OCR/tables).
 pipeline.ocr.primary_engine = os.getenv("OCR_ENGINE", "auto")
 pipeline.ocr._ensure_engines()
-_check_thai_trocr(preload=True)
-if pipeline.ocr.primary_engine == "auto":
-    pipeline.ocr._get_paddle(os.getenv("LANGUAGES", _DEFAULT_LANGUAGE_CODE))
+_layout_backend = (os.getenv("LAYOUT_BACKEND") or "docling").strip().lower()
+_docling_reocr = (os.getenv("DOCLING_REOCR") or "1").strip() != "0"
+_skip_paddle_preload = (
+    _layout_backend == "docling"
+    and not _docling_reocr
+    and (os.getenv("SKIP_PADDLE_PRELOAD", "1").strip() != "0")
+)
+if (os.getenv("DISABLE_TROCR_PRELOAD") or "0").strip() != "1":
+    _check_thai_trocr(preload=True)
+else:
+    logger.info("Thai-TrOCR preload skipped (DISABLE_TROCR_PRELOAD=1)")
+if _skip_paddle_preload:
+    logger.info(
+        "PaddleOCR preload skipped — Docling+TableFormer handles OCR/tables")
+elif pipeline.ocr.primary_engine == "auto":
+    try:
+        pipeline.ocr._get_paddle(os.getenv("LANGUAGES", _DEFAULT_LANGUAGE_CODE))
+    except Exception:
+        logger.exception("PaddleOCR preload failed")
 
 # Colours for bounding box overlay
 _BOX_COLORS = {
@@ -267,23 +293,25 @@ def process_document(pdf_file, quality_label, header_pct, footer_pct,
         return ("", "Please upload a PDF file first.",
                 None, None, gr.update(visible=False), gr.update())
 
-    progress(0, desc="Preparing PDF")
+    progress(0.01, desc="Starting Docling layout + tables…")
 
     def _page_progress(current, total, message):
-        progress((current, total), desc=message)
+        frac = 0.01 if total <= 0 else min(0.99, max(0.01, current / float(total)))
+        progress(frac, desc=message)
 
     pdf_path = str(pdf_file)
     quality = QUALITY_OPTIONS.get(quality_label, "accurate")
     languages = (SIMPLE_LANGUAGE_OPTIONS.get(language_label)
                  or LANGUAGE_OPTIONS.get(language_label, _DEFAULT_LANGUAGE_CODE))
     page_size = page_size_label or "A4"
-    margin_preset = MARGIN_OPTIONS.get(margin_label, "Normal")
+    margin_preset = MARGIN_OPTIONS.get(margin_label, "Moderate")
 
     result = pipeline.process_pdf(
         pdf_path, quality=quality,
         header_trim=header_pct, footer_trim=footer_pct,
         languages=languages, yolo_confidence=yolo_conf,
         page_size=page_size, margin_preset=margin_preset,
+        layout_mode=os.getenv("LAYOUT_MODE", "flow"),
         progress_callback=_page_progress,
     )
 
@@ -426,17 +454,18 @@ def review_convert_with_corrections(pdf_file, quality_label, header_pct, footer_
         return ("", _MSG_UPLOAD_PDF_FIRST, None, None,
                 gr.update(visible=False), gr.update())
 
-    progress(0, desc="Preparing PDF with corrections")
+    progress(0.01, desc="Starting Docling layout + tables…")
 
     def _page_progress(current, total, message):
-        progress((current, total), desc=message)
+        frac = 0.01 if total <= 0 else min(0.99, max(0.01, current / float(total)))
+        progress(frac, desc=message)
 
     pdf_path = str(pdf_file)
     quality = QUALITY_OPTIONS.get(quality_label, "accurate")
     languages = (SIMPLE_LANGUAGE_OPTIONS.get(language_label)
                  or LANGUAGE_OPTIONS.get(language_label, _DEFAULT_LANGUAGE_CODE))
     page_size = page_size_label or "A4"
-    margin_preset = MARGIN_OPTIONS.get(margin_label, "Normal")
+    margin_preset = MARGIN_OPTIONS.get(margin_label, "Moderate")
 
     # Build manual_regions dict: {page_num: [{"bbox": ..., "class": ...}]}
     mr_dict: dict = {}
@@ -451,6 +480,7 @@ def review_convert_with_corrections(pdf_file, quality_label, header_pct, footer_
         header_trim=header_pct, footer_trim=footer_pct,
         languages=languages, yolo_confidence=yolo_conf,
         page_size=page_size, margin_preset=margin_preset,
+        layout_mode=os.getenv("LAYOUT_MODE", "flow"),
         progress_callback=_page_progress,
     )
 

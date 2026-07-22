@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # ============================================================
-#  LocalOCR Release v0.5.0 — Linux / macOS
+#  LocalOCR Release v0.5.5 — Linux / macOS
 #  1. Run tests   2. Docker deploy   3. Git commit + tag + push
 #  (Windows .exe is built by release.bat on a Windows machine)
 # ============================================================
 set -euo pipefail
-VERSION="0.5.0"
+VERSION="0.5.5"
 cd "$(dirname "$0")"
 
 echo

@@ -17,6 +17,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_LANGUAGES = "tha+eng"
 DOCLING_AVAILABLE = False
 _IMPORT_ERROR: Optional[str] = None
 
@@ -61,31 +62,88 @@ class DoclingBackend:
                 self._init_error = str(exc)
                 logger.exception("Docling converter init failed")
 
-    def _build_converter(self):
+    def _build_converter(self):  # NOSONAR
         pipeline_options = PdfPipelineOptions()
-        pipeline_options.do_ocr = True
+        # Docling OCR is still needed for *region detection* on scans
+        # (RapidOCR text is discarded; Thai-TrOCR re-reads in the adapter).
+        # DOCLING_DO_OCR=0 collapses list/body boxes to tiny markers.
+        speed = os.getenv("SPEED_MODE", "0").strip().lower() in (
+            "1", "true", "yes", "on")
+        do_ocr_env = (os.getenv("DOCLING_DO_OCR", "") or "").strip().lower()
+        if do_ocr_env in ("0", "false", "no", "off"):
+            do_ocr = False
+        elif do_ocr_env in ("1", "true", "yes", "on"):
+            do_ocr = True
+        else:
+            do_ocr = True  # default on even in SPEED_MODE (region detect)
+        pipeline_options.do_ocr = do_ocr
         pipeline_options.do_table_structure = True
+        if speed:
+            logger.info("SPEED_MODE: Docling OCR kept for region detection")
         pipeline_options.generate_page_images = True
         pipeline_options.generate_picture_images = True
         pipeline_options.images_scale = self.images_scale
+        logger.info("Docling do_ocr=%s (speed_mode=%s)", do_ocr, speed)
+
+        # GPU accelerator when USE_GPU=true. Under SPEED_MODE + ≤2GB VRAM,
+        # keep Docling on CPU so Thai-TrOCR can own the GPU (they fight
+        # otherwise and band OCR returns empty/garbage).
         try:
+            from docling.datamodel.accelerator_options import (
+                AcceleratorDevice, AcceleratorOptions)
+            use_gpu = os.getenv("USE_GPU", "false").lower() == "true"
+            try:
+                vram = float(os.getenv("MAX_VRAM_MB", "0") or "0")
+            except ValueError:
+                vram = 0.0
+            want = os.getenv("DOCLING_DEVICE", "").strip().lower()
+            if want in ("cpu",):
+                docling_cpu = True
+            elif want in ("cuda", "gpu"):
+                docling_cpu = False
+            elif speed and 0 < vram <= 2048:
+                # Don't co-reside Docling+TrOCR on a 1.5GB GPU — pick one.
+                # Prefer Docling GPU when TrOCR is on CPU (compose default).
+                trocr_dev = (os.getenv("TROCR_DEVICE") or "cpu").strip().lower()
+                docling_cpu = trocr_dev in ("cuda", "gpu")
+            else:
+                docling_cpu = not use_gpu
+            device = (
+                AcceleratorDevice.CPU if (not use_gpu or docling_cpu)
+                else AcceleratorDevice.CUDA)
+            pipeline_options.accelerator_options = AcceleratorOptions(
+                device=device,
+                num_threads=max(1, int(os.getenv("DOCLING_NUM_THREADS", "4"))),
+            )
+            logger.info("Docling accelerator: %s", device.value)
+        except Exception:  # noqa: BLE001
+            logger.info("Docling accelerator options unavailable")
+
+        # FAST tables by default for speed / low VRAM; ACCURATE via env
+        table_mode = (os.getenv("DOCLING_TABLE_MODE", "fast") or "fast").lower()
+        try:
+            mode = (TableFormerMode.ACCURATE if table_mode in ("accurate", "exact")
+                    else TableFormerMode.FAST)
             pipeline_options.table_structure_options = TableStructureOptions(
-                mode=TableFormerMode.ACCURATE,
+                mode=mode,
                 do_cell_matching=True,
             )
+            logger.info("Docling TableFormer mode: %s", mode.value)
         except Exception:  # noqa: BLE001
             pass
 
-        # Prefer LocalOCR plugin when entry-points are installed
-        use_plugin = os.getenv("DOCLING_USE_LOCALOCR_PLUGIN", "1").strip() != "0"
-        if use_plugin:
+        # Prefer RapidOCR bridge for region detect (LocalOCR plugin TextCell
+        # API drift breaks pages → empty boxes). Opt-in via env=1.
+        use_plugin = os.getenv("DOCLING_USE_LOCALOCR_PLUGIN", "0").strip() in (
+            "1", "true", "yes", "on")
+        if do_ocr and use_plugin:
             try:
                 from .docling_ocr_plugin import LocalOCROptions, _DOCLING_OCR, _IMPORT_ERR
                 if not _DOCLING_OCR:
                     raise RuntimeError(
                         f"LocalOCR Docling plugin imports failed: {_IMPORT_ERR}")
                 pipeline_options.allow_external_plugins = True
-                langs = (os.getenv("LANGUAGES", "tha+eng")
+                langs = (os.getenv("LANGUAGES", DEFAULT_LANGUAGES)
                          .replace("+", ",").replace(" ", "").split(","))
                 pipeline_options.ocr_options = LocalOCROptions(
                     lang=[x for x in langs if x] or ["tha", "eng"],
@@ -99,8 +157,8 @@ class DoclingBackend:
                     "using RapidOCR bridge + OCREngine re-OCR",
                     exc)
 
-        if not use_plugin or getattr(
-                pipeline_options, "ocr_options", None) is None:
+        if do_ocr and (not use_plugin or getattr(
+                pipeline_options, "ocr_options", None) is None):
             try:
                 from docling.datamodel.pipeline_options import RapidOcrOptions
                 pipeline_options.ocr_options = RapidOcrOptions(
@@ -118,6 +176,8 @@ class DoclingBackend:
                 except Exception:  # noqa: BLE001
                     logger.warning(
                         "No Docling OCR options available; structure-only")
+        elif not do_ocr:
+            logger.info("Docling OCR disabled — adapter Thai-TrOCR only")
 
         return DocumentConverter(
             format_options={
@@ -140,7 +200,7 @@ class DoclingBackend:
         return getattr(result, "document", result)
 
     def convert_to_blocks(
-            self, pdf_path: str, languages: str = "tha+eng",
+            self, pdf_path: str, languages: str = DEFAULT_LANGUAGES,
             page_images: Optional[Dict[int, np.ndarray]] = None,
     ) -> Tuple[List, int, int]:
         """Convert PDF → (ContentBlocks, n_tables, n_figures)."""
@@ -158,6 +218,82 @@ class DoclingBackend:
         n_tables = sum(1 for b in blocks if b.block_type == "table")
         n_figures = sum(1 for b in blocks if b.block_type == "figure")
         return blocks, n_tables, n_figures
+
+    def convert_page_to_blocks(
+            self, pdf_path: str, page_num: int,
+            languages: str = DEFAULT_LANGUAGES,
+            page_img: Optional[np.ndarray] = None,
+    ) -> Tuple[List, int, int]:
+        """Convert a single PDF page → blocks (progress-friendly)."""
+        from .docling_adapter import docling_to_blocks
+        import fitz
+
+        tmp_path = None
+        try:
+            src = fitz.open(pdf_path)
+            if page_num < 0 or page_num >= len(src):
+                src.close()
+                return [], 0, 0
+            one = fitz.open()
+            one.insert_pdf(src, from_page=page_num, to_page=page_num)
+            src.close()
+            fd, tmp_path = tempfile.mkstemp(suffix=".pdf")
+            os.close(fd)
+            one.save(tmp_path)
+            one.close()
+
+            doc = self.convert(tmp_path)
+            if doc is None:
+                return [], 0, 0
+            images = {0: page_img} if page_img is not None else (
+                self._extract_page_images(doc))
+            blocks = docling_to_blocks(
+                doc, ocr=self.ocr_engine, page_images=images,
+                languages=languages)
+            for b in blocks:
+                b.page = page_num
+            n_tables = sum(1 for b in blocks if b.block_type == "table")
+            n_figures = sum(1 for b in blocks if b.block_type == "figure")
+            return blocks, n_tables, n_figures
+        finally:
+            if tmp_path and os.path.isfile(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+            # Free GPU between pages under tight VRAM caps
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def warm_up(self) -> None:
+        """Force-load Docling layout + TableFormer + OCR weights once."""
+        if not self._converter:
+            return
+        import fitz
+        tmp_path = None
+        try:
+            doc = fitz.open()
+            page = doc.new_page(width=400, height=600)
+            page.insert_text((72, 72), "warmup")
+            fd, tmp_path = tempfile.mkstemp(suffix=".pdf")
+            os.close(fd)
+            doc.save(tmp_path)
+            doc.close()
+            logger.info("Warming Docling models (first load)…")
+            self.convert(tmp_path)
+            logger.info("Docling models warm — ready for convert")
+        except Exception:  # noqa: BLE001
+            logger.exception("Docling warm-up failed (first convert may be slow)")
+        finally:
+            if tmp_path and os.path.isfile(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     def detect_page(
             self, pdf_path: str, page_num: int,

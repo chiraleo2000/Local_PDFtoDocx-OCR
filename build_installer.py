@@ -77,7 +77,7 @@ def build_setup_exe() -> None:
         print("[ERROR] LocalOCR-Setup.exe not found after build")
         sys.exit(1)
     size_mb = exe.stat().st_size / (1024 * 1024)
-    print(f"[OK]   LocalOCR-Setup.exe  ({size_mb:.1f} MB)  →  {exe}")
+    print(f"[OK]   LocalOCR-Setup.exe  ({size_mb:.1f} MB)  ->  {exe}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

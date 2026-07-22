@@ -97,6 +97,8 @@ def configure_native_threads() -> None:
         except Exception:
             pass
 
+        configure_cuda_vram_limit()
+
         _configured = True
         logger.info(
             "Runtime CPU: cores=%d jobs=%d page_workers=%d model_slots=%d "
@@ -104,6 +106,46 @@ def configure_native_threads() -> None:
             CPU_COUNT, MAX_CONCURRENT_JOBS, PAGE_WORKERS, MODEL_SLOTS,
             TORCH_NUM_THREADS, OMP_NUM_THREADS,
         )
+
+
+def configure_cuda_vram_limit() -> None:
+    """Cap PyTorch CUDA memory (``MAX_VRAM_MB``, default unlimited).
+
+    Example: ``MAX_VRAM_MB=1536`` → process may use at most ~1.5 GiB VRAM.
+    Also sets ``PYTORCH_CUDA_ALLOC_CONF`` defaults for small-GPU packing.
+    """
+    raw = os.getenv("MAX_VRAM_MB", "").strip()
+    if not raw:
+        return
+    try:
+        max_mb = float(raw)
+    except ValueError:
+        logger.warning("Invalid MAX_VRAM_MB=%r — ignoring", raw)
+        return
+    if max_mb <= 0:
+        return
+
+    os.environ.setdefault(
+        "PYTORCH_CUDA_ALLOC_CONF",
+        "max_split_size_mb:64,expandable_segments:True",
+    )
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            logger.info("MAX_VRAM_MB=%s set but CUDA unavailable", raw)
+            return
+        device = int(os.getenv("CUDA_DEVICE", "0") or 0)
+        props = torch.cuda.get_device_properties(device)
+        total_mb = float(props.total_memory) / (1024.0 * 1024.0)
+        frac = min(1.0, max(0.05, max_mb / total_mb))
+        torch.cuda.set_per_process_memory_fraction(frac, device=device)
+        torch.cuda.empty_cache()
+        logger.info(
+            "CUDA VRAM cap: %.0f MB (%.0f%% of %.0f MB on %s)",
+            max_mb, frac * 100.0, total_mb, props.name,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to apply MAX_VRAM_MB=%s", raw)
 
 
 @contextmanager
@@ -117,6 +159,7 @@ def model_slot() -> Iterator[None]:
 
 
 def summary() -> dict:
+    vram = os.getenv("MAX_VRAM_MB", "").strip() or None
     return {
         "cpu_count": CPU_COUNT,
         "max_concurrent_jobs": MAX_CONCURRENT_JOBS,
@@ -125,4 +168,6 @@ def summary() -> dict:
         "queue_max_size": QUEUE_MAX_SIZE,
         "torch_num_threads": TORCH_NUM_THREADS,
         "omp_num_threads": OMP_NUM_THREADS,
+        "max_vram_mb": vram,
+        "use_gpu": os.getenv("USE_GPU", "false").lower() == "true",
     }

@@ -1,12 +1,18 @@
 """Regression tests for Docling adapter + table-drop fixes."""
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
 from src.docling_adapter import (
     docling_to_blocks,
     detections_from_docling,
     _suppress_text_in_structure,
+    _looks_garbled_for_thai,
+    _has_usable_thai,
+    _ocr_text_block,
+    _thai_reocr_enabled,
 )
 from src.pipeline import ContentBlock
 from src.exporter import DocumentExporter
@@ -38,7 +44,7 @@ def _fake_docling_doc():
     """Minimal DoclingDocument-like object with text/table/picture."""
     text = SimpleNamespace(
         label=_Label("text"),
-        text="Hello Thai table page",
+        text="วิเคราะห์มาตรฐานการผลิตหม่อนไหม",
         prov=[_Prov(1, _BBox(50, 40, 400, 80))],
     )
     table = SimpleNamespace(
@@ -142,3 +148,36 @@ def test_layout_backend_env_default(monkeypatch):
     assert layout_backend() == "docling"
     monkeypatch.setenv("LAYOUT_BACKEND", "yolo")
     assert layout_backend() == "yolo"
+
+
+def test_garbled_latin_detected():
+    # RapidOCR-on-Thai soup must be rejected
+    assert _looks_garbled_for_thai(
+        "COMMSSUBLMACLUNGMUNEUSLUOBLUMLABEMUI ENUCSH")
+    # Real English / product names must be KEPT on tha+eng jobs
+    assert not _looks_garbled_for_thai("Hello English only")
+    assert not _looks_garbled_for_thai("Microsoft Windows Server")
+    assert not _looks_garbled_for_thai(
+        "วิเคราะห์และตรวจสอบมาตรฐานการผลิต")
+    assert _has_usable_thai("ชื่อ\tจำนวน\nข้าว\t10", min_chars=3)
+    assert not _has_usable_thai("A B C ข้าว", min_chars=6, min_density=0.25)
+
+
+def test_thai_reocr_force_off(monkeypatch):
+    monkeypatch.setenv("DOCLING_REOCR", "force-off")
+    assert _thai_reocr_enabled("tha+eng") is False
+    monkeypatch.setenv("DOCLING_REOCR", "0")
+    assert _thai_reocr_enabled("tha+eng") is True
+
+
+def test_ocr_text_block_refuses_latin_fallback():
+    """Failed Thai-TrOCR must not keep RapidOCR Latin garbage."""
+    ocr = MagicMock()
+    ocr.ocr_image.return_value = {"text": "", "lines": []}
+    ocr.ocr_full_page.return_value = {"text": "", "lines": []}
+    img = np.zeros((200, 400, 3), dtype=np.uint8)
+    block = _ocr_text_block(
+        ocr, img, [10, 10, 200, 40], 0, 400, 200, "tha+eng",
+        fallback_text="COMMSSUBLMACLUNGMUNEUSLUOBLUMLABEMUI")
+    assert block.text.strip() == ""
+    assert not block.lines

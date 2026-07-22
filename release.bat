@@ -1,11 +1,11 @@
 @echo off
 REM ============================================================
-REM  LocalOCR Release v0.5.0 — Windows
+REM  LocalOCR Release v0.5.5 — Windows
 REM  1. Run tests   2. Build LocalOCR-Setup.exe + app bundle
 REM  3. Docker deploy   4. Git commit + tag + push
 REM ============================================================
 setlocal
-set VERSION=0.5.0
+set VERSION=0.5.5
 cd /d "%~dp0"
 
 echo.

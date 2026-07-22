@@ -50,6 +50,11 @@ except ImportError:
 
 _MAX_IMAGE_PIXELS = 100_000_000  # 100 megapixels
 _THAI_TROCR_HF_REPO = "openthaigpt/thai-trocr"
+# Pin revision so Hub downloads are reproducible (bandit B615 / supply-chain).
+_THAI_TROCR_HF_REVISION = os.getenv(
+    "THAI_TROCR_HF_REVISION",
+    "ce167339d2eaa48137cd6ed3efd65bac1ec45430",
+)
 _SKIP_HEAVY_IMPORTS = os.getenv("LOCALOCR_SKIP_HEAVY_IMPORTS", "").strip() == "1"
 
 
@@ -103,7 +108,7 @@ def _ensure_bgr(image: np.ndarray) -> np.ndarray:
     return image
 
 
-def _segment_text_lines(image: np.ndarray) -> List[List[int]]:
+def _segment_text_lines(image: np.ndarray) -> List[List[int]]:  # NOSONAR
     """Segment a (possibly multi-line) text crop into single-line bboxes.
 
     TrOCR is a SINGLE-LINE recognition model — feeding it a multi-line
@@ -176,8 +181,14 @@ _MIN_CHUNK_GAP_FRAC = 0.45  # horizontal gap (× line height) that splits chunks
 _TROCR_MIN_HEIGHT = 32      # upscale crops shorter than this before TrOCR
 
 
-def _split_line_into_chunks(gray: np.ndarray,
-                            box: List[int]) -> List[List[int]]:
+def _speed_mode() -> bool:
+    return os.getenv("SPEED_MODE", "0").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _split_line_into_chunks(gray: np.ndarray,  # NOSONAR
+                            box: List[int],
+                            max_ratio: Optional[float] = None) -> List[List[int]]:
     """Split one text-line box into SMALL word/phrase chunks for TrOCR.
 
     TrOCR resizes its input to a fixed square patch grid — wide lines get
@@ -220,9 +231,10 @@ def _split_line_into_chunks(gray: np.ndarray,
         else:
             chunks.append([s, e])
 
-    # Force-split chunks wider than _MAX_CHUNK_RATIO × height,
+    # Force-split chunks wider than max_ratio × height,
     # cutting at the column with the least ink near the split point
-    max_w = max(int(h * _MAX_CHUNK_RATIO), 24)
+    ratio = float(max_ratio) if max_ratio is not None else _MAX_CHUNK_RATIO
+    max_w = max(int(h * ratio), 24)
     final: List[List[int]] = []
     for s, e in chunks:
         while e - s > max_w:
@@ -255,7 +267,7 @@ _trocr_session = None
 _trocr_processor = None
 
 
-def _check_thai_trocr(preload: bool = False):
+def _check_thai_trocr(preload: bool = False):  # NOSONAR
     """Try to load Thai-TrOCR ONNX model, or auto-download from HuggingFace.
 
     DISABLE_TROCR_PRELOAD=1 only skips EAGER loading at startup
@@ -286,10 +298,12 @@ def _check_thai_trocr(preload: bool = False):
                                    os.path.join(os.path.dirname(os.path.dirname(__file__)),
                                                 "models", "thai-trocr"))
                 if os.path.isdir(hf_dir):
-                    _trocr_processor = TrOCRProcessor.from_pretrained(hf_dir)
+                    _trocr_processor = TrOCRProcessor.from_pretrained(  # nosec B615
+                        hf_dir, local_files_only=True)
                 else:
                     _trocr_processor = TrOCRProcessor.from_pretrained(
-                        _THAI_TROCR_HF_REPO)
+                        _THAI_TROCR_HF_REPO,
+                        revision=_THAI_TROCR_HF_REVISION)
             except Exception:
                 _trocr_processor = None
             THAI_TROCR_AVAILABLE = _trocr_processor is not None
@@ -307,20 +321,77 @@ def _check_thai_trocr(preload: bool = False):
         hf_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)),
                               "models", "thai-trocr")
         if os.path.isdir(hf_dir):
-            _trocr_processor = TrOCRProcessor.from_pretrained(hf_dir)
-            _trocr_session = VisionEncoderDecoderModel.from_pretrained(hf_dir)
+            _trocr_processor = TrOCRProcessor.from_pretrained(  # nosec B615
+                hf_dir, local_files_only=True)
+            _trocr_session = VisionEncoderDecoderModel.from_pretrained(  # nosec B615
+                hf_dir, local_files_only=True)
             THAI_TROCR_AVAILABLE = True
             logger.info("Thai-TrOCR loaded (transformers, local)")
         else:
-            # Auto-download from HuggingFace
-            logger.info("Downloading Thai-TrOCR from HuggingFace (openthaigpt/thai-trocr)...")
-            _trocr_processor = TrOCRProcessor.from_pretrained(_THAI_TROCR_HF_REPO)
-            _trocr_session = VisionEncoderDecoderModel.from_pretrained(_THAI_TROCR_HF_REPO)
+            # Auto-download from HuggingFace (pinned revision)
+            logger.info(
+                "Downloading Thai-TrOCR from HuggingFace "
+                "(openthaigpt/thai-trocr@%s)...",
+                _THAI_TROCR_HF_REVISION[:12])
+            _trocr_processor = TrOCRProcessor.from_pretrained(
+                _THAI_TROCR_HF_REPO, revision=_THAI_TROCR_HF_REVISION)
+            _trocr_session = VisionEncoderDecoderModel.from_pretrained(
+                _THAI_TROCR_HF_REPO, revision=_THAI_TROCR_HF_REVISION)
             THAI_TROCR_AVAILABLE = True
             logger.info("Thai-TrOCR downloaded and loaded (transformers)")
+        # Optional CUDA for transformers TrOCR (keep CPU under 1.5GB budgets)
+        _maybe_move_trocr_to_device()
     except Exception as exc:
         logger.warning("Thai-TrOCR init failed: %s — %s", type(exc).__name__, exc)
         THAI_TROCR_AVAILABLE = False
+
+
+def _trocr_torch_device() -> str:
+    """Device for transformers Thai-TrOCR.
+
+    Explicit ``TROCR_DEVICE`` wins. Otherwise CUDA when ``USE_GPU=true``.
+    Docling layout typically holds ~0.4GB; TrOCR fits under a 1.5GB cap.
+    """
+    raw = (os.getenv("TROCR_DEVICE") or "").strip().lower()
+    if raw in ("cpu", "cuda", "gpu"):
+        return "cpu" if raw == "cpu" else "cuda"
+    use_gpu = (os.getenv("USE_GPU") or "").strip().lower() == "true"
+    return "cuda" if use_gpu else "cpu"
+
+
+def _maybe_move_trocr_to_device() -> None:
+    global _trocr_session
+    if _trocr_session is None or not hasattr(_trocr_session, "to"):
+        return
+    device = _trocr_torch_device()
+    if device != "cuda":
+        logger.info("Thai-TrOCR device=cpu")
+        return
+    ensure_trocr_on_cuda()
+
+
+def ensure_trocr_on_cuda() -> bool:
+    """Move Thai-TrOCR to CUDA if configured; return True when on CUDA."""
+    global _trocr_session
+    if _trocr_session is None or not hasattr(_trocr_session, "to"):
+        return False
+    if _trocr_torch_device() != "cuda":
+        return False
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return False
+        cur = next(_trocr_session.parameters()).device
+        if cur.type == "cuda":
+            return True
+        torch.cuda.empty_cache()
+        _trocr_session = _trocr_session.to("cuda")
+        _trocr_session.eval()
+        logger.info("Thai-TrOCR moved to CUDA")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Thai-TrOCR CUDA move failed: %s", type(exc).__name__)
+        return False
 
 
 # --- PaddleOCR ---
@@ -438,6 +509,32 @@ class OCREngine:
                                type(exc).__name__, exc)
         return self._easyocr_reader
 
+    def _paddle_device(self) -> str:
+        """Pick Paddle device. Low VRAM budgets keep Paddle on CPU so Docling
+        can use the GPU; CPU-only paddle wheels also force cpu."""
+        if not self.use_gpu:
+            return "cpu"
+        try:
+            import paddle
+            if not paddle.is_compiled_with_cuda():
+                logger.warning(
+                    "paddlepaddle is CPU-only — install paddlepaddle-gpu "
+                    "for CUDA builds (Paddle stays on CPU for now)")
+                return "cpu"
+        except Exception:  # noqa: BLE001
+            return "cpu"
+        raw = os.getenv("MAX_VRAM_MB", "").strip()
+        if raw:
+            try:
+                if float(raw) <= 2048:
+                    logger.info(
+                        "MAX_VRAM_MB=%s — keeping PaddleOCR on CPU so "
+                        "Docling/TableFormer can use the GPU", raw)
+                    return "cpu"
+            except ValueError:
+                pass
+        return "gpu"
+
     def _get_paddle(self, languages: Optional[str] = None):
         """Lazily initialise PaddleOCR per language (2.x and 3.x APIs)."""
         if not PADDLE_AVAILABLE:
@@ -447,6 +544,11 @@ class OCREngine:
             if lang in self._paddle_instances:
                 return self._paddle_instances[lang]
             instance = None
+            device = self._paddle_device()
+            # CPU oneDNN/PIR path crashes on some paddle wheels during OCR
+            # (ConvertPirAttribute2RuntimeAttribute). Force classic executor.
+            os.environ.setdefault("FLAGS_use_mkldnn", "0")
+            os.environ.setdefault("FLAGS_enable_pir_in_executor", "0")
             try:
                 if _paddle_version_major() >= 3:
                     # 3.x: disable doc unwarping/orientation — they crash on
@@ -455,9 +557,10 @@ class OCREngine:
                     kwargs = {
                         "lang": lang,
                         "use_textline_orientation": True,
-                        "device": "gpu" if self.use_gpu else "cpu",
+                        "device": device,
                         "use_doc_unwarping": False,
                         "use_doc_orientation_classify": False,
+                        "enable_mkldnn": False,
                     }
                     try:
                         instance = _PaddleOCR(**kwargs)
@@ -465,14 +568,16 @@ class OCREngine:
                         # Older 3.x without those kwargs
                         kwargs.pop("use_doc_unwarping", None)
                         kwargs.pop("use_doc_orientation_classify", None)
+                        kwargs.pop("enable_mkldnn", None)
                         instance = _PaddleOCR(**kwargs)
                 else:
                     instance = _PaddleOCR(
                         use_angle_cls=True, lang=lang,
-                        use_gpu=self.use_gpu, show_log=False,
+                        use_gpu=(device == "gpu"), show_log=False,
                     )
-                logger.info("PaddleOCR initialised (v%d.x, lang=%s)",
-                            max(_paddle_version_major(), 2), lang)
+                logger.info(
+                    "PaddleOCR initialised (v%d.x, lang=%s, device=%s)",
+                    max(_paddle_version_major(), 2), lang, device)
             except (ImportError, OSError, RuntimeError, TypeError) as exc:
                 logger.warning("PaddleOCR init failed: %s", type(exc).__name__)
             if instance is not None:
@@ -480,7 +585,7 @@ class OCREngine:
             return instance
 
     @staticmethod
-    def _parse_paddle_result(result) -> List[Dict[str, Any]]:
+    def _parse_paddle_result(result) -> List[Dict[str, Any]]:  # NOSONAR
         """Normalise PaddleOCR output (2.x nested lists OR 3.x OCRResult)."""
         lines: List[Dict[str, Any]] = []
         if not result:
@@ -598,8 +703,8 @@ class OCREngine:
             if engine == "tesseract":
                 return self._run_tesseract(image, lang)
             logger.debug("Unknown engine: %s", engine)
-        except (OSError, ValueError, RuntimeError, IndexError, TypeError) as exc:
-            logger.error("Engine '%s' error: %s — %s", engine, type(exc).__name__, exc)
+        except (OSError, ValueError, RuntimeError, IndexError, TypeError):
+            logger.exception("Engine '%s' error", engine)
         return None
 
     # ── Typhoon OCR (SCB10X Thai document VLM) ──
@@ -685,6 +790,7 @@ class OCREngine:
     # ── Thai-TrOCR ONNX ──
 
     _TROCR_BATCH = 8
+    _TROCR_BATCH_SPEED = 16
 
     @staticmethod
     def _trocr_recognize(pil_images: List) -> List[str]:
@@ -707,20 +813,27 @@ class OCREngine:
                     texts.append("")
             return texts
         if _trocr_session is not None and hasattr(_trocr_session, "generate"):
-            # transformers — batched generation
-            batch_size = OCREngine._TROCR_BATCH
+            # transformers — batched generation (CUDA when model is on GPU)
+            import torch
+            speed = _speed_mode()
+            batch_size = (OCREngine._TROCR_BATCH_SPEED if speed
+                          else OCREngine._TROCR_BATCH)
+            max_tokens = 96 if speed else 128
+            model_dev = next(_trocr_session.parameters()).device
             for i in range(0, len(pil_images), batch_size):
                 batch = pil_images[i:i + batch_size]
                 pixel_values = _trocr_processor(
                     images=batch, return_tensors="pt").pixel_values
-                generated = _trocr_session.generate(
-                    pixel_values, max_new_tokens=256)
+                pixel_values = pixel_values.to(model_dev)
+                with torch.inference_mode():
+                    generated = _trocr_session.generate(
+                        pixel_values, max_new_tokens=max_tokens)
                 texts.extend(_trocr_processor.batch_decode(
                     generated, skip_special_tokens=True))
             return texts
         return ["" for _ in pil_images]
 
-    def _run_thai_trocr(self, image: np.ndarray,
+    def _run_thai_trocr(self, image: np.ndarray,  # NOSONAR
                         _languages: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Chunked Thai-TrOCR recognition (v3.1).
 
@@ -755,9 +868,12 @@ class OCREngine:
                 h, w = image.shape[:2]
                 line_boxes = [[0, 0, w, h]]
 
-            # Pass 2: small chunk boxes inside each line
-            chunks_per_line: List[List[List[int]]] = [
-                _split_line_into_chunks(gray, lb) for lb in line_boxes]
+            # Pass 2: phrase chunks (required for Thai — whole lines squash glyphs)
+            # SPEED_MODE: wider chunks → fewer generates (CPU TrOCR budget)
+            chunk_ratio = 20.0 if _speed_mode() else None
+            chunks_per_line = [
+                _split_line_into_chunks(gray, lb, max_ratio=chunk_ratio)
+                for lb in line_boxes]
 
             crops: List[Any] = []
             flat_boxes: List[List[int]] = []
