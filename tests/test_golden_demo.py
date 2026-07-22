@@ -22,8 +22,6 @@ from docx.oxml.ns import qn  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 PDF = ROOT / "tests" / "fixtures" / "testocrtor-demo.pdf"
-if not PDF.exists():
-    PDF = ROOT / "tests" / "testocrtor-demo.pdf"
 GOLD = ROOT / "tests" / "Expected-output-testocr-demon.docx"
 
 _THAI_RE = re.compile(r"[\u0E00-\u0E7F]")

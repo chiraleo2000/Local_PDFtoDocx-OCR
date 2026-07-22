@@ -394,6 +394,53 @@ def ensure_trocr_on_cuda() -> bool:
         return False
 
 
+def cascade_trocr_to_cuda() -> bool:
+    """After Docling finishes, free VRAM and put Thai-TrOCR on CUDA.
+
+    Sharing Docling+TrOCR on a 1.5GB card makes Thai garbage. Cascade
+    (layout first, then OCR) keeps both under the cap and is far faster
+    than CPU TrOCR bands.
+    """
+    global _trocr_session
+    _check_thai_trocr(preload=True)
+    if _trocr_session is None or not hasattr(_trocr_session, "to"):
+        return False
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return False
+        # Drop Docling / other CUDA caches before loading TrOCR
+        torch.cuda.empty_cache()
+        cur = next(_trocr_session.parameters()).device
+        if cur.type == "cuda":
+            logger.info("Thai-TrOCR already on CUDA (cascade)")
+            return True
+        _trocr_session = _trocr_session.to("cuda")
+        _trocr_session.eval()
+        logger.info("Thai-TrOCR cascade → CUDA")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("TrOCR cascade CUDA failed: %s", type(exc).__name__)
+        return False
+
+
+def trocr_to_cpu() -> None:
+    """Move Thai-TrOCR back to CPU to free VRAM for Docling."""
+    global _trocr_session
+    if _trocr_session is None or not hasattr(_trocr_session, "to"):
+        return
+    try:
+        import torch
+        cur = next(_trocr_session.parameters()).device
+        if cur.type == "cpu":
+            return
+        _trocr_session = _trocr_session.to("cpu")
+        torch.cuda.empty_cache()
+        logger.info("Thai-TrOCR moved back to CPU")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("TrOCR→CPU failed: %s", type(exc).__name__)
+
+
 # --- PaddleOCR ---
 PADDLE_AVAILABLE = False
 _PaddleOCR = None
@@ -818,8 +865,16 @@ class OCREngine:
             speed = _speed_mode()
             batch_size = (OCREngine._TROCR_BATCH_SPEED if speed
                           else OCREngine._TROCR_BATCH)
+            # Prefer max_new_tokens only (avoid dual max_length warning)
             max_tokens = 96 if speed else 128
             model_dev = next(_trocr_session.parameters()).device
+            # Clear conflicting max_length on generation_config
+            try:
+                gc = getattr(_trocr_session, "generation_config", None)
+                if gc is not None and getattr(gc, "max_length", None):
+                    gc.max_length = None
+            except Exception:
+                pass
             for i in range(0, len(pil_images), batch_size):
                 batch = pil_images[i:i + batch_size]
                 pixel_values = _trocr_processor(
@@ -827,7 +882,11 @@ class OCREngine:
                 pixel_values = pixel_values.to(model_dev)
                 with torch.inference_mode():
                     generated = _trocr_session.generate(
-                        pixel_values, max_new_tokens=max_tokens)
+                        pixel_values,
+                        max_new_tokens=max_tokens,
+                        do_sample=False,
+                        num_beams=1,
+                    )
                 texts.extend(_trocr_processor.batch_decode(
                     generated, skip_special_tokens=True))
             return texts
@@ -869,8 +928,21 @@ class OCREngine:
                 line_boxes = [[0, 0, w, h]]
 
             # Pass 2: phrase chunks (required for Thai — whole lines squash glyphs)
-            # SPEED_MODE: wider chunks → fewer generates (CPU TrOCR budget)
-            chunk_ratio = 20.0 if _speed_mode() else None
+            # SPEED_MODE: wider chunks → fewer generates
+            # CUDA cascade: still chunk, but allow slightly denser crops
+            on_cuda = False
+            try:
+                if (_trocr_session is not None
+                        and hasattr(_trocr_session, "parameters")):
+                    on_cuda = next(_trocr_session.parameters()).device.type == "cuda"
+            except Exception:
+                on_cuda = False
+            if _speed_mode():
+                # CUDA is fast enough for normal chunk width; wide chunks
+                # (20–28×) make Thai-TrOCR hallucinate on this demo PDF.
+                chunk_ratio = 8.0 if on_cuda else 16.0
+            else:
+                chunk_ratio = None
             chunks_per_line = [
                 _split_line_into_chunks(gray, lb, max_ratio=chunk_ratio)
                 for lb in line_boxes]

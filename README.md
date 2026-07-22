@@ -4,7 +4,7 @@
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
-![Version](https://img.shields.io/badge/version-0.5.5-purple)
+![Version](https://img.shields.io/badge/version-0.5.6-purple)
 
 ## Features
 

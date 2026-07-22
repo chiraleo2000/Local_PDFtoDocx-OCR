@@ -6,9 +6,15 @@ dist/
 build/
 *.egg
 .eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # Virtual environment
 .venv/
+.venv*/
 venv/
 env/
 
@@ -28,10 +34,10 @@ temp/
 .DS_Store
 Thumbs.db
 
-# Test outputs & temp scripts
+# Test / E2E outputs
+e2e_output/
 test_selenium_output/
 tests/testocrtor.pdf
-*.docx
 *.html
 test_output.txt
 test_results_full.txt
@@ -46,6 +52,10 @@ _run_test.py
 *.log
 .installed_ok
 .theme_pref
+
+# Generated DOCX (keep gold expected output)
+*.docx
+!tests/Expected-output*.docx
 
 # Correction / training data (user-generated)
 correction_data/

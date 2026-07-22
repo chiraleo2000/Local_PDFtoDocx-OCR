@@ -255,10 +255,14 @@ class TestOCREngine:
         assert "paddleocr" in engines
 
     def test_easyocr_available(self):
-        from src.ocr_engine import EASYOCR_AVAILABLE
-        if not EASYOCR_AVAILABLE:
-            pytest.skip("EasyOCR not installed in this environment")
-        assert EASYOCR_AVAILABLE
+        """EasyOCR is a required optional override engine — package must import.
+
+        Unit tests set LOCALOCR_SKIP_HEAVY_IMPORTS=1 so EASYOCR_AVAILABLE stays
+        False at module load; still verify the dependency is installed.
+        """
+        import easyocr
+        assert hasattr(easyocr, "Reader")
+        assert callable(easyocr.Reader)
 
     def test_ocr_image(self):
         """OCR should return text from a simple image."""

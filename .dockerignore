@@ -1,5 +1,6 @@
 .git
 .venv
+.venv*
 __pycache__
 *.py[cod]
 *.pyo
@@ -11,6 +12,7 @@ htmlcov
 build
 dist
 *.spec
+e2e_output
 test_selenium_output
 correction_data
 *.log
@@ -18,3 +20,5 @@ correction_data
 .installed_ok
 .theme_pref
 node_modules
+*.docx
+!tests/Expected-output*.docx

@@ -5,8 +5,8 @@ services:
       dockerfile: Dockerfile
       args:
         ACCELERATOR: cpu
-    image: localocr:0.5.5-cpu
-    container_name: localocr-cpu-0.5.5
+    image: localocr:0.5.6-cpu
+    container_name: localocr-cpu-0.5.6
     restart: unless-stopped
     environment:
       ACCELERATOR: cpu
@@ -59,8 +59,8 @@ services:
       dockerfile: Dockerfile
       args:
         ACCELERATOR: cuda
-    image: localocr:0.5.5-cuda
-    container_name: localocr-gpu-0.5.5
+    image: localocr:0.5.6-cuda
+    container_name: localocr-gpu-0.5.6
     restart: unless-stopped
     environment:
       ACCELERATOR: cuda
@@ -73,9 +73,11 @@ services:
       MAX_VRAM_MB: "1536"
       PYTORCH_CUDA_ALLOC_CONF: "max_split_size_mb:64,expandable_segments:True"
       CUDA_DEVICE: "0"
-      # Docling on GPU; Thai-TrOCR on CPU (sharing 1.5GB makes TrOCR garbage)
+      # Docling on GPU first; Thai-TrOCR cascades to CUDA after Docling
+      # frees VRAM (CPU TrOCR bands were ~70s/page — unacceptable).
       TROCR_DEVICE: cpu
       DOCLING_DEVICE: cuda
+      SPEED_TROCR_CUDA: "1"
       SKIP_YOLO_LOAD: "1"
       SERVER_HOST: 0.0.0.0
       SERVER_PORT: "7870"
@@ -83,9 +85,15 @@ services:
       SPEED_MODE: "1"
       TARGET_SEC_PER_PAGE: "10"
       SPEED_BAND_OCR: "1"
-      SPEED_OCR_BANDS: "2"
-      SPEED_BAND_SCALE: "4.0"
-      THAI_FAST_MIN_SCALE: "6.0"
+      SPEED_REGION_OCR: "1"
+      SPEED_OCR_BANDS: "4"
+      SPEED_BAND_MIN_THAI: "400"
+      # Per-cell Thai-TrOCR on Docling table grid (PDF-aligned bboxes)
+      SPEED_TABLE_OCR: "1"
+      # Reuse page renders (auto) — no extra 4× PDF render
+      SPEED_BAND_SCALE: "auto"
+      THAI_FAST_MIN_SCALE: "4.0"
+      DOCLING_IMAGES_SCALE: "2.0"
       QUALITY_PRESET: fast
       OCR_ENGINE: auto
       DISABLE_TROCR_PRELOAD: "0"
@@ -94,14 +102,13 @@ services:
       LAYOUT_BACKEND: docling
       DOCLING_USE_LOCALOCR_PLUGIN: "0"
       DOCLING_REOCR: "1"
-      # off under SPEED_MODE (YOLO recovery exceeds 10s/page); use always for quality
+      # YOLO recovery OOMs the 1.5GB laptop GPU — use band fill instead
       DOCLING_SPARSE_RECOVERY: "0"
       DOCLING_FULLPAGE_SUPPLEMENT: "0"
       # Keep Docling OCR ON for text *region detection* (RapidOCR text is
       # discarded; Thai-TrOCR re-reads). Off collapses list lines to "3)" only.
       DOCLING_DO_OCR: "1"
       DOCLING_TABLE_MODE: fast
-      DOCLING_IMAGES_SCALE: "1.5"
       DOCLING_NUM_THREADS: "2"
       DOCLING_WARMUP: "1"
       SKIP_PADDLE_PRELOAD: "1"

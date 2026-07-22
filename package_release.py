@@ -1,11 +1,11 @@
 """
-Package LocalOCR v0.5.5 release artifacts (4 files).
+Package LocalOCR v0.5.6 release artifacts (4 files).
 
 Outputs under dist/release/:
-  1. LocalOCR-v0.5.5-windows-setup.exe   — GUI installer
-  2. LocalOCR-v0.5.5-windows-x64.zip     — Windows source + install.bat
-  3. LocalOCR-v0.5.5-linux-x64.zip       — Linux source + install.sh
-  4. LocalOCR-v0.5.5-macos.zip           — macOS source + install.sh
+  1. LocalOCR-v0.5.6-windows-setup.exe   — GUI installer
+  2. LocalOCR-v0.5.6-windows-x64.zip     — Windows source + install.bat
+  3. LocalOCR-v0.5.6-linux-x64.zip       — Linux source + install.sh
+  4. LocalOCR-v0.5.6-macos.zip           — macOS source + install.sh
 
 If dist/LocalOCR/ (PyInstaller onedir) exists, it is also zipped as the
 Windows portable bundle inside the windows-x64 zip when --prefer-bundle
@@ -18,7 +18,7 @@ import shutil
 import zipfile
 from pathlib import Path
 
-VERSION = "0.5.5"
+VERSION = "0.5.6"
 ROOT = Path(__file__).resolve().parent
 DIST = ROOT / "dist"
 OUT = DIST / "release"

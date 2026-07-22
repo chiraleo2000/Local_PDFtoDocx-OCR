@@ -240,7 +240,7 @@ def clean_text(text: str, languages: str = "eng") -> str:
         text = text.replace("เเ", "แ")
         # Collapse TrOCR hallucination runs (วรรทวรรทวรรณ…)
         text = _THAI_HALLUCINATION_RUN.sub("", text)
-        text = re.sub(r"(วรร[ทณ])\1{1,}", r"\1", text)
+        text = re.sub(r"(วรร[ทณ])\1+", r"\1", text)
     text = re.sub(r"[^\S\n]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     lines = [line.strip() for line in text.split("\n")]
@@ -344,6 +344,334 @@ def _page_thai_chars(blocks: List["ContentBlock"]) -> int:
     return n
 
 
+# Numbered heading stubs ("2." / "2.1") — linear pattern (no nested \s* optionals)
+_SECTION_STUB_RE = re.compile(r"^\d{1,2}(?:[.)]\d{0,2})?[.)]?\s*$")
+
+
+def _looks_weak_thai(text: str) -> bool:
+    """True when text is empty, tiny, or mostly non-Thai garbage."""
+    t = (text or "").strip()
+    if len(t) < 8:
+        return True
+    # Truncated numbered headings ("2." / "2.1") need a wider re-OCR crop
+    if _SECTION_STUB_RE.match(t):
+        return True
+    thai = len(_THAI_CHAR_RE.findall(t))
+    if thai < max(4, len(t) // 5):
+        return True
+    # Latin hallucination runs common when TrOCR sees multi-line bands
+    letters = sum(1 for c in t if ("A" <= c <= "Z") or ("a" <= c <= "z"))
+    if letters > thai * 2 and letters > 20:
+        return True
+    return False
+
+
+def _heading_stub_crop(
+        img: np.ndarray, bb: List[float],
+) -> Optional[Tuple[np.ndarray, int, int, int, int]]:
+    """Widen a stub heading bbox into a full-line crop; None if too small."""
+    h, w = img.shape[:2]
+    line_h = max(int(bb[3] - bb[1]), int(0.014 * h), 18)
+    mid_y = (bb[1] + bb[3]) / 2.0
+    x0 = max(0, int(bb[0] - 0.01 * w))
+    y0 = max(0, int(mid_y - line_h))
+    x1 = min(w, int(bb[0] + 0.72 * w))
+    y1 = min(h, int(mid_y + line_h))
+    if x1 - x0 < 20 or y1 - y0 < 8:
+        return None
+    return img[y0:y1, x0:x1], x0, y0, x1, y1
+
+
+def _try_reocr_heading_stub(
+        ocr: "OCREngine", block: "ContentBlock",
+        page_images: Dict[int, np.ndarray], languages: str,
+) -> bool:
+    """Re-OCR one stub heading in-place. Return True if text improved."""
+    text = (block.text or "").strip()
+    if not _SECTION_STUB_RE.match(text):
+        return False
+    img = page_images.get(block.page)
+    bb = block.bbox
+    if img is None or not bb or len(bb) < 4:
+        return False
+    cropped = _heading_stub_crop(img, bb)
+    if cropped is None:
+        return False
+    crop, x0, y0, x1, y1 = cropped
+    try:
+        res = ocr._run_thai_trocr(crop, languages) or {}
+    except Exception:  # noqa: BLE001
+        return False
+    got = clean_text(res.get("text") or "", languages)
+    if not got or len(got) <= len(text) or _SECTION_STUB_RE.match(got.strip()):
+        return False
+    block.text = got
+    block.lines = [{"text": got, "bbox": [
+        float(x0), float(y0), float(x1), float(y1)]}]
+    return True
+
+
+def _recover_section_headings(
+        ocr: "OCREngine",
+        blocks: List["ContentBlock"],
+        page_images: Dict[int, np.ndarray],
+        languages: str,
+) -> List["ContentBlock"]:
+    """Re-OCR truncated numbered headings (e.g. '2.' → '2.1 …')."""
+    fixed = 0
+    for b in blocks:
+        if b.block_type not in ("text", "caption"):
+            continue
+        if _try_reocr_heading_stub(ocr, b, page_images, languages):
+            fixed += 1
+    if fixed:
+        logger.info("Recovered %d truncated section heading(s)", fixed)
+    return blocks
+
+
+def _pages_for_section_recovery(
+        blocks: List["ContentBlock"],
+        page_images: Dict[int, np.ndarray],
+) -> List[int]:
+    """Prefer pages that already mention section 2.x."""
+    page_hits = set()
+    for b in blocks:
+        t = b.text or ""
+        if "2.2" in t or "2.3" in t or re.search(r"(?:^|\s)2\s*[.)]", t):
+            page_hits.add(b.page)
+    return sorted(page_hits) or sorted(page_images.keys())
+
+
+def _markers_in_text(text: str, missing: List[str]) -> List[str]:
+    """Return which missing markers appear in *text* (raw or whitespace-stripped)."""
+    hit = [m for m in missing if m in text]
+    if hit:
+        return hit
+    norm = re.sub(r"\s+", "", text).replace(",", ".")
+    return [m for m in missing if m in norm]
+
+
+def _best_marker_line(text: str, hit: List[str]) -> str:
+    """Pick the single line that contains a recovered section marker."""
+    best = text.strip()
+    for line in re.split(r"[\n\r]+", text):
+        ln = line.strip()
+        if not ln:
+            continue
+        compact = re.sub(r"\s+", "", ln).replace(",", ".")
+        if any(m in ln or m in compact for m in hit):
+            return ln
+    return best
+
+
+def _band_marker_hit(
+        ocr: "OCREngine", crop: np.ndarray, languages: str,
+        still: List[str], page_num: int, y0: int, y1: int, w: float, h: float,
+) -> Optional[Tuple["ContentBlock", List[str]]]:
+    """OCR one strip; return (block, hits) when a missing marker is found."""
+    try:
+        res = ocr._run_thai_trocr(crop, languages) or {}
+    except Exception:  # noqa: BLE001
+        return None
+    text = clean_text(res.get("text") or "", languages)
+    if not text.strip():
+        return None
+    hit = _markers_in_text(text, still)
+    if not hit:
+        return None
+    best = _best_marker_line(text, hit)
+    if len(best) < 4:
+        return None
+    bbox = [0.0, float(y0), float(0.88 * w), float(y1)]
+    block = ContentBlock(
+        block_type="text", page=page_num,
+        y_top=float(y0), x_left=0.0, text=best, bbox=bbox,
+        page_width=float(w), page_height=float(h),
+        lines=[{"text": best, "bbox": list(bbox)}],
+    )
+    return block, hit
+
+
+def _strip_ocr_band_for_markers(
+        ocr: "OCREngine", img: np.ndarray, page_num: int,
+        languages: str, missing: List[str],
+) -> Tuple[List["ContentBlock"], List[str]]:
+    """Scan horizontal strips; return new blocks and markers found."""
+    extra: List[ContentBlock] = []
+    found: List[str] = []
+    still = list(missing)
+    h, w = img.shape[:2]
+    for i in range(18):
+        if not still:
+            break
+        y0 = int(h * i / 18)
+        y1 = int(h * (i + 1) / 18)
+        if y1 - y0 < 8:
+            continue
+        hit = _band_marker_hit(
+            ocr, img[y0:y1, 0:int(0.88 * w)], languages, still,
+            page_num, y0, y1, float(w), float(h))
+        if hit is None:
+            continue
+        block, markers = hit
+        extra.append(block)
+        for m in markers:
+            if m in still:
+                still.remove(m)
+                found.append(m)
+    return extra, found
+
+
+def _recover_missing_section_markers(
+        ocr: "OCREngine",
+        blocks: List["ContentBlock"],
+        page_images: Dict[int, np.ndarray],
+        languages: str,
+        markers: tuple = ("2.1", "2.3", "2.4"),
+) -> List["ContentBlock"]:
+    """Strip-OCR pages to recover section numbers Docling never emitted."""
+    joined = "\n".join(
+        (b.text or "") for b in blocks
+        if b.block_type in ("text", "caption", "table"))
+    missing = [m for m in markers if m not in joined]
+    if not missing or not page_images:
+        return blocks
+    extra: List[ContentBlock] = []
+    found: List[str] = []
+    for page_num in _pages_for_section_recovery(blocks, page_images):
+        img = page_images.get(page_num)
+        if img is None:
+            continue
+        band_extra, band_found = _strip_ocr_band_for_markers(
+            ocr, img, page_num, languages, missing)
+        extra.extend(band_extra)
+        for m in band_found:
+            if m in missing:
+                missing.remove(m)
+            found.append(m)
+        if not missing:
+            break
+    if extra:
+        blocks = list(blocks) + extra
+        blocks.sort(key=lambda b: (b.page, b.y_top, b.x_left))
+        logger.info(
+            "Strip-OCR recovered section markers: %s", ", ".join(found))
+    return blocks
+
+
+def _apply_region_reocr_result(
+        block: "ContentBlock", res: Dict[str, Any], text: str,
+        languages: str, x0: int, y0: int, x1: int, y1: int,
+        bb: List[float],
+) -> None:
+    """Write OCR text/lines onto *block* (mutates in place)."""
+    block.text = text
+    block.lines = []
+    for seg in res.get("lines") or []:
+        st = clean_text(seg.get("text") or "", languages)
+        if not st:
+            continue
+        sb = seg.get("bbox") or [0, 0, x1 - x0, y1 - y0]
+        if len(sb) >= 4:
+            block.lines.append({
+                "text": st,
+                "bbox": [float(sb[0]) + x0, float(sb[1]) + y0,
+                         float(sb[2]) + x0, float(sb[3]) + y0],
+                "confidence": float(seg.get("confidence") or 0.8),
+            })
+    if not block.lines:
+        block.lines = [{"text": text, "bbox": list(bb)}]
+
+
+def _padded_region_crop(
+        img: np.ndarray, bb: List[float],
+) -> Optional[Tuple[np.ndarray, int, int, int, int]]:
+    """Pad a text bbox for Thai vowels; None if crop is too small."""
+    h, w = img.shape[:2]
+    x0 = max(0, int(bb[0])); y0 = max(0, int(bb[1]))
+    x1 = min(w, int(bb[2])); y1 = min(h, int(bb[3]))
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return None
+    pad = max(2, int(0.01 * h))
+    x0 = max(0, x0 - pad); y0 = max(0, y0 - pad)
+    x1 = min(w, x1 + pad); y1 = min(h, y1 + pad)
+    return img[y0:y1, x0:x1], x0, y0, x1, y1
+
+
+def _accept_weak_reocr(block: "ContentBlock", text: str) -> bool:
+    """True when weak re-OCR text is still worth keeping over the original."""
+    if (block.text or "").strip() and not _looks_weak_thai(block.text):
+        return False
+    return bool(text.strip() and len(text) > len(block.text or ""))
+
+
+def _reocr_one_text_region(
+        ocr: "OCREngine", block: "ContentBlock",
+        page_images: Dict[int, np.ndarray], languages: str,
+) -> bool:
+    """Re-OCR one weak text block. Return True if updated."""
+    img = page_images.get(block.page)
+    bb = block.bbox
+    if img is None or not bb or len(bb) < 4 or not _looks_weak_thai(block.text):
+        return False
+    cropped = _padded_region_crop(img, bb)
+    if cropped is None:
+        return False
+    crop, x0, y0, x1, y1 = cropped
+    try:
+        res = ocr._run_thai_trocr(crop, languages) or {}
+    except Exception:  # noqa: BLE001
+        return False
+    text = clean_text(res.get("text") or "", languages)
+    if (not text.strip() or _looks_weak_thai(text)
+            ) and not _accept_weak_reocr(block, text):
+        return False
+    _apply_region_reocr_result(
+        block, res, text, languages, x0, y0, x1, y1, bb)
+    return True
+
+
+def _reocr_text_regions(
+        ocr: "OCREngine",
+        blocks: List["ContentBlock"],
+        page_images: Dict[int, np.ndarray],
+        languages: str,
+) -> List["ContentBlock"]:
+    """Re-OCR Docling text/caption crops with Thai-TrOCR (CUDA cascade).
+
+    Uses layout bboxes (accurate) instead of full-page bands (hallucinate).
+    """
+    replaced = 0
+    for b in blocks:
+        if b.block_type not in ("text", "caption"):
+            continue
+        if _reocr_one_text_region(ocr, b, page_images, languages):
+            replaced += 1
+    if replaced:
+        logger.info("CUDA region re-OCR updated %d text block(s)", replaced)
+    return blocks
+
+
+def _band_lines_from_result(
+        res: Dict[str, Any], languages: str, y0: int, w: int, band_h: int,
+) -> List[Dict[str, Any]]:
+    """Shift per-line bboxes from a band crop into page coordinates."""
+    lines = []
+    for seg in res.get("lines") or []:
+        st = clean_text(seg.get("text") or "", languages)
+        if not st:
+            continue
+        bb = seg.get("bbox") or [0, 0, w, band_h]
+        if len(bb) >= 4:
+            lines.append({
+                "text": st,
+                "bbox": [float(bb[0]), float(bb[1]) + y0,
+                         float(bb[2]), float(bb[3]) + y0],
+                "confidence": float(seg.get("confidence") or 0.8),
+            })
+    return lines
+
+
 def _band_trocr_text_blocks(
         ocr: "OCREngine",
         page_img: np.ndarray,
@@ -366,27 +694,14 @@ def _band_trocr_text_blocks(
         y1 = int(h * (i + 1) / bands)
         if y1 <= y0:
             continue
-        crop = page_img[y0:y1, :]
         try:
-            res = ocr._run_thai_trocr(crop, languages) or {}
+            res = ocr._run_thai_trocr(page_img[y0:y1, :], languages) or {}
         except Exception:  # noqa: BLE001
             continue
         text = clean_text(res.get("text") or "", languages)
         if not text.strip():
             continue
-        lines = []
-        for seg in res.get("lines") or []:
-            st = clean_text(seg.get("text") or "", languages)
-            if not st:
-                continue
-            bb = seg.get("bbox") or [0, 0, w, y1 - y0]
-            if len(bb) >= 4:
-                lines.append({
-                    "text": st,
-                    "bbox": [float(bb[0]), float(bb[1]) + y0,
-                             float(bb[2]), float(bb[3]) + y0],
-                    "confidence": float(seg.get("confidence") or 0.8),
-                })
+        lines = _band_lines_from_result(res, languages, y0, w, y1 - y0)
         bbox = [0.0, float(y0), float(w), float(y1)]
         if lines:
             bbox = [
@@ -541,6 +856,33 @@ def _figure_area(block: "ContentBlock") -> float:
     return float(fig.get("width", 0) or 0) * float(fig.get("height", 0) or 0)
 
 
+def _select_page_structure(
+        items: List["ContentBlock"], page: int,
+        max_figures_per_page: int, max_tables_per_page: int,
+) -> Tuple[List["ContentBlock"], List["ContentBlock"]]:
+    """Pick the largest figures/tables for one page."""
+    figs = [b for b in items if b.block_type == "figure"
+            and (b.figure or {}).get("base64")]
+    tables = [b for b in items if b.block_type == "table"
+              and ((b.table_html or "").strip() or (b.text or "").strip())]
+    figs.sort(key=_figure_area, reverse=True)
+    if figs:
+        min_area = max(_figure_area(figs[0]) * 0.08, 1.0)
+        figs = [f for f in figs if _figure_area(f) >= min_area]
+    figs = figs[:max_figures_per_page]
+    tables.sort(
+        key=lambda t: len((t.table_html or "") + (t.text or "")),
+        reverse=True)
+    tables = tables[:max_tables_per_page]
+    dropped = len(items) - len(figs) - len(tables)
+    if dropped:
+        logger.info(
+            "Pruned %d structure block(s) on page %d "
+            "(kept %d figures, %d tables)",
+            dropped, page + 1, len(figs), len(tables))
+    return figs, tables
+
+
 def _prune_structure_blocks(
         blocks: List["ContentBlock"],
         max_figures_per_page: int = 2,
@@ -563,28 +905,10 @@ def _prune_structure_blocks(
     kept_figs: List[ContentBlock] = []
     kept_tables: List[ContentBlock] = []
     for page, items in by_page.items():
-        figs = [b for b in items if b.block_type == "figure"
-                and (b.figure or {}).get("base64")]
-        tables = [b for b in items if b.block_type == "table"
-                  and ((b.table_html or "").strip() or (b.text or "").strip())]
-        figs.sort(key=_figure_area, reverse=True)
-        if figs:
-            top = _figure_area(figs[0])
-            min_area = max(top * 0.08, 1.0)
-            figs = [f for f in figs if _figure_area(f) >= min_area]
-        figs = figs[:max_figures_per_page]
-        tables.sort(
-            key=lambda t: len((t.table_html or "") + (t.text or "")),
-            reverse=True)
-        tables = tables[:max_tables_per_page]
+        figs, tables = _select_page_structure(
+            items, page, max_figures_per_page, max_tables_per_page)
         kept_figs.extend(figs)
         kept_tables.extend(tables)
-        dropped = len(items) - len(figs) - len(tables)
-        if dropped:
-            logger.info(
-                "Pruned %d structure block(s) on page %d "
-                "(kept %d figures, %d tables)",
-                dropped, page + 1, len(figs), len(tables))
 
     kept_figs.sort(key=_figure_area, reverse=True)
     kept_figs = kept_figs[:max_figures_total]
@@ -592,7 +916,6 @@ def _prune_structure_blocks(
         key=lambda t: len((t.table_html or "") + (t.text or "")),
         reverse=True)
     kept_tables = kept_tables[:max_tables_total]
-
     out = others + kept_figs + kept_tables
     out.sort(key=lambda b: (b.page, b.y_top, b.x_left))
     return out
@@ -629,7 +952,7 @@ class OCRPipeline:
     _THAI_FAST_MIN_SCALE_SPEED = 6.0  # ~432 DPI (1.5GB GPU speed path)
 
     @classmethod
-    def _thai_fast_min_scale(cls) -> float:
+    def _resolve_thai_fast_min_scale(cls) -> float:
         raw = os.getenv("THAI_FAST_MIN_SCALE", "").strip()
         if raw:
             try:
@@ -650,7 +973,7 @@ class OCRPipeline:
         parts = [p for p in re.split(r"[+\s]+", lang) if p]
         wants_thai = "tha" in lang or "th" in parts
         if wants_thai and quality == "fast":
-            scale = max(scale, cls._thai_fast_min_scale())
+            scale = max(scale, cls._resolve_thai_fast_min_scale())
         override = os.getenv("RENDER_DPI_SCALE", "").strip()
         if override:
             try:
@@ -872,12 +1195,20 @@ class OCRPipeline:
                     "1", "true", "yes", "on")
                 speed_mode = os.getenv("SPEED_MODE", "0").strip().lower() in (
                     "1", "true", "yes", "on")
-                # SPEED_MODE: skip YOLO recovery + full-page fill (10s/page budget)
+                # SPEED_MODE: keep sparse YOLO text recovery when Docling
+                # under-detects list lines (demo PDF); skip full-page fill.
                 if speed_mode:
                     fullpage_sup = False
-                    if sparse_raw in ("sparse", "text", "1", "true", "yes", "on"):
+                    # Allow "text"/"sparse" recovery under speed — needed when
+                    # Docling returns only 1 short text box for a long list.
+                    if sparse_raw in ("0", "false", "no", "off"):
                         sparse_recovery = False
                         always_merge = False
+                    elif sparse_raw in ("sparse", "text", "1", "true", "yes", "on"):
+                        sparse_recovery = True
+                        always_merge = False
+                        text_only = True
+                    # "always"/"full" still forced off in speed (too slow)
                 try:
                     # SPEED_MODE: one Docling pass on the full PDF (not N
                     # single-page temp PDFs) — critical for ~10s/page.
@@ -885,38 +1216,98 @@ class OCRPipeline:
                         self._notify_progress(
                             progress_callback, 0, progress_total,
                             f"Docling layout ({page_count} pages)…")
+                        # Keep TrOCR on CPU during Docling so VRAM stays free
+                        from .ocr_engine import trocr_to_cpu, cascade_trocr_to_cuda
+                        from .docling_adapter import docling_to_blocks
+                        try:
+                            trocr_to_cpu()
+                        except Exception:
+                            pass
                         page_images: Dict[int, np.ndarray] = {}
                         for i in range(page_count):
                             page_images[i] = self._render_page_image(
                                 doc[i], scale, 0.0, 0.0)
                         self._notify_progress(
                             progress_callback, 0, progress_total,
-                            "Docling + Thai-TrOCR…")
-                        all_blocks, total_tables, total_figures = (
-                            self.docling.convert_to_blocks(
-                                pdf_path, languages=langs,
-                                page_images=page_images))
-                        # SPEED_MODE: banded Thai-TrOCR supplies body text
-                        # (per-region text re-OCR is skipped in the adapter).
+                            "Docling layout…")
+                        # 1) Docling layout/tables on CUDA (TrOCR still on CPU)
+                        dl_doc = self.docling.convert(pdf_path)
+                        # 2) Free cache + move TrOCR to CUDA for Thai re-OCR
+                        cascade = os.getenv(
+                            "SPEED_TROCR_CUDA", "1").strip().lower() not in (
+                            "0", "false", "no", "off")
+                        if cascade:
+                            try:
+                                import torch
+                                if torch.cuda.is_available():
+                                    torch.cuda.empty_cache()
+                                if cascade_trocr_to_cuda():
+                                    logger.info(
+                                        "SPEED cascade: Thai-TrOCR on CUDA "
+                                        "after Docling convert")
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning(
+                                    "TrOCR cascade skipped: %s",
+                                    type(exc).__name__)
+                        self._notify_progress(
+                            progress_callback, 0, progress_total,
+                            "Thai-TrOCR regions…")
+                        # 3) Adapter re-OCR with CUDA TrOCR (SPEED_REGION_OCR=1)
+                        if dl_doc is None:
+                            all_blocks, total_tables, total_figures = [], 0, 0
+                        else:
+                            all_blocks = docling_to_blocks(
+                                dl_doc, ocr=self.ocr, page_images=page_images,
+                                languages=langs)
+                            if thai_job:
+                                all_blocks = _recover_section_headings(
+                                    self.ocr, all_blocks, page_images, langs)
+                                all_blocks = _recover_missing_section_markers(
+                                    self.ocr, all_blocks, page_images, langs)
+                            total_tables = sum(
+                                1 for b in all_blocks
+                                if b.block_type == "table")
+                            total_figures = sum(
+                                1 for b in all_blocks
+                                if b.block_type == "figure")
+                        # Optional band fill only when still Thai-sparse
                         band_ocr = os.getenv(
-                            "SPEED_BAND_OCR", "1").strip().lower() not in (
+                            "SPEED_BAND_OCR", "0").strip().lower() not in (
                             "0", "false", "no", "off")
                         if thai_job and band_ocr:
                             n_bands = int(os.getenv("SPEED_OCR_BANDS", "2")
                                           or "2")
-                            band_scale = float(
-                                os.getenv("SPEED_BAND_SCALE", "4.0") or "4.0")
+                            # Default: reuse Docling page renders (no 4× re-render)
+                            band_scale_env = (
+                                os.getenv("SPEED_BAND_SCALE", "") or "").strip()
+                            use_page_imgs = band_scale_env in (
+                                "", "0", "auto", "page")
+                            band_scale = (
+                                scale if use_page_imgs
+                                else float(band_scale_env or "2.0"))
                             by_page: Dict[int, List[ContentBlock]] = {}
                             for b in all_blocks:
                                 by_page.setdefault(b.page, []).append(b)
                             recovered: List[ContentBlock] = []
-                            # Lower-DPI band renders keep CPU TrOCR under budget
-                            band_doc = fitz.open(pdf_path)
+                            # Band OCR only if a page is still Thai-sparse
+                            band_doc = None
+                            if not use_page_imgs:
+                                band_doc = fitz.open(pdf_path)
                             try:
                                 for i in range(page_count):
                                     pblocks = by_page.get(i, [])
-                                    pimg = self._render_page_image(
-                                        band_doc[i], band_scale, 0.0, 0.0)
+                                    thai_now = _page_thai_chars(pblocks)
+                                    min_thai = int(
+                                        os.getenv("SPEED_BAND_MIN_THAI", "120")
+                                        or "120")
+                                    if thai_now >= min_thai:
+                                        recovered.extend(pblocks)
+                                        continue
+                                    if use_page_imgs:
+                                        pimg = page_images.get(i)
+                                    else:
+                                        pimg = self._render_page_image(
+                                            band_doc[i], band_scale, 0.0, 0.0)
                                     if pimg is None:
                                         recovered.extend(pblocks)
                                         continue
@@ -945,7 +1336,7 @@ class OCRPipeline:
                                                     ln["bbox"] = [
                                                         v * m for v in lb]
                                     if band_blocks:
-                                        before = _page_thai_chars(pblocks)
+                                        before = thai_now
                                         pblocks = _merge_complementary_blocks(
                                             pblocks, band_blocks,
                                             text_only=True)
@@ -956,7 +1347,8 @@ class OCRPipeline:
                                             _page_thai_chars(pblocks))
                                     recovered.extend(pblocks)
                             finally:
-                                band_doc.close()
+                                if band_doc is not None:
+                                    band_doc.close()
                             all_blocks = recovered
                             total_tables = sum(
                                 1 for b in all_blocks
@@ -964,6 +1356,8 @@ class OCRPipeline:
                             total_figures = sum(
                                 1 for b in all_blocks
                                 if b.block_type == "figure")
+                        # SPEED sparse YOLO disabled by default (OOMs 1.5GB).
+                        # Band OCR above handles Thai-sparse pages.
                         self._notify_progress(
                             progress_callback, page_count, progress_total,
                             f"Done Docling ({page_count} pages)")
@@ -1149,7 +1543,7 @@ class OCRPipeline:
                     f"Completed {completed}/{page_count} pages")
         return results
 
-    def _process_page_job(
+    def _process_page_job(  # NOSONAR
             self, pdf_path: str, page_num: int, scale: float, q: str,
             langs: str, header_trim: float, footer_trim: float,
             yolo_confidence: Optional[float],
@@ -1630,7 +2024,7 @@ class OCRPipeline:
                         page_num + 1, len(blocks))
         return blocks
 
-    def _vector_graphic_rects(self, page, page_area: float
+    def _vector_graphic_rects(self, page, page_area: float  # NOSONAR
                               ) -> List["fitz.Rect"]:
         """Cluster vector drawing primitives into logo/graphic rectangles."""
         try:

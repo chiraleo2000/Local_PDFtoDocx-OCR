@@ -1,6 +1,6 @@
 # ============================================
 # PDF-to-DOCX OCR Pipeline — Dependencies
-# v0.5.0  |  Strict policy: Thai → Thai-TrOCR, other → PaddleOCR
+# v0.5.6  |  Strict policy: Thai → Thai-TrOCR, other → PaddleOCR
 # ============================================
 
 # Core
@@ -35,11 +35,13 @@ requests>=2.31.0
 # ── OCR Engines (v3.0 strict policy) ──
 # Thai pages → Thai-TrOCR (openthaigpt/thai-trocr via transformers/ONNX)
 torch>=2.0.0                    # Thai-TrOCR inference (transformers backend)
+# Windows CPU fallback if default torch DLL fails:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 transformers>=4.37.0            # TrOCR processor + VisionEncoderDecoderModel
 onnxruntime>=1.17.0             # optional faster Thai-TrOCR ONNX inference
-# Other languages → PaddleOCR PP-OCRv5
+# Other languages → PaddleOCR (2.x and 3.x APIs both supported in ocr_engine)
 paddlepaddle>=2.6.0             # PaddlePaddle framework (required by paddleocr)
-paddleocr>=3.1.0                # PP-OCRv5 multilingual + per-line bboxes
+paddleocr>=2.7.0                # PP-OCR multilingual + per-line bboxes
 
 # Optional engines — used ONLY when explicitly selected (OCR_ENGINE=<name>)
 easyocr>=1.7.0                  # explicit override engine
