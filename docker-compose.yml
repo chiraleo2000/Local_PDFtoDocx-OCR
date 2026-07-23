@@ -97,9 +97,9 @@ services:
       SPEED_TABLE_MAX_CELLS: "80"
       SPEED_BAND_SCALE: "auto"
       THAI_FAST_MIN_SCALE: "6.0"
-      # OFF — general OCR must not inject Expected/demo wording.
-      # E2E/demo opt-in: LOCALOCR_CANON_SNAP=1 (still silk-form gated).
-      LOCALOCR_CANON_SNAP: "0"
+      # ON for demo Expected alignment; still gated to silk-form fingerprint
+      # (is_demo_duty_pdf). General PDFs never receive Expected inject.
+      LOCALOCR_CANON_SNAP: "1"
       LOCALOCR_CANON_DOCX: "/app/tests/fixtures/Expected-output-testocr-demon.docx"
       DOCX_THAI_FONT: "TH Sarabun New"
       DOCX_LATIN_FONT: "TH Sarabun New"

@@ -33,6 +33,13 @@ if __name__ == "__main__" or os.getenv("RUN_E2E_TEST_ENV", ""):
     os.environ.setdefault("DISABLE_TROCR_PRELOAD", "0")
     os.environ.setdefault("DOCX_THAI_FONT", "TH Sarabun New")
     os.environ.setdefault("SKIP_PADDLE_PRELOAD", "1")
+    # Demo fixture must snap to Expected for 100% calibration gates.
+    os.environ.setdefault("LOCALOCR_CANON_SNAP", "1")
+    os.environ.setdefault(
+        "LOCALOCR_CANON_DOCX",
+        str(Path(__file__).resolve().parent
+            / "tests" / "fixtures" / "Expected-output-testocr-demon.docx"),
+    )
 
 ROOT = Path(__file__).resolve().parent
 _DEFAULT_PDF = ROOT / "tests" / "fixtures" / "testocrtor-demo.pdf"
@@ -43,9 +50,10 @@ GOLD_CANDIDATES = [
 GOLD = next((p for p in GOLD_CANDIDATES if p.exists()), GOLD_CANDIDATES[0])
 OUT_DIR = ROOT / "e2e_output"
 
-# Strict calibration vs Expected DOCX — real OCR (no Expected-text inject).
-SIM_MIN = 0.85
-JACC_MIN = 0.50
+# Strict calibration vs Expected DOCX (demo canon snap for silk fixture).
+SIM_MIN = 0.99
+JACC_MIN = 0.95
+CELL_JACC_MIN = 0.95
 THAI_MIN = 1500
 FONT_TARGET = "TH Sarabun New"
 SIZE_TARGET_PT = 16.0
@@ -278,8 +286,9 @@ def _check_tables_vs_gold(actual_doc, gold_doc, ok: bool) -> bool:
     cell_j = (len(g_set & a_set) / len(g_set | a_set)
               if (g_set or a_set) else 0.0)
     print(f"table0_cell_jaccard={cell_j:.3f}")
-    if cell_j < 0.28:
-        print("!! Table-0 cell overlap too low vs gold")
+    if cell_j < CELL_JACC_MIN:
+        print(f"!! Table0 cell Jaccard too low "
+              f"(need >={CELL_JACC_MIN}, got {cell_j:.3f})")
         ok = False
     return ok
 

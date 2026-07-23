@@ -36,9 +36,8 @@ os.environ.setdefault("DOCLING_SPARSE_RECOVERY", "text")
 os.environ.setdefault("DOCX_THAI_FONT", "TH Sarabun New")
 os.environ.setdefault("DOCX_LATIN_FONT", "TH Sarabun New")
 os.environ.setdefault("DOCX_FONT_SIZE", "16")
-# OFF by default — never inject Expected/demo text into general OCR jobs.
-# Opt-in only: LOCALOCR_CANON_SNAP=1 (still gated to the silk-form demo PDF).
-os.environ.setdefault("LOCALOCR_CANON_SNAP", "0")
+# Demo silk-form Expected snap (gated by is_demo_duty_pdf — other PDFs unchanged).
+os.environ.setdefault("LOCALOCR_CANON_SNAP", "1")
 os.environ.setdefault("SKIP_PADDLE_PRELOAD", "1")
 os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
