@@ -1700,13 +1700,22 @@ def docling_to_blocks(  # NOSONAR
         ocr=None,
         page_images: Optional[Dict[int, np.ndarray]] = None,
         languages: str = "tha+eng",
+        progress_callback=None,
+        progress_total: Optional[int] = None,
 ) -> List:
-    """Convert a DoclingDocument into ContentBlocks for DocumentExporter."""
+    """Convert a DoclingDocument into ContentBlocks for DocumentExporter.
+
+    Optional ``progress_callback(current, total, message)`` fires after each
+    page's items are OCR'd so the UI can show page completion percent.
+    """
     pl = _pipeline_helpers()
     page_images = page_images or {}
     blocks: List = []
     fig_idx = 0
 
+    # Group items by page so progress advances page-by-page (not one long hang)
+    by_page: Dict[int, List] = {}
+    page_meta: Dict[int, Tuple] = {}
     for item in _iter_docling_items(docling_doc):
         label = _item_label(item)
         provs = getattr(item, "prov", None) or []
@@ -1716,19 +1725,41 @@ def docling_to_blocks(  # NOSONAR
         if geom is None:
             continue
         page_idx, page_no, page_img, bbox, pw, ph = geom
+        by_page.setdefault(page_idx, []).append(
+            (item, label, page_img, bbox, page_no, pw, ph))
+        page_meta[page_idx] = (page_no, pw, ph)
 
-        if "table" in label:
-            fig_idx = _append_table_item(
-                pl, item, ocr, page_img, bbox, page_idx, page_no,
-                pw, ph, languages, blocks, fig_idx,
-                docling_doc=docling_doc)
-        elif "picture" in label or "figure" in label or "image" in label:
-            fig_idx = _append_figure_item(
-                pl, item, page_img, bbox, page_idx, pw, ph, blocks, fig_idx)
-        elif any(k in label for k in _TEXT_LABEL_KEYS):
-            fig_idx = _append_text_item(
-                pl, item, ocr, page_img, bbox, page_idx, pw, ph,
-                languages, label, blocks, fig_idx)
+    page_ids = sorted(by_page.keys())
+    total = progress_total or max(len(page_ids), 1)
+    for pi, page_idx in enumerate(page_ids):
+        page_no = page_meta[page_idx][0]
+        if progress_callback is not None:
+            try:
+                progress_callback(
+                    pi, total,
+                    f"Page {page_no}/{len(page_ids)}: OCR…")
+            except Exception:  # noqa: BLE001
+                pass
+        for item, label, page_img, bbox, _pn, pw, ph in by_page[page_idx]:
+            if "table" in label:
+                fig_idx = _append_table_item(
+                    pl, item, ocr, page_img, bbox, page_idx, page_no,
+                    pw, ph, languages, blocks, fig_idx,
+                    docling_doc=docling_doc)
+            elif "picture" in label or "figure" in label or "image" in label:
+                fig_idx = _append_figure_item(
+                    pl, item, page_img, bbox, page_idx, pw, ph, blocks, fig_idx)
+            elif any(k in label for k in _TEXT_LABEL_KEYS):
+                fig_idx = _append_text_item(
+                    pl, item, ocr, page_img, bbox, page_idx, pw, ph,
+                    languages, label, blocks, fig_idx)
+        if progress_callback is not None:
+            try:
+                progress_callback(
+                    pi + 1, total,
+                    f"Page {page_no}/{len(page_ids)} complete")
+            except Exception:  # noqa: BLE001
+                pass
 
     blocks = _suppress_text_in_structure(blocks)
     # Polish inventory tables (section rows / header / crumb digits)

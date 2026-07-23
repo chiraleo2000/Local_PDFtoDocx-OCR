@@ -2198,25 +2198,28 @@ class OCRPipeline:
                     # SPEED_MODE: one Docling pass on the full PDF (not N
                     # single-page temp PDFs) — critical for ~10s/page.
                     if speed_mode and page_count > 0:
-                        self._notify_progress(
-                            progress_callback, 0, progress_total,
-                            f"Docling layout ({page_count} pages)…")
-                        # Keep TrOCR on CPU during Docling so VRAM stays free
+                        # Live page %: render → Docling → per-page OCR callbacks
                         from .ocr_engine import trocr_to_cpu, cascade_trocr_to_cuda
                         from .docling_adapter import docling_to_blocks
+
                         try:
                             trocr_to_cpu()
                         except Exception:
                             pass
                         page_images: Dict[int, np.ndarray] = {}
                         for i in range(page_count):
+                            self._notify_progress(
+                                progress_callback, i, progress_total,
+                                f"Page {i + 1}/{page_count}: rendering…")
                             page_images[i] = self._render_page_image(
                                 doc[i], scale, 0.0, 0.0)
+
                         self._notify_progress(
                             progress_callback, 0, progress_total,
-                            "Docling layout…")
-                        # 1) Docling layout/tables on CUDA (TrOCR still on CPU)
+                            f"Docling layout ({page_count} pages)…")
+                        # 1) Docling layout/tables on CUDA (TrOCR on CPU)
                         dl_doc = self.docling.convert(pdf_path)
+
                         # 2) Free cache + move TrOCR to CUDA for Thai re-OCR
                         cascade = os.getenv(
                             "SPEED_TROCR_CUDA", "1").strip().lower() not in (
@@ -2234,23 +2237,30 @@ class OCRPipeline:
                                 logger.warning(
                                     "TrOCR cascade skipped: %s",
                                     type(exc).__name__)
-                        self._notify_progress(
-                            progress_callback, 0, progress_total,
-                            "Thai-TrOCR regions…")
-                        # 3) Adapter re-OCR with CUDA TrOCR (SPEED_REGION_OCR=1)
+
+                        # 3) Page-by-page Thai-TrOCR / region OCR with live %
                         if dl_doc is None:
                             all_blocks, total_tables, total_figures = [], 0, 0
                         else:
+                            def _ocr_progress(cur, tot, msg):
+                                self._notify_progress(
+                                    progress_callback, cur, progress_total, msg)
+
                             all_blocks = docling_to_blocks(
                                 dl_doc, ocr=self.ocr, page_images=page_images,
-                                languages=langs)
+                                languages=langs,
+                                progress_callback=_ocr_progress,
+                                progress_total=progress_total)
                             if thai_job:
                                 all_blocks = _recover_section_headings(
                                     self.ocr, all_blocks, page_images, langs)
                                 missing_marks = _missing_pdf_markers(
                                     all_blocks, pdf_path)
-                                # Skip strip recovery when markers already present
                                 if missing_marks:
+                                    self._notify_progress(
+                                        progress_callback,
+                                        max(page_count - 1, 0), progress_total,
+                                        "Recovering missing section markers…")
                                     all_blocks = _recover_missing_section_markers(
                                         self.ocr, all_blocks, page_images,
                                         langs, pdf_path=pdf_path)
@@ -2264,6 +2274,9 @@ class OCRPipeline:
                             total_figures = sum(
                                 1 for b in all_blocks
                                 if b.block_type == "figure")
+                            self._notify_progress(
+                                progress_callback, page_count, progress_total,
+                                f"OCR done ({page_count} pages)")
                         # Optional band fill only when still Thai-sparse
                         band_ocr = os.getenv(
                             "SPEED_BAND_OCR", "0").strip().lower() not in (
@@ -2326,7 +2339,8 @@ class OCRPipeline:
                                         recovered.extend(pblocks)
                                         continue
                                     self._notify_progress(
-                                        progress_callback, i, progress_total,
+                                        progress_callback, page_count,
+                                        progress_total,
                                         f"Page {i + 1}/{page_count}: "
                                         "banded Thai-TrOCR…")
                                     # Only mask compact figures/tables — page-wrapping

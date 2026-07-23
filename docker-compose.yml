@@ -148,6 +148,7 @@ services:
       - localocr_history:/tmp/pdf_ocr_history
       # Live source mount — hotfixes survive recreate
       - ./src:/app/src
+      - ./app.py:/app/app.py
       - ./THSarabunNew:/app/THSarabunNew:ro
       - ./THSarabunNew:/usr/share/fonts/truetype/thsarabunnew:ro
       - ./run_e2e_test.py:/app/run_e2e_test.py

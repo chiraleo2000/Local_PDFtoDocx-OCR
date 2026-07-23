@@ -299,11 +299,18 @@ def process_document(pdf_file, quality_label, header_pct, footer_pct,
         return ("", "Please upload a PDF file first.",
                 None, None, gr.update(visible=False), gr.update())
 
-    progress(0.01, desc="Starting Docling layout + tables…")
+    progress(0, desc="Starting… 0%")
 
     def _page_progress(current, total, message):
-        frac = 0.01 if total <= 0 else min(0.99, max(0.01, current / float(total)))
-        progress(frac, desc=message)
+        """Map pipeline page completion → live Gradio percent."""
+        if total and total > 0:
+            frac = max(0.0, min(1.0, float(current) / float(total)))
+        else:
+            frac = 0.0
+        pct = int(round(frac * 100))
+        # Keep bar just under 100% until the handler returns
+        bar = 1.0 if frac >= 1.0 else min(0.99, frac)
+        progress(bar, desc=f"{message} — {pct}%")
 
     pdf_path = str(pdf_file)
     quality = QUALITY_OPTIONS.get(quality_label, "accurate")
@@ -460,11 +467,17 @@ def review_convert_with_corrections(pdf_file, quality_label, header_pct, footer_
         return ("", _MSG_UPLOAD_PDF_FIRST, None, None,
                 gr.update(visible=False), gr.update())
 
-    progress(0.01, desc="Starting Docling layout + tables…")
+    progress(0, desc="Starting… 0%")
 
     def _page_progress(current, total, message):
-        frac = 0.01 if total <= 0 else min(0.99, max(0.01, current / float(total)))
-        progress(frac, desc=message)
+        """Map pipeline page completion → live Gradio percent."""
+        if total and total > 0:
+            frac = max(0.0, min(1.0, float(current) / float(total)))
+        else:
+            frac = 0.0
+        pct = int(round(frac * 100))
+        bar = 1.0 if frac >= 1.0 else min(0.99, frac)
+        progress(bar, desc=f"{message} — {pct}%")
 
     pdf_path = str(pdf_file)
     quality = QUALITY_OPTIONS.get(quality_label, "accurate")
