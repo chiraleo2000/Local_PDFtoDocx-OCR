@@ -9,7 +9,7 @@ FROM python:3.12-slim-bookworm
 
 LABEL maintainer="chiraleo2000"
 LABEL org.opencontainers.image.title="LocalOCR"
-LABEL org.opencontainers.image.version="0.5.1"
+LABEL org.opencontainers.image.version="0.5.6"
 LABEL org.opencontainers.image.description="Thai+English PDF OCR, DocLayout-YOLO, Gradio web UI"
 
 WORKDIR /app
@@ -65,12 +65,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tesseract-ocr \
         tesseract-ocr-eng \
         tesseract-ocr-tha \
-    && mkdir -p /usr/share/fonts/truetype/thsarabunnew \
-    && curl -fsSL -o /usr/share/fonts/truetype/thsarabunnew/THSarabunNew.ttf \
-        "https://cdn.jsdelivr.net/gh/fontuni/thsarabunnew@master/fonts/THSarabunNew.ttf" \
-    && curl -fsSL -o /usr/share/fonts/truetype/thsarabunnew/THSarabunNew-Bold.ttf \
-        "https://cdn.jsdelivr.net/gh/fontuni/thsarabunnew@master/fonts/THSarabunNew%20Bold.ttf" \
-    && fc-cache -f \
     && rm -rf /var/lib/apt/lists/* \
     && python -m pip install --upgrade pip setuptools wheel && \
     if [ "$ACCELERATOR" = "cuda" ] || [ "$ACCELERATOR" = "gpu" ]; then \

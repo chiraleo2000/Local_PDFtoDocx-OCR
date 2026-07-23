@@ -22,3 +22,6 @@ correction_data
 node_modules
 *.docx
 !tests/Expected-output*.docx
+
+THSarabunNew/__MACOSX/
+**/__MACOSX/
