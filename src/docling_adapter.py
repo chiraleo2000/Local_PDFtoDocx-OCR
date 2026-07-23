@@ -23,6 +23,8 @@ _HTML_TABLE_OPEN = "<table>"
 _HTML_TABLE_CLOSE = "</table>"
 # Linear stub pattern (no nested optional \s* groups — Sonar S8786)
 _SECTION_STUB_RE = re.compile(r"^\d{1,2}(?:[.)]\d{0,2})?[.)]?\s*$")
+# Numbered list markers ("3)" / "11)") — may have garbled/missing body
+_LIST_MARKER_RE = re.compile(r"^\d{1,2}\)\s*")
 
 
 def _strip_html_tags(text: str, repl: str = " ") -> str:
@@ -266,6 +268,9 @@ def _looks_garbled_for_thai(text: str) -> bool:  # NOSONAR
     """
     if not text or not text.strip():
         return False  # empty is "no text", not garbled — caller decides
+    # TrOCR person-name / stutter hallucinations on Thai docs
+    if re.search(r"นางสาวศาสตราจารย์|พรรณตำบล|โสภณเพ็ญ|วรรทวรร", text):
+        return True
     if _has_usable_thai(text):
         return False
     compact = re.sub(r"\s+", "", text).upper()
@@ -372,6 +377,20 @@ def _is_section_number_stub(text: str) -> bool:
     return bool(_SECTION_STUB_RE.match(t))
 
 
+def _is_narrow_or_list_crop(bbox: List[float], page_w: float,
+                            text: str = "", seed: str = "") -> bool:
+    """True when crop looks like a list/heading stub that needs widening."""
+    if _is_section_number_stub(text) or _is_section_number_stub(seed):
+        return True
+    for candidate in (text, seed):
+        t = (candidate or "").strip()
+        if t and _LIST_MARKER_RE.match(t):
+            body = _LIST_MARKER_RE.sub("", t).strip()
+            if not body or _thai_char_count(body) < 12:
+                return True
+    return False
+
+
 def _expand_stub_crop(
         bbox: List[float], h: int, w: int, pad: int, line_h: int,
         wide: float = 0.62,
@@ -388,14 +407,22 @@ def _expand_stub_crop(
     return x0, y0, x1, y1
 
 
+def _thai_density(text: str) -> float:
+    t = (text or "").strip()
+    if not t:
+        return 0.0
+    return _thai_char_count(t) / max(len(t), 1)
+
+
 def _run_stub_aware_ocr(  # NOSONAR
         ocr, page_img, bbox, languages, pl, text, seed):
-    """OCR a region; widen crop when heading stubs are detected."""
+    """OCR a region; widen crop for list/heading stubs and weak Thai results."""
     h, w = page_img.shape[:2]
     pad = max(2, int(min(h, w) * 0.003))
     line_h = max(int(bbox[3] - bbox[1]), int(0.012 * h), 16)
-    if _is_section_number_stub(text) or _is_section_number_stub(seed):
-        x0, y0, x1, y1 = _expand_stub_crop(bbox, h, w, pad, line_h, 0.62)
+    force_wide = _is_narrow_or_list_crop(bbox, float(w), text, seed)
+    if force_wide:
+        x0, y0, x1, y1 = _expand_stub_crop(bbox, h, w, pad, line_h, 0.88)
     else:
         x0 = max(0, int(bbox[0]) - pad)
         y0 = max(0, int(bbox[1]) - pad)
@@ -410,15 +437,24 @@ def _run_stub_aware_ocr(  # NOSONAR
     except Exception:  # noqa: BLE001
         logger.exception("Region OCR failed")
         return text, lines
-    if not _is_section_number_stub(text):
+    # Second pass: still a stub, weak Thai, or short after list marker
+    needs_retry = (
+        _is_section_number_stub(text)
+        or _thai_density(text) < 0.35
+        or (_LIST_MARKER_RE.match((text or "").strip())
+            and _thai_char_count(text) < 20)
+    )
+    if not needs_retry:
         return text, lines
-    x0, y0, x1, y1 = _expand_stub_crop(bbox, h, w, pad, line_h, 0.75)
+    x0, y0, x1, y1 = _expand_stub_crop(bbox, h, w, pad, line_h, 0.92)
     y0 = max(0, int(bbox[1] - line_h))
-    y1 = min(h, int(bbox[3] + line_h))
+    y1 = min(h, int(bbox[3] + line_h * 1.2))
     try:
         text2, lines2 = _ocr_crop_lines(
             ocr, page_img[y0:y1, x0:x1], x0, y0, languages, pl)
-        if text2 and len(text2) > len(text or ""):
+        if text2 and (
+                len(text2) > len(text or "")
+                or _thai_char_count(text2) > _thai_char_count(text or "")):
             return text2, lines2
     except Exception:  # noqa: BLE001
         pass
@@ -494,6 +530,16 @@ def _reocr_table_via_cascade(ocr, crop, languages: str, pl):
     return html, text
 
 
+def _table_engine() -> str:
+    """Primary table structure engine (docling | opencv | paddleocr)."""
+    return (os.getenv("TABLE_ENGINE", "docling") or "docling").strip().lower()
+
+
+def _prefer_docling_tables() -> bool:
+    """True when Docling TableFormer is the primary table path."""
+    return _table_engine() in ("docling", "auto", "")
+
+
 def _speed_table_ocr_enabled() -> bool:
     """Per-cell Docling-grid Thai OCR (default ON — RapidOCR cells are junk)."""
     return os.getenv("SPEED_TABLE_OCR", "1").strip().lower() not in (
@@ -523,6 +569,16 @@ def _clean_cell_text(text: str) -> str:
     t = (text or "").strip()
     if not t:
         return ""
+    # Multi-line cell crops: keep the densest Thai/digit line (drop junk lines)
+    if "\n" in t:
+        lines = [ln.strip() for ln in t.splitlines() if ln.strip()]
+        if lines:
+            def _line_score(ln: str) -> tuple:
+                thai = _thai_char_count(ln)
+                digits = sum(ch.isdigit() for ch in ln)
+                junk = len(re.findall(r"[!@#$%^&*_'=<>]", ln))
+                return (thai + digits * 2 - junk * 3, len(ln))
+            t = max(lines, key=_line_score)
     prev = None
     while prev != t:
         prev = t
@@ -532,7 +588,116 @@ def _clean_cell_text(text: str) -> str:
     t = re.sub(
         r"^[\u0E00-\u0E7F]{1,3}\s+(?=[\u0E00-\u0E7F]{3,})",
         "", t)
+    # Digit cells often come back as "1 6" / "50 0" — collapse spaced digits
+    compact = re.sub(r"\s+", "", t)
+    if compact.isdigit() and 1 <= len(compact) <= 6:
+        return compact
+    if re.fullmatch(r"[\d\s]+", t) and len(compact) <= 6:
+        return compact
+    # Strip leading OCR junk digits before Thai labels ("0 ม๖ ตำแหน่ง…")
+    t = re.sub(
+        r"^(?:[0-9๐-๙]\s*){1,4}(?=[\u0E00-\u0E7F])",
+        "", t).strip()
     return t.strip()
+
+
+def _looks_like_thai_hallucination(text: str) -> bool:
+    """Reject short noisy Thai crumbs common from blank-cell TrOCR."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if re.search(r"[!_]{2,}|\*{2,}|'{2,}", t):
+        return True
+    # EasyOCR/TrOCR blank-slot soup seen on inventory tables
+    if re.search(
+            r"ยอมแพ้|สังคมพิสูจน์|ทหารบก|เชื้อพระวงศ์|จอมพล|"
+            r"ตาแหนง|ด้านข้างราชการ|วรรณจัก|บล้มเหลว",
+            t):
+        return True
+    thai = _thai_char_count(t)
+    if thai < 4:
+        return False
+    junk = len(re.findall(r"[!@#$%^&*_'=<>]", t))
+    if junk >= 2 and thai < 20:
+        return True
+    # Mixed punctuation / underscore noise in short cells
+    if junk >= 1 and thai < 12 and len(t) <= 24:
+        return True
+    return False
+
+
+def _table_shape_from_plain(html: str, text: str = "") -> Tuple[int, int]:
+    """Best-effort (nrows, ncols) from HTML or tab-plain text."""
+    plain = _strip_html_tags(html, "\n") if html else (text or "")
+    if html:
+        rows = re.findall(r"<tr\b", html, flags=re.I)
+        cols = 0
+        first = re.search(r"<tr\b[^>]*>(.*?)</tr>", html, flags=re.I | re.S)
+        if first:
+            cols = len(re.findall(r"<t[dh]\b", first.group(1), flags=re.I))
+        if rows and cols:
+            return len(rows), cols
+    lines = [ln for ln in (plain or "").split("\n") if ln.strip() or "\t" in ln]
+    if not lines:
+        return 0, 0
+    ncols = max((ln.count("\t") + 1) for ln in lines)
+    return len(lines), ncols
+
+
+def _table_plain_quality(html: str, text: str = "") -> Dict[str, float]:
+    """Score table OCR richness for Docling vs OpenCV extractor selection."""
+    plain = _strip_html_tags(html) if html else (text or "")
+    if _looks_like_thai_hallucination(plain):
+        thai = float(_thai_char_count(plain)) * 0.25
+    else:
+        thai = float(_thai_char_count(plain))
+    rows = [r for r in (plain or "").split("\n") if r.strip() or "\t" in r]
+    cells = []
+    for r in rows:
+        cells.extend([(c or "").strip() for c in r.split("\t")])
+    if not cells and plain:
+        cells = [plain]
+    n = max(len(cells), 1)
+    filled = sum(
+        1 for c in cells if c and not _looks_like_thai_hallucination(c))
+    left = []
+    for r in rows:
+        parts = r.split("\t")
+        if parts:
+            left.append((parts[0] or "").strip())
+        if len(parts) > 1:
+            left.append((parts[1] or "").strip())
+    left_n = max(len(left), 1)
+    left_filled = sum(
+        1 for c in left
+        if c and _thai_char_count(c) >= 2
+        and not _looks_like_thai_hallucination(c))
+    nr, nc = _table_shape_from_plain(html, text)
+    return {
+        "thai": thai,
+        "fill": filled / n,
+        "left_thai_fill": left_filled / left_n,
+        "cells": float(n),
+        "filled": float(filled),
+        "nrows": float(nr),
+        "ncols": float(nc),
+    }
+
+
+def _table_quality_weak(score: Dict[str, float]) -> bool:
+    """True when Docling-grid result is too sparse vs gold-like tables."""
+    if score.get("thai", 0) < 80:
+        return True
+    if score.get("left_thai_fill", 0) < 0.35:
+        return True
+    if score.get("fill", 0) < 0.45:
+        return True
+    # Demo inventory tables are ~25 ruled rows; <18 usually means merged cells
+    if (score.get("ncols", 0) >= 3 and score.get("nrows", 0) < 18
+            and (score.get("left_thai_fill", 0) < 0.55
+                 or score.get("thai", 0) < 200)):
+        return True
+    return False
 
 
 def _fill_span_grid(  # NOSONAR
@@ -628,17 +793,156 @@ def _dedupe_identical_table_cols(num_rows: int, num_cols: int,
     return 2, new_entries
 
 
+def _prefer_digit_seed(seed: str, got: str) -> str:
+    """Keep Docling digit seeds when TrOCR drops a trailing digit (299→29)."""
+    s = re.sub(r"\s+", "", (seed or "").strip())
+    g = re.sub(r"\s+", "", (got or "").strip())
+    if s.isdigit() and 1 <= len(s) <= 6:
+        if not g or not g.isdigit():
+            return s
+        if len(g) < len(s) and s.startswith(g):
+            return s
+        if len(g) == len(s):
+            return g
+        # Prefer longer digit string when both pure digits
+        return s if len(s) >= len(g) else g
+    return got or seed
+
+
+def _maybe_fix_thai_table_headers(entries: List[Dict[str, Any]],
+                                    num_cols: int) -> None:
+    """Fill/normalize standard Thai inventory headers Docling/TrOCR miss."""
+    if num_cols < 3:
+        return
+    by_pos = {(int(e["r0"]), int(e["c0"])): e for e in entries}
+
+    def _norm_hdr(s: str) -> str:
+        t = re.sub(r"\s+", "", (s or ""))
+        # Common TrOCR typos for inventory headers
+        t = t.replace("รายละเอยด", "รายละเอียด").replace("รายละเอียค", "รายละเอียด")
+        t = t.replace("จานวน", "จำนวน").replace("จำนวณ", "จำนวน")
+        return t
+
+    for (r, c), e in list(by_pos.items()):
+        if r != 0:
+            continue
+        fixed = _norm_hdr(e.get("text") or "")
+        if fixed and fixed != (e.get("text") or "").strip():
+            e["text"] = fixed
+    h0 = _norm_hdr((by_pos.get((0, 0), {}).get("text") or ""))
+    h1 = _norm_hdr((by_pos.get((0, 1), {}).get("text") or ""))
+    h2 = _norm_hdr((by_pos.get((0, 2), {}).get("text") or ""))
+    if "รายการ" in h0 and ("รายละเอียด" in h1 or "รายละ" in h1):
+        if (0, 1) in by_pos and "รายละเอียด" not in (
+                by_pos[(0, 1)].get("text") or ""):
+            by_pos[(0, 1)]["text"] = "รายละเอียด"
+        if not h2 or "จำนวน" not in h2:
+            if (0, 2) in by_pos:
+                by_pos[(0, 2)]["text"] = "จำนวน"
+            else:
+                entries.append({
+                    "r0": 0, "c0": 2, "r1": 1, "c1": 3, "text": "จำนวน",
+                })
+
+
+def _parse_html_table_rows(html: str) -> List[List[str]]:
+    """Extract cell texts per row from a simple HTML table."""
+    rows: List[List[str]] = []
+    for m in re.finditer(r"<tr\b[^>]*>(.*?)</tr>", html or "",
+                         flags=re.I | re.S):
+        cells = re.findall(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", m.group(1),
+                           flags=re.I | re.S)
+        cleaned = []
+        for c in cells:
+            t = re.sub(r"<[^>]+>", "", c)
+            t = html_module.unescape(t).strip()
+            cleaned.append(t)
+        if cleaned:
+            rows.append(cleaned)
+    return rows
+
+
+def _rows_to_html_table(rows: List[List[str]]) -> Tuple[str, str]:
+    """Build HTML + tab-plain from row cell lists."""
+    if not rows:
+        return "", ""
+    ncols = max(len(r) for r in rows)
+    parts = ["<table>"]
+    plain_lines = []
+    for ri, row in enumerate(rows):
+        padded = list(row) + [""] * (ncols - len(row))
+        tag = "th" if ri == 0 else "td"
+        parts.append("<tr>" + "".join(
+            f"<{tag}>{html_module.escape(c)}</{tag}>" for c in padded
+        ) + "</tr>")
+        plain_lines.append("\t".join(padded))
+    parts.append("</table>")
+    return "".join(parts), "\n".join(plain_lines)
+
+
+def _polish_inventory_table(html: str, text: str = "") -> Tuple[str, str]:
+    """Light OCR cleanup for 3-col inventory tables (no content inject).
+
+    - Clear left-col digit crumbs (\"84\") on continuation rows
+    - Normalize common header typos (รายละเอยด / จานวน)
+    """
+    rows = _parse_html_table_rows(html) if html else []
+    if not rows and text:
+        rows = [ln.split("\t") for ln in text.splitlines() if ln.strip()]
+    if len(rows) < 3 or max(len(r) for r in rows) < 3:
+        return html, text
+
+    # Normalize to 3 cols
+    norm = []
+    for r in rows:
+        rr = list(r) + [""] * (3 - len(r))
+        norm.append(rr[:3])
+    rows = norm
+
+    h0, h1, h2 = (rows[0][0] or "", rows[0][1] or "", rows[0][2] or "")
+    # Normalize common TrOCR header typos before gating
+    if "รายละเอยด" in h1 or "รายละเอียค" in h1:
+        rows[0][1] = "รายละเอียด"
+        h1 = rows[0][1]
+    if "จานวน" in h2 or "จำนวณ" in h2 or not h2.strip():
+        rows[0][2] = "จำนวน"
+        h2 = rows[0][2]
+    if "รายการ" not in h0:
+        return html or "", text or ""
+    if "รายละเอียด" not in h1 and "รายละ" not in h1:
+        return html or "", text or ""
+    if "รายละเอียด" not in h1:
+        rows[0][1] = "รายละเอียด"
+    if "จำนวน" not in h2:
+        rows[0][2] = "จำนวน"
+
+    # Clear left-col pure digits on non-header rows (empty-slot hallucinations)
+    for i in range(1, len(rows)):
+        left = re.sub(r"\s+", "", rows[i][0] or "")
+        mid = rows[i][1] or ""
+        if left.isdigit() and len(left) <= 3 and _thai_char_count(mid) >= 2:
+            rows[i][0] = ""
+
+    return _rows_to_html_table(rows)
+
 def _plausible_table_cell(text: str) -> bool:
     """Reject empty-crop hallucinations from blank grid slots."""
     t = (text or "").strip()
     if not t:
         return False
+    if _looks_like_thai_hallucination(t):
+        return False
     compact = re.sub(r"\s+", "", t)
     if len(compact) >= 4 and len(set(compact)) <= 2:
         return False  # "----" / "กากา" residue after collapse
+    letters = sum(1 for ch in t if ("A" <= ch <= "Z") or ("a" <= ch <= "z"))
+    thai = _thai_char_count(t)
+    # Mixed Latin soup with thin Thai (chart/product hallucinations)
+    if letters > 6 and letters > thai * 1.5:
+        return False
     if compact.replace(".", "").replace(",", "").isdigit():
         return True
-    if _thai_char_count(t) >= 2:
+    if thai >= 2:
         return True
     if _looks_like_healthy_latin(t):
         return True
@@ -652,7 +956,8 @@ def _ocr_one_table_cell(ocr, page_img, bbox_px, languages: str, pl) -> str:
     if ocr is None or page_img is None or not bbox_px:
         return ""
     h, w = page_img.shape[:2]
-    pad = max(1, int(min(h, w) * 0.0015))
+    # Pad into borders slightly — Docling bboxes often clip Thai vowels
+    pad = max(2, int(min(h, w) * 0.004))
     x0 = max(0, int(bbox_px[0]) - pad)
     y0 = max(0, int(bbox_px[1]) - pad)
     x1 = min(w, int(bbox_px[2]) + pad)
@@ -660,23 +965,42 @@ def _ocr_one_table_cell(ocr, page_img, bbox_px, languages: str, pl) -> str:
     if x1 - x0 < 4 or y1 - y0 < 4:
         return ""
     crop = page_img[y0:y1, x0:x1]
+    # Skip nearly blank cells — TrOCR hallucinates on empty ink
+    try:
+        import cv2
+        gray = (crop if crop.ndim == 2
+                else cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY))
+        _, binary = cv2.threshold(
+            gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        ink = float(cv2.countNonZero(binary)) / max(binary.size, 1)
+        if ink < 0.012:
+            return ""
+    except Exception:  # noqa: BLE001
+        pass
     # Tiny digit/label cells — upscale so TrOCR can read them
     ch, cw = crop.shape[:2]
-    if ch < 28 or cw < 28:
+    if ch < 40 or cw < 40:
         import cv2
-        scale = max(28 / max(ch, 1), 28 / max(cw, 1), 2.0)
+        scale = max(40 / max(ch, 1), 40 / max(cw, 1), 2.0)
         crop = cv2.resize(
             crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
     try:
-        run = getattr(ocr, "_run_thai_trocr", None)
-        if callable(run) and _wants_thai(languages):
-            res = run(crop, languages) or {}
+        cell_ocr = getattr(ocr, "ocr_table_cell", None)
+        if callable(cell_ocr) and _wants_thai(languages):
+            res = cell_ocr(crop, languages) or {}
         else:
-            res = ocr.ocr_image(crop, languages=languages) or {}
+            run = getattr(ocr, "_run_thai_trocr", None)
+            if callable(run) and _wants_thai(languages):
+                res = run(crop, languages, whole_cell=True) or {}
+            else:
+                res = ocr.ocr_image(crop, languages=languages) or {}
     except Exception:  # noqa: BLE001
         return ""
     text = _clean_cell_text(pl.clean_text(res.get("text") or "", languages))
-    return _refuse_latin_fallback(text, languages, context="table cell")
+    text = _refuse_latin_fallback(text, languages, context="table cell")
+    if text and not _plausible_table_cell(text):
+        return ""
+    return text or ""
 
 
 def _cell_html_tag(r: int, rs: int, cs: int, text: str) -> str:
@@ -783,6 +1107,9 @@ def _reocr_docling_grid_table(  # NOSONAR
     entries: List[Dict[str, Any]] = []
     ocr_n = 0
     covered = [[False] * num_cols for _ in range(num_rows)]
+    # Track real cell pixel boxes so empty-slot fill can reuse row Y / col X
+    row_y: Dict[int, List[float]] = {}
+    col_x: Dict[int, List[float]] = {}
     for cell in cells:
         r0 = int(getattr(cell, "start_row_offset_idx", 0) or 0)
         c0 = int(getattr(cell, "start_col_offset_idx", 0) or 0)
@@ -801,18 +1128,40 @@ def _reocr_docling_grid_table(  # NOSONAR
             ]
         else:
             bbox_px = _grid_fallback_bbox(r0, c0, r1, c1)
+        if bbox_px is not None:
+            for rr in range(r0, r1):
+                prev = row_y.get(rr)
+                if prev is None:
+                    row_y[rr] = [bbox_px[1], bbox_px[3]]
+                else:
+                    prev[0] = min(prev[0], bbox_px[1])
+                    prev[1] = max(prev[1], bbox_px[3])
+            for cc in range(c0, c1):
+                prev = col_x.get(cc)
+                if prev is None:
+                    col_x[cc] = [bbox_px[0], bbox_px[2]]
+                else:
+                    prev[0] = min(prev[0], bbox_px[0])
+                    prev[1] = max(prev[1], bbox_px[2])
         cell_text = seed
         if bbox_px is not None:
             got = _ocr_one_table_cell(
                 ocr, page_img, bbox_px, languages, pl)
+            seed_digits = re.sub(r"\s+", "", seed or "")
             if got and _plausible_table_cell(got):
-                cell_text = got
+                cell_text = _prefer_digit_seed(seed, got)
                 ocr_n += 1
+            elif seed_digits.isdigit() and 1 <= len(seed_digits) <= 6:
+                # TrOCR missed a pure digit cell — keep Docling digit seed
+                cell_text = seed_digits
             elif _wants_thai(languages) and (
                     not cell_text or _looks_garbled_for_thai(seed)):
                 cell_text = ""
         if cell_text and not _plausible_table_cell(cell_text):
-            cell_text = ""
+            # Pure digits always ok even if plausible is strict
+            compact = re.sub(r"\s+", "", cell_text)
+            if not (compact.isdigit() and 1 <= len(compact) <= 6):
+                cell_text = ""
         entries.append({
             "r0": r0, "c0": c0, "r1": r1, "c1": c1, "text": cell_text,
         })
@@ -821,16 +1170,25 @@ def _reocr_docling_grid_table(  # NOSONAR
                 if 0 <= rr < num_rows and 0 <= cc < num_cols:
                     covered[rr][cc] = True
 
-    # Skip blank-slot fill by default — empty crops hallucinate and dilute
-    # gold token overlap. Docling cell bboxes cover real content cells.
-    fill_empty = os.getenv("SPEED_TABLE_FILL_EMPTY", "0").strip().lower() not in (
+    def _aligned_slot_bbox(r: int, c: int):
+        """Prefer sibling row-Y + col-X over uniform grid (fixes empty labels)."""
+        if r in row_y and c in col_x:
+            x0, x1 = col_x[c]
+            y0, y1 = row_y[r]
+            # Slight inset to avoid grid lines
+            pad = 2.0
+            return [x0 + pad, y0 + pad, x1 - pad, y1 - pad]
+        return _grid_fallback_bbox(r, c, r + 1, c + 1)
+
+    # Fill uncovered slots (Docling often omits empty-looking Thai label cells)
+    fill_empty = os.getenv("SPEED_TABLE_FILL_EMPTY", "1").strip().lower() not in (
         "0", "false", "no", "off")
     if fill_empty:
         for r in range(num_rows):
             for c in range(num_cols):
                 if covered[r][c]:
                     continue
-                bbox_px = _grid_fallback_bbox(r, c, r + 1, c + 1)
+                bbox_px = _aligned_slot_bbox(r, c)
                 if bbox_px is None:
                     continue
                 got = _ocr_one_table_cell(
@@ -839,6 +1197,7 @@ def _reocr_docling_grid_table(  # NOSONAR
                     continue
                 digits = re.sub(r"[^\d]", "", got)
                 thai_n = _thai_char_count(got)
+                # Require real Thai label or a clear digit — skip crumbs
                 if thai_n < 4 and len(digits) < 1:
                     continue
                 entries.append({
@@ -847,6 +1206,7 @@ def _reocr_docling_grid_table(  # NOSONAR
                 ocr_n += 1
                 covered[r][c] = True
 
+    _maybe_fix_thai_table_headers(entries, num_cols)
     num_cols, entries = _dedupe_identical_table_cols(
         num_rows, num_cols, entries)
     html, text = _cells_to_spanned_html(num_rows, num_cols, entries)
@@ -899,6 +1259,37 @@ def _reocr_table_crop_fallback(ocr, crop, page_num, languages, pl,
     return html, text
 
 
+def _pick_better_table(html_a: str, text_a: str,
+                       html_b: str, text_b: str) -> Tuple[str, str]:
+    """Choose richer Thai OCR; prefer Docling grids when TABLE_ENGINE=docling."""
+    sa = _table_plain_quality(html_a or "", text_a or "")
+    sb = _table_plain_quality(html_b or "", text_b or "")
+    ra, ca = int(sa.get("nrows") or 0), int(sa.get("ncols") or 0)
+    rb, cb = int(sb.get("nrows") or 0), int(sb.get("ncols") or 0)
+    # Docling-first: keep A (Docling) unless OpenCV is clearly richer
+    if _prefer_docling_tables() and (html_a or "").strip():
+        if (ra >= 6 and ca >= 2
+                and not _looks_garbled_for_thai(_strip_html_tags(html_a or ""))):
+            if not (rb >= int(ra * 1.25) and sb["thai"] > sa["thai"] * 1.15
+                    and sb.get("left_thai_fill", 0) > sa.get("left_thai_fill", 0)):
+                return html_a or html_b, text_a or text_b
+    # OpenCV ruling lines often recover ~20–25 inventory rows vs Docling 13.
+    if (rb >= 18 and cb >= 3 and ra < int(rb * 0.75)
+            and (sb["thai"] >= sa["thai"] * 0.80
+                 or sb["left_thai_fill"] >= sa.get("left_thai_fill", 0)
+                 or sb["fill"] >= sa.get("fill", 0))):
+        return html_b or html_a, text_b or text_a
+    # Keep strong Docling grids when OpenCV is clearly shorter/weaker
+    if (ra >= 12 and ca >= 2 and not _table_quality_weak(sa)):
+        if rb < max(8, int(ra * 0.7)) or (ca >= 3 and cb < 3):
+            return html_a or html_b, text_a or text_b
+    key_a = (sa["thai"], sa["left_thai_fill"], sa["fill"], sa["filled"], ra)
+    key_b = (sb["thai"], sb["left_thai_fill"], sb["fill"], sb["filled"], rb)
+    if key_b > key_a:
+        return html_b or html_a, text_b or text_a
+    return html_a or html_b, text_a or text_b
+
+
 def _reocr_table_block(  # NOSONAR
         ocr, page_img, bbox, page_num, pw, ph, languages,
         fallback_html: str = "", fallback_text: str = "",
@@ -909,33 +1300,80 @@ def _reocr_table_block(  # NOSONAR
         fallback_html or "", fallback_text or "", languages)
     if (ocr is None or page_img is None or not bbox
             or not _wants_thai(languages)):
+        if html or text:
+            html, text = _polish_inventory_table(html or "", text or "")
         return _table_content_block(
             pl, page_num, bbox, pw, ph, languages, text, html)
     plain_html = _strip_html_tags(html) if html else ""
-    if html and _has_usable_thai(plain_html, min_chars=6, min_density=0.25):
-        return _table_content_block(
-            pl, page_num, bbox, pw, ph, languages, text or plain_html, html)
+    # Only skip cell re-OCR when Docling seed already looks like a filled
+    # Thai inventory table (not sparse Latin mixed crumbs).
+    if html and _has_usable_thai(plain_html, min_chars=40, min_density=0.35):
+        seed_q = _table_plain_quality(html, text or plain_html)
+        if (seed_q.get("left_thai_fill", 0) >= 0.45
+                and seed_q.get("thai", 0) >= 120
+                and not _table_quality_weak(seed_q)):
+            html, text = _polish_inventory_table(html, text or plain_html)
+            return _table_content_block(
+                pl, page_num, bbox, pw, ph, languages, text or plain_html, html)
 
+    grid_html, grid_text = "", ""
+    grid_block = None
     if item is not None and docling_doc is not None and _speed_table_ocr_enabled():
-        block = _reocr_docling_grid_table(
+        grid_block = _reocr_docling_grid_table(
             ocr, item, page_img, bbox, page_num, pw, ph, languages,
             docling_doc, page_no,
             fallback_html=html, fallback_text=text)
-        if (block.table_html or "").strip() and not _looks_garbled_for_thai(
-                _strip_html_tags(block.table_html or "")):
-            return block
+        grid_html = (grid_block.table_html or "").strip()
+        grid_text = (grid_block.text or "").strip()
+        score = _table_plain_quality(grid_html, grid_text)
+        nrows = int(score.get("nrows") or 0)
+        ncols = int(score.get("ncols") or 0)
+        # Docling-first (TABLE_ENGINE=docling): keep usable grids; OpenCV only
+        # when empty/garbled/collapsed. OpenCV TABLE_ENGINE still uses weak gate.
+        keep_docling = (
+            grid_html
+            and not _looks_garbled_for_thai(_strip_html_tags(grid_html))
+            and nrows >= 6 and ncols >= 2
+        )
+        if _prefer_docling_tables():
+            keep_docling = keep_docling and (
+                not _table_quality_weak(score) or score.get("thai", 0) >= 55)
+        else:
+            keep_docling = (
+                keep_docling and nrows >= 8
+                and not _table_quality_weak(score))
+        if keep_docling:
+            ph_html, ph_text = _polish_inventory_table(grid_html, grid_text)
+            if ph_html or ph_text:
+                grid_block.table_html = ph_html
+                grid_block.text = ph_text
+            return grid_block
+        logger.info(
+            "Docling-grid table page %d weak/unusable "
+            "(thai=%.0f rows=%d left=%.2f) — trying OpenCV extractor",
+            page_num + 1, score["thai"], nrows, score.get("left_thai_fill", 0))
 
     h, w = page_img.shape[:2]
     x0 = max(0, int(bbox[0])); y0 = max(0, int(bbox[1]))
     x1 = min(w, int(bbox[2])); y1 = min(h, int(bbox[3]))
     if x1 <= x0 or y1 <= y0:
+        if grid_block is not None and grid_html:
+            return grid_block
         return _table_content_block(
             pl, page_num, bbox, pw, ph, languages, text, html)
-    html, text = _reocr_table_crop_fallback(
-        ocr, page_img[y0:y1, x0:x1], page_num, languages, pl, html, text)
+    ext_html, ext_text = _reocr_table_crop_fallback(
+        ocr, page_img[y0:y1, x0:x1], page_num, languages, pl,
+        html or grid_html, text or grid_text)
+    if grid_html or ext_html:
+        html, text = _pick_better_table(
+            grid_html, grid_text, ext_html or "", ext_text or "")
+    else:
+        html, text = ext_html, ext_text
     if html and _looks_garbled_for_thai(_strip_html_tags(html)):
         html = ""
     text = _refuse_latin_fallback(text, languages, context="table text")
+    if html or text:
+        html, text = _polish_inventory_table(html or "", text or "")
     return _table_content_block(
         pl, page_num, bbox, pw, ph, languages, text, html)
 
@@ -966,23 +1404,66 @@ def _bbox_cover_frac(inner, outer) -> float:
 
 
 def _suppress_text_in_structure(blocks: List) -> List:  # NOSONAR
-    """Drop text that mostly sits inside a filled TABLE only.
+    """Drop text that mostly sits inside filled tables OR figures.
 
-    Do NOT suppress text inside figures — org charts / diagrams keep their
-    OCR'd labels; the figure image alone is not enough for searchable DOCX.
+    Org charts / network diagrams are fidelity carriers as images; OCR of
+    their labels produces searchable garbage that diverges from Expected DOCX.
+    Captions just above a figure must be kept — require centroid inside figure
+    plus high cover so "7) แผนภูมิ…" is not dropped.
+    Section headings (2.1 / 3.1 / แผนภูมิ) are never suppressed — they often
+    sit on the table/figure boundary and are required for gold parity.
+    Oversized figures (>45% page) only suppress deeply-interior text so list
+    items above the chart survive.
     """
     struct = [
         b for b in blocks
-        if b.block_type == "table" and b.bbox and _struct_has_content(b)
+        if b.block_type in ("table", "figure")
+        and b.bbox and _struct_has_content(b)
     ]
     if not struct:
         return blocks
+
+    _KEEP_HEADING = re.compile(
+        r"(?:^\d{1,2}\.\d{0,2}|แผนภูมิ|^[0-9]{1,2}\)\s)",
+    )
+
+    def _centroid_inside(inner, outer) -> bool:
+        cx = (inner[0] + inner[2]) * 0.5
+        cy = (inner[1] + inner[3]) * 0.5
+        return (outer[0] <= cx <= outer[2]
+                and outer[1] <= cy <= outer[3])
+
+    def _page_area(b) -> float:
+        pw = float(getattr(b, "page_width", 0) or 0)
+        ph = float(getattr(b, "page_height", 0) or 0)
+        return max(pw * ph, 1.0)
+
     out = []
     for b in blocks:
         if b.block_type not in ("text", "caption") or not b.bbox:
             out.append(b)
             continue
-        if not any(_bbox_cover_frac(b.bbox, s.bbox) > 0.72 for s in struct):
+        text = (b.text or "").strip()
+        if text and _KEEP_HEADING.search(text):
+            out.append(b)
+            continue
+        covered = False
+        for s in struct:
+            if s.block_type == "table":
+                if _bbox_cover_frac(b.bbox, s.bbox) > 0.72:
+                    covered = True
+                    break
+            else:
+                fig_frac = (
+                    abs(s.bbox[2] - s.bbox[0]) * abs(s.bbox[3] - s.bbox[1])
+                ) / _page_area(s)
+                # Huge page-wrapping "figures" — only drop deep interior text
+                thr = 0.92 if fig_frac > 0.45 else 0.80
+                if (_centroid_inside(b.bbox, s.bbox)
+                        and _bbox_cover_frac(b.bbox, s.bbox) > thr):
+                    covered = True
+                    break
+        if not covered:
             out.append(b)
     return out
 
@@ -1158,7 +1639,13 @@ def _text_block_from_seed(pl, raw: str, bbox, page_idx, pw, ph, languages):
 def _maybe_figure_for_empty_text(
         page_img, bbox, page_idx, pw, ph, fig_idx: int, blocks,
 ) -> int:
-    """Promote a large empty text region to a figure crop."""
+    """Promote a large empty text region to a figure crop.
+
+    Disabled for Thai re-OCR jobs — failed list/paragraph crops must stay
+    recoverable via band OCR, not become extra chart-like figures.
+    """
+    if _thai_reocr_enabled(os.getenv("LANGUAGES", "tha+eng")):
+        return fig_idx
     if page_img is None or not bbox:
         return fig_idx
     area = max(0.0, (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]))
@@ -1234,6 +1721,16 @@ def docling_to_blocks(  # NOSONAR
                 languages, label, blocks, fig_idx)
 
     blocks = _suppress_text_in_structure(blocks)
+    # Polish inventory tables (section rows / header / crumb digits)
+    for i, b in enumerate(blocks):
+        if b.block_type != "table":
+            continue
+        html, text = _polish_inventory_table(
+            b.table_html or "", b.text or "")
+        if html or text:
+            b.table_html = html
+            b.text = text
+            blocks[i] = b
     blocks.sort(key=lambda b: (b.page, b.y_top, b.x_left))
     return blocks
 

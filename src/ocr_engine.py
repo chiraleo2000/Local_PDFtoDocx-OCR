@@ -1,15 +1,14 @@
 # pylint: disable=no-member,broad-exception-caught,global-statement,wrong-import-position
 # pylint: disable=invalid-name,import-outside-toplevel,missing-function-docstring
 """
-Multi-Engine OCR Module — v3.0 (strict language policy)
+Multi-Engine OCR Module — v3.1 (one model per language selection)
 
-    Thai input  ("tha"/"th" in LANGUAGES):
-        Thai-TrOCR ONLY — region crops are segmented into single text
-        lines (CV projection), each line recognised by TrOCR, and each
-        line returned WITH its bbox so the exporter can reproduce the
-        original spacing/alignment.
+    Thai / Both  ("tha"/"th" in LANGUAGES, including tha+eng):
+        Thai-TrOCR ONLY — no Paddle cascade. Region crops are segmented
+        into single text lines (CV projection), each line recognised by
+        TrOCR, with bboxes (+ optional bold) for the exporter.
 
-    All other languages:
+    English / other (no Thai in LANGUAGES):
         PaddleOCR ONLY — PP-OCRv5 with native per-line bboxes.
 
 No silent fallback to EasyOCR/Tesseract/Typhoon: those engines run only
@@ -184,6 +183,25 @@ _TROCR_MIN_HEIGHT = 32      # upscale crops shorter than this before TrOCR
 def _speed_mode() -> bool:
     return os.getenv("SPEED_MODE", "0").strip().lower() in (
         "1", "true", "yes", "on")
+
+
+def _join_trocr_chunks(parts: List[str]) -> str:
+    """Join TrOCR chunk texts without inserting spaces between Thai glyphs."""
+    out = ""
+    for part in parts:
+        part = (part or "").strip()
+        if not part:
+            continue
+        if not out:
+            out = part
+            continue
+        prev_ch, next_ch = out[-1], part[0]
+        if ("\u0e00" <= prev_ch <= "\u0e7f"
+                and "\u0e00" <= next_ch <= "\u0e7f"):
+            out += part
+        else:
+            out += " " + part
+    return out
 
 
 def _split_line_into_chunks(gray: np.ndarray,  # NOSONAR
@@ -501,10 +519,42 @@ def _paddle_supports_thai() -> bool:
     return _paddle_version_major() >= 3
 
 
-class OCREngine:
-    """Unified OCR — strict language policy (v3.0).
+def _detect_line_bold(gray_crop: np.ndarray) -> bool:
+    """OpenCV stroke-width / ink-density heuristic for bold glyphs."""
+    if gray_crop is None or not isinstance(gray_crop, np.ndarray):
+        return False
+    if gray_crop.size == 0:
+        return False
+    if gray_crop.ndim == 3:
+        gray = cv2.cvtColor(gray_crop, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = gray_crop
+    h, w = gray.shape[:2]
+    if h < 4 or w < 8:
+        return False
+    try:
+        _, binary = cv2.threshold(
+            gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        ink = int(cv2.countNonZero(binary))
+        if ink < 12:
+            return False
+        density = ink / float(max(binary.size, 1))
+        dist = cv2.distanceTransform(binary, cv2.DIST_L2, 3)
+        strokes = dist[binary > 0]
+        if strokes.size == 0:
+            return False
+        mean_sw = float(np.mean(strokes))
+        rel = mean_sw / float(max(h, 1))
+        # Bold: denser ink and thicker strokes relative to line height
+        return density >= 0.20 and rel >= 0.075
+    except Exception:  # noqa: BLE001
+        return False
 
-    Thai input:   Thai-TrOCR only (line-segmented, per-line bboxes)
+
+class OCREngine:
+    """Unified OCR — one model per language selection (v3.1).
+
+    Thai / Both:  Thai-TrOCR only (line-segmented, per-line bboxes + bold)
     Other langs:  PaddleOCR only (PP-OCRv5, native per-line bboxes)
 
     EasyOCR / Tesseract / Typhoon run ONLY when explicitly requested
@@ -521,8 +571,8 @@ class OCREngine:
         self._init_lock = threading.Lock()
 
         logger.info(
-            "OCREngine v3.0 — primary=%s, gpu=%s, lang=%s "
-            "(policy: Thai→Thai-TrOCR, other→PaddleOCR)",
+            "OCREngine v3.1 — primary=%s, gpu=%s, lang=%s "
+            "(Thai/Both→Thai-TrOCR only, other→PaddleOCR only)",
             self.primary_engine, self.use_gpu, self.languages,
         )
 
@@ -583,8 +633,19 @@ class OCREngine:
         return "gpu"
 
     def _get_paddle(self, languages: Optional[str] = None):
-        """Lazily initialise PaddleOCR per language (2.x and 3.x APIs)."""
+        """Lazily initialise PaddleOCR per language (2.x and 3.x APIs).
+
+        Skipped when SKIP_PADDLE_PRELOAD=1 and languages include Thai
+        (Thai/Both use Thai-TrOCR only — keeps 1.5GB VRAM free).
+        """
         if not PADDLE_AVAILABLE:
+            return None
+        lang_sel = languages or self.languages
+        if (self._is_thai(lang_sel)
+                and os.getenv("SKIP_PADDLE_PRELOAD", "1").strip() != "0"
+                and self.primary_engine in ("auto", "thai_trocr", "trocr")):
+            logger.debug(
+                "PaddleOCR skipped for Thai/Both (Thai-TrOCR only policy)")
             return None
         lang = self._paddle_lang(languages)
         with self._init_lock:
@@ -711,9 +772,9 @@ class OCREngine:
 
     def _build_cascade(self, requested: str,
                        languages: Optional[str] = None) -> List[str]:
-        """Strict, language-aware engine selection (v3.0).
+        """One model per language selection (v3.1).
 
-        auto:  Thai → ["thai_trocr", "paddleocr"], other → ["paddleocr"].
+        auto:  Thai/Both → ["thai_trocr"], English/other → ["paddleocr"].
         An explicitly named engine runs alone — no silent fallback.
         """
         explicit = {
@@ -726,10 +787,9 @@ class OCREngine:
         }
         if requested in explicit:
             return [explicit[requested]]
-        # auto — best models: Thai-TrOCR first, PaddleOCR fallback for mixed pages
         lang = languages or self.languages
         if self._is_thai(lang):
-            return ["thai_trocr", "paddleocr"]
+            return ["thai_trocr"]
         return ["paddleocr"]
 
     # ── Engine runners ──
@@ -866,7 +926,8 @@ class OCREngine:
             batch_size = (OCREngine._TROCR_BATCH_SPEED if speed
                           else OCREngine._TROCR_BATCH)
             # Prefer max_new_tokens only (avoid dual max_length warning)
-            max_tokens = 96 if speed else 128
+            # Slightly higher than 96 — long Thai duty lines were truncating.
+            max_tokens = 128 if speed else 160
             model_dev = next(_trocr_session.parameters()).device
             # Clear conflicting max_length on generation_config
             try:
@@ -892,8 +953,29 @@ class OCREngine:
             return texts
         return ["" for _ in pil_images]
 
+    def ocr_table_cell(self, image: np.ndarray,
+                       languages: Optional[str] = None) -> Dict[str, Any]:
+        """OCR one table cell with whole-cell TrOCR (no aggressive chunking).
+
+        Docling cell crops are already tight; over-chunking them produces
+        garbled Thai (ตาแทนง / ด้านข้างราชการ). Prefer a single crop.
+        """
+        if not _validate_image(image):
+            return {"text": "", "confidence": 0.0, "engine_used": "none",
+                    "lines": []}
+        self._ensure_engines()
+        lang = languages or self.languages
+        with model_slot():
+            if self._is_thai(lang):
+                res = self._run_thai_trocr(
+                    image, lang, whole_cell=True)
+                if res and (res.get("text") or "").strip():
+                    return res
+            return self.ocr_image(image, languages=lang)
+
     def _run_thai_trocr(self, image: np.ndarray,  # NOSONAR
-                        _languages: Optional[str] = None) -> Optional[Dict[str, Any]]:
+                        _languages: Optional[str] = None,
+                        *, whole_cell: bool = False) -> Optional[Dict[str, Any]]:
         """Chunked Thai-TrOCR recognition (v3.1).
 
         TrOCR is a single-line, fixed-input model. The crop is segmented
@@ -906,6 +988,8 @@ class OCREngine:
         Each small chunk is recognised separately (upscaled when tiny),
         then chunk texts are reassembled left→right per line. Every chunk
         keeps its bbox so the exporter reproduces spacing and alignment.
+
+        ``whole_cell=True`` skips force-splitting (table cells / short labels).
         """
         _check_thai_trocr()
         if not THAI_TROCR_AVAILABLE or _trocr_processor is None:
@@ -922,30 +1006,49 @@ class OCREngine:
                 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
                 rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-            line_boxes = _segment_text_lines(image)
-            if not line_boxes:
+            # Table cells: one (or few) visual lines, no force-split chunks
+            if whole_cell:
                 h, w = image.shape[:2]
-                line_boxes = [[0, 0, w, h]]
-
-            # Pass 2: phrase chunks (required for Thai — whole lines squash glyphs)
-            # SPEED_MODE: wider chunks → fewer generates
-            # CUDA cascade: still chunk, but allow slightly denser crops
-            on_cuda = False
-            try:
-                if (_trocr_session is not None
-                        and hasattr(_trocr_session, "parameters")):
-                    on_cuda = next(_trocr_session.parameters()).device.type == "cuda"
-            except Exception:
-                on_cuda = False
-            if _speed_mode():
-                # CUDA is fast enough for normal chunk width; wide chunks
-                # (20–28×) make Thai-TrOCR hallucinate on this demo PDF.
-                chunk_ratio = 8.0 if on_cuda else 16.0
+                min_h = max(_TROCR_MIN_HEIGHT, 48)
+                if 0 < h < min_h:
+                    scale = min_h / h
+                    rgb = cv2.resize(
+                        rgb,
+                        (max(1, int(w * scale)), min_h),
+                        interpolation=cv2.INTER_CUBIC)
+                    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+                line_boxes = _segment_text_lines(rgb)
+                if not line_boxes:
+                    h, w = gray.shape[:2]
+                    line_boxes = [[0, 0, w, h]]
+                # Keep each line intact — only gap-split on large whitespace
+                chunks_per_line = [
+                    _split_line_into_chunks(gray, lb, max_ratio=64.0)
+                    for lb in line_boxes]
             else:
-                chunk_ratio = None
-            chunks_per_line = [
-                _split_line_into_chunks(gray, lb, max_ratio=chunk_ratio)
-                for lb in line_boxes]
+                line_boxes = _segment_text_lines(image)
+                if not line_boxes:
+                    h, w = image.shape[:2]
+                    line_boxes = [[0, 0, w, h]]
+
+                # Pass 2: phrase chunks (required for Thai — whole lines squash glyphs)
+                # SPEED_MODE: wider chunks → fewer generates
+                # CUDA cascade: still chunk, but allow slightly denser crops
+                on_cuda = False
+                try:
+                    if (_trocr_session is not None
+                            and hasattr(_trocr_session, "parameters")):
+                        on_cuda = next(
+                            _trocr_session.parameters()).device.type == "cuda"
+                except Exception:
+                    on_cuda = False
+                if _speed_mode():
+                    chunk_ratio = 8.0 if on_cuda else 12.0
+                else:
+                    chunk_ratio = None
+                chunks_per_line = [
+                    _split_line_into_chunks(gray, lb, max_ratio=chunk_ratio)
+                    for lb in line_boxes]
 
             crops: List[Any] = []
             flat_boxes: List[List[int]] = []
@@ -971,7 +1074,7 @@ class OCREngine:
             segments: List[Dict[str, Any]] = []
             full_lines: List[str] = []
             idx = 0
-            for chunks in chunks_per_line:
+            for line_i, chunks in enumerate(chunks_per_line):
                 parts: List[str] = []
                 for _ in chunks:
                     text = (texts[idx] if idx < len(texts) else "").strip()
@@ -980,10 +1083,15 @@ class OCREngine:
                     if not text:
                         continue
                     parts.append(text)
-                    segments.append({"text": text, "confidence": 0.85,
-                                     "bbox": [float(v) for v in box]})
+                    segments.append({
+                        "text": text,
+                        "confidence": 0.85,
+                        "bbox": [float(v) for v in box],
+                        # Bold is decided at export (headers only), not OCR
+                        "bold": False,
+                    })
                 if parts:
-                    full_lines.append(" ".join(parts))
+                    full_lines.append(_join_trocr_chunks(parts))
             if not segments:
                 return None
             return {

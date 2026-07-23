@@ -122,6 +122,86 @@ def test_suppress_text_inside_table():
     assert "cell junk" not in texts
 
 
+def test_suppress_text_inside_figure():
+    """Org-chart labels overlapping a figure must be dropped (gold = image only)."""
+    blocks = [
+        ContentBlock(
+            "figure", 0, 200, 50,
+            figure={"base64": "abc", "width": 200, "height": 200},
+            bbox=[50, 200, 500, 600], page_width=600, page_height=800),
+        ContentBlock(
+            "text", 0, 250, 80, text="กรมหม่อนไหม org junk",
+            bbox=[80, 250, 400, 500], page_width=600, page_height=800),
+        ContentBlock(
+            "text", 0, 40, 50, text="7) แผนภูมิการแบ่งส่วนราชการ",
+            bbox=[50, 40, 400, 80], page_width=600, page_height=800),
+    ]
+    out = _suppress_text_in_structure(blocks)
+    texts = [b.text for b in out if b.block_type == "text"]
+    assert "7) แผนภูมิการแบ่งส่วนราชการ" in texts
+    assert not any("กรมหม่อนไหม" in t for t in texts)
+
+
+def test_polish_inventory_cleans_crumbs_and_headers():
+    from src.docling_adapter import _polish_inventory_table
+    html = (
+        "<table>"
+        "<tr><th>รายการ</th><th>รายละเอยด</th><th></th></tr>"
+        "<tr><td>เครื่องคอมพิวเตอร์แม่ข่าย</td><td>แบบที่ 2</td><td>16</td></tr>"
+        "<tr><td>84</td><td>- เครื่องคอมพิวเตอร์โน้ตบุ๊ก</td><td>166</td></tr>"
+        "<tr><td>ชุดโปรแกรมระบบปฏิบัติการ</td><td>Microsoft Windows</td><td>165</td></tr>"
+        "</table>"
+    )
+    out_html, out_text = _polish_inventory_table(html, "")
+    assert "จำนวน" in out_html
+    assert "รายละเอียด" in out_html
+    assert ">84<" not in out_html
+    # Must not invent section rows that OCR did not produce
+    assert "ฮาร์ดแวร์" not in out_html
+    assert "ซอฟต์แวร์" not in out_html
+
+
+def test_pick_better_table_prefers_taller_grid():
+    from src.docling_adapter import _pick_better_table
+    # Collapsed 13-row Docling vs taller OpenCV-like plain
+    html_a = "<table>" + "".join(
+        f"<tr><td>x{i}</td><td>y{i}</td><td>{i}</td></tr>"
+        for i in range(13)) + "</table>"
+    # Sparse Thai in A
+    text_a = "\n".join(f"x{i}\ty{i}\t{i}" for i in range(13))
+    rows_b = [
+        "รายการ\tรายละเอียด\tจำนวน",
+        "ฮาร์ดแวร์\t\t",
+        "เครื่องคอมพิวเตอร์แม่ข่าย\tแบบที่ 2\t16",
+    ] + [f"รายการ{i}\tรายละเอียด{i}\t{i}" for i in range(20)]
+    text_b = "\n".join(rows_b)
+    html_b = "<table>" + "".join(
+        "<tr>" + "".join(f"<td>{c}</td>" for c in r.split("\t")) + "</tr>"
+        for r in rows_b) + "</table>"
+    html, text = _pick_better_table(html_a, text_a, html_b, text_b)
+    assert "ฮาร์ดแวร์" in (html + text)
+    assert html.count("<tr") >= 20
+
+
+def test_table_quality_weak_collapsed_inventory():
+    from src.docling_adapter import _table_quality_weak
+    assert _table_quality_weak({
+        "thai": 150, "left_thai_fill": 0.40, "fill": 0.50,
+        "nrows": 13, "ncols": 3, "cells": 39, "filled": 20,
+    })
+    assert not _table_quality_weak({
+        "thai": 400, "left_thai_fill": 0.70, "fill": 0.80,
+        "nrows": 25, "ncols": 3, "cells": 75, "filled": 60,
+    })
+
+
+def test_looks_like_thai_hallucination_rejects_easyocr_junk():
+    from src.docling_adapter import _looks_like_thai_hallucination
+    assert _looks_like_thai_hallucination("ยอมแพ้")
+    assert _looks_like_thai_hallucination("สังคมพิสูจน์มักฯ '_")
+    assert not _looks_like_thai_hallucination("เครื่องคอมพิวเตอร์แม่ข่าย")
+
+
 def test_exporter_rebuilds_table_from_plain_text():
     """Absolute export must not drop tables that lack table_html."""
     blocks = [

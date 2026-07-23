@@ -598,7 +598,7 @@ class TableExtractor:
 
     def __init__(self):
         self.use_gpu = os.getenv("USE_GPU", "true").lower() == "true"
-        self.engine = os.getenv("TABLE_ENGINE", "paddleocr").lower()
+        self.engine = os.getenv("TABLE_ENGINE", "docling").lower()
         self._pp_structure = None
         self.enabled = os.getenv("TABLE_DETECTION", "true").lower() == "true"
         self._ocr_engine = None  # Will be set by pipeline
@@ -632,8 +632,8 @@ class TableExtractor:
         lang_l = (languages or "").lower().replace(",", "+")
         lang_parts = [p for p in re.split(r"[+\s]+", lang_l) if p]
         wants_thai = "tha" in lang_l or "th" in lang_parts
-        # PPStructure has no Thai OCR — it emits Latin/CN garbage on Thai
-        # tables. Always use OpenCV grid + OCREngine (Thai-TrOCR) for Thai.
+        # Docling is primary structure (TableFormer); this path is OpenCV
+        # hard-fallback for cell OCR. PPStructure has no Thai — skip it.
         if (self.engine == "paddleocr" and PPSTRUCTURE_AVAILABLE
                 and not wants_thai):
             r = self._extract_ppstructure(table_img)
@@ -904,14 +904,21 @@ class TableExtractor:
             cell_img = cv2.resize(cell_img, None, fx=2.0, fy=2.0,
                                   interpolation=cv2.INTER_CUBIC)
 
-        # Use the connected OCR engine (strict policy: Thai → Thai-TrOCR,
-        # other → PaddleOCR). No hard-coded English-only
-        # fallback — that produced ASCII garbage on Thai cells.
+        # Whole-cell Thai-TrOCR — avoid over-chunking tight cell crops.
         if self._ocr_engine is not None:
             try:
-                result = self._ocr_engine.ocr_image(cell_img, languages=languages)
-                text = result.get("text", "").strip()
+                cell_ocr = getattr(self._ocr_engine, "ocr_table_cell", None)
+                if callable(cell_ocr):
+                    result = cell_ocr(cell_img, languages=languages)
+                else:
+                    result = self._ocr_engine.ocr_image(
+                        cell_img, languages=languages)
+                text = (result or {}).get("text", "").strip()
                 if text:
+                    # Collapse spaced digit OCR ("1 6" → "16")
+                    compact = re.sub(r"\s+", "", text)
+                    if compact.isdigit() and 1 <= len(compact) <= 6:
+                        return compact
                     return text
             except Exception as exc:
                 logger.debug("Cell OCR via engine failed: %s", exc)

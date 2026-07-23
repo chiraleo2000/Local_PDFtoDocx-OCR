@@ -79,9 +79,55 @@ _BASE64_RE = re.compile(r"^[A-Za-z0-9+/\n\r]*={0,2}$")
 _THAI_SCRIPT_RE = re.compile(r"[\u0E00-\u0E7F]")
 # "หัวข้อ ......... 12" — table-of-contents entry with dot leaders
 _TOC_LINE_RE = re.compile(r"^(?P<label>.*\S)\s+\.{4,}\s*(?P<num>\d{1,4})$")
-# "4. หัวข้อ" / "4.1 หัวข้อ" / "ภาคผนวก ก" — heading-like lines
-_HEADING_RE = re.compile(
-    r"^(ภาคผนวก\s|อภิธานศัพท์$|\d{1,2}(\.\d{1,2})?\.?\s)")
+# Section / caption headers only (NOT duty-list body like "3) วิเคราะห์…")
+_HEADER_RE = re.compile(
+    r"^(?:"
+    r"\d{1,2}\.\d{1,2}\s+\S|"          # 2.1 … / 3.1 …
+    r"\d{1,2}\.\s+\S|"                 # 2. … / 3. …
+    r"\d{1,2}\)\s*แผนภูมิ|"             # 7) แผนภูมิ…
+    r"ภาคผนวก\s|"
+    r"อภิธานศัพท์$"
+    r")"
+)
+# Legacy alias used by older call sites
+_HEADING_RE = _HEADER_RE
+
+# Bundled TH Sarabun New faces (repo THSarabunNew/ or Docker font dir)
+_FONT_DIR_CANDIDATES = (
+    Path(__file__).resolve().parents[1] / "THSarabunNew",
+    Path("/usr/share/fonts/truetype/thsarabunnew"),
+    Path("/app/THSarabunNew"),
+)
+
+
+def _thai_font_files() -> Dict[str, Path]:
+    """Resolve regular + bold TTF paths for TH Sarabun New."""
+    names = {
+        "regular": ("THSarabunNew.ttf", "THSarabunNew-Regular.ttf"),
+        "bold": ("THSarabunNew Bold.ttf", "THSarabunNew-Bold.ttf",
+                 "THSarabunNewBold.ttf"),
+    }
+    found: Dict[str, Path] = {}
+    for kind, candidates in names.items():
+        for base in _FONT_DIR_CANDIDATES:
+            if not base.is_dir():
+                continue
+            for name in candidates:
+                path = base / name
+                if path.is_file():
+                    found[kind] = path
+                    break
+            if kind in found:
+                break
+    return found
+
+
+def _is_header_text(text: str) -> bool:
+    """True for section/caption headers — bold; body stays normal."""
+    t = (text or "").strip()
+    if not t or len(t) > 90:
+        return False
+    return bool(_HEADER_RE.match(t))
 
 
 def _is_valid_base64(data: str) -> bool:
@@ -265,15 +311,23 @@ class DocumentExporter:
       - derive plain-text from blocks
     """
 
-    FONT_NAME = os.getenv("DOCX_LATIN_FONT", "Tahoma")
-    # Thai-capable font for Thai runs (mirrors the validated 3-font scheme:
-    # Thai body text reads far better in a Thai font than in Tahoma)
-    THAI_FONT = os.getenv("DOCX_THAI_FONT", "Noto Sans Thai")
-    FONT_SIZE_NORMAL = 11
-    FONT_SIZE_TABLE = 10
+    FONT_NAME = os.getenv("DOCX_LATIN_FONT", "TH Sarabun New")
+    # Thai body font — family name matches THSarabunNew.ttf / Bold.ttf
+    THAI_FONT = os.getenv("DOCX_THAI_FONT", "TH Sarabun New")
+    FONT_SIZE_NORMAL = int(os.getenv("DOCX_FONT_SIZE", "16") or "16")
+    FONT_SIZE_TABLE = int(os.getenv("DOCX_TABLE_FONT_SIZE", "14") or "14")
 
     def __init__(self) -> None:
         self._render_dpi = float(_IMG_RENDER_DPI)
+        self._font_files = _thai_font_files()
+        if self._font_files:
+            logger.info(
+                "TH Sarabun New fonts: %s",
+                {k: str(v) for k, v in self._font_files.items()})
+        else:
+            logger.warning(
+                "THSarabunNew TTF not found under THSarabunNew/ — "
+                "DOCX will still request font family '%s'", self.THAI_FONT)
 
     # ── Per-script run helpers (v2.4) ────────────────────────────────────────
     @staticmethod
@@ -295,19 +349,19 @@ class DocumentExporter:
 
     def _add_runs(self, p, text: str, size_pt: Optional[float] = None,  # NOSONAR
                   bold: bool = False):
-        """Add *text* as runs with per-script fonts (Thai → THAI_FONT).
+        """Add *text* as runs with TH Sarabun New (headers bold, body normal).
 
         Also sets ``w:szCs`` — Word sizes complex scripts (Thai) from the
         complex-script size, which python-docx does not set by itself.
         """
-        for is_thai, chunk in self._split_script_runs(text):
+        size_pt = size_pt if size_pt is not None else self.FONT_SIZE_NORMAL
+        # Consistent face for Thai + Latin in this product
+        font_name = self.THAI_FONT
+        for _is_thai, chunk in self._split_script_runs(text):
             run = p.add_run(chunk)
-            font_name = self.THAI_FONT if is_thai else self.FONT_NAME
             run.font.name = font_name
-            if size_pt:
-                run.font.size = Pt(size_pt)
-            if bold:
-                run.bold = True
+            run.font.size = Pt(size_pt)
+            run.bold = bool(bold)
             try:
                 rpr = run._element.get_or_add_rPr()  # noqa: SLF001
                 rfonts = rpr.find(qn(OOXML_RUN_FONTS))
@@ -316,15 +370,56 @@ class DocumentExporter:
                     rpr.append(rfonts)
                 for attr in ("w:ascii", "w:hAnsi", "w:eastAsia", "w:cs"):
                     rfonts.set(qn(attr), font_name)
-                if size_pt:
-                    sz_cs = rpr.find(qn("w:szCs"))
-                    if sz_cs is None:
-                        sz_cs = OxmlElement("w:szCs")
-                        rpr.append(sz_cs)
-                    sz_cs.set(qn("w:val"), str(int(size_pt * 2)))
+                sz_cs = rpr.find(qn("w:szCs"))
+                if sz_cs is None:
+                    sz_cs = OxmlElement("w:szCs")
+                    rpr.append(sz_cs)
+                sz_cs.set(qn("w:val"), str(int(size_pt * 2)))
+                # Explicit bold mark for complex scripts
+                if bold:
+                    b_cs = rpr.find(qn("w:bCs"))
+                    if b_cs is None:
+                        b_cs = OxmlElement("w:bCs")
+                        rpr.append(b_cs)
             except Exception:
                 pass
         return p
+
+    @staticmethod
+    def _embed_fonts_into_docx(docx_path: str, font_files: Dict[str, Path]) -> None:
+        """Attach TTF faces into the DOCX package (best-effort for Word/LO)."""
+        if not font_files:
+            return
+        import zipfile
+        import shutil
+        tmp = docx_path + ".fontembed"
+        try:
+            with zipfile.ZipFile(docx_path, "r") as zin, \
+                    zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+                for item in zin.infolist():
+                    if item.filename == "[Content_Types].xml":
+                        xml = zin.read(item.filename).decode("utf-8")
+                        if "vnd.ms-opentype" not in xml:
+                            xml = xml.replace(
+                                "</Types>",
+                                '<Default Extension="ttf" '
+                                'ContentType="application/x-font-ttf"/>'
+                                "</Types>")
+                        zout.writestr(item, xml.encode("utf-8"))
+                    else:
+                        zout.writestr(item, zin.read(item.filename))
+                for kind, path in font_files.items():
+                    arc = f"word/fonts/THSarabunNew-{kind}.ttf"
+                    zout.write(str(path), arc)
+            shutil.move(tmp, docx_path)
+            logger.info("Embedded THSarabunNew faces into %s", docx_path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Font embed skipped: %s", type(exc).__name__)
+            try:
+                if os.path.isfile(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
 
     def _add_toc_line(self, doc, label: str, num: str,
                       usable_w_in: float,
@@ -431,7 +526,8 @@ class DocumentExporter:
             "<!DOCTYPE html>", "<html lang='en'>", "<head>",
             "<meta charset='utf-8'>", HTML_TITLE,
             HTML_STYLE_OPEN,
-            "body { font-family: Tahoma, 'Segoe UI', Arial, sans-serif; "
+            "body { font-family: 'TH Sarabun New', Tahoma, 'Segoe UI', "
+            "Arial, sans-serif; font-size: 16pt; "
             "background: #eef1f5; margin: 0; padding: 1.5rem; }",
             ".page { position: relative; background: #fff; margin: 0 auto "
             "1.5rem auto; box-shadow: 0 2px 10px rgba(0,0,0,0.15); "
@@ -510,12 +606,14 @@ class DocumentExporter:
                 size_pt = float(line.get("size_pt") or 0)
                 font_px = (size_pt * scale * 1.0) if size_pt > 0 \
                     else max(7.0, lh * 0.72)
-                weight = "bold" if line.get("bold") else "normal"
+                txt = line.get("text", "") or ""
+                weight = "bold" if _is_header_text(txt) else "normal"
                 style = (f"left:{lb[0] * scale:.1f}px;"
                          f"top:{lb[1] * scale:.1f}px;"
-                         f"font-size:{font_px:.1f}px;font-weight:{weight};")
+                         f"font-size:{font_px:.1f}px;font-weight:{weight};"
+                         f"font-family:'TH Sarabun New',Tahoma,sans-serif;")
                 out.append(f"<div class='abs' style='{style}'>"
-                           f"{html.escape(line.get('text', ''))}</div>")
+                           f"{html.escape(txt)}</div>")
             return out
 
         if b.block_type == "table" and b.table_html:
@@ -546,10 +644,12 @@ class DocumentExporter:
             "<meta charset='utf-8'>",
             HTML_TITLE,
             HTML_STYLE_OPEN,
-            "body { font-family: Tahoma, 'Segoe UI', Arial, sans-serif; "
+            "body { font-family: 'TH Sarabun New', Tahoma, 'Segoe UI', "
+            "Arial, sans-serif; font-size: 16pt; "
             "max-width: 900px; margin: 0 auto; padding: 2rem; "
             "line-height: 1.8; color: #1e293b; }",
-            "h1, h2, h3 { color: #0f172a; margin-top: 1.5em; margin-bottom: 0.5em; }",
+            "h1, h2, h3 { color: #0f172a; margin-top: 1.5em; "
+            "margin-bottom: 0.5em; font-weight: bold; }",
             "p { margin: 0.4em 0; text-align: justify; }",
             "table { border-collapse: collapse; width: 100%; margin: 1rem 0; }",
             "th, td { border: 1px solid #cbd5e1; padding: 8px 12px; "
@@ -745,17 +845,17 @@ class DocumentExporter:
 
     def _heading_to_docx(self, doc, el) -> None:
         level = int(el.name[1])
-        h = doc.add_heading(el.get_text(strip=True), level=level)
-        for run in h.runs:
-            run.font.name = self.FONT_NAME
+        text = el.get_text(strip=True)
+        h = doc.add_heading("", level=level)
+        self._add_runs(h, text, size_pt=self.FONT_SIZE_NORMAL, bold=True)
 
     def _paragraph_to_docx(self, doc, el) -> None:
         text = el.get_text(strip=True)
         if text:
-            p = doc.add_paragraph(text)
-            for run in p.runs:
-                run.font.name = self.FONT_NAME
-                run.font.size = Pt(self.FONT_SIZE_NORMAL)
+            p = doc.add_paragraph()
+            self._add_runs(
+                p, text, size_pt=self.FONT_SIZE_NORMAL,
+                bold=_is_header_text(text))
 
     def _preformatted_to_docx(self, doc, el) -> None:
         text = el.get_text()
@@ -1023,8 +1123,8 @@ class DocumentExporter:
 
             self._add_runs(
                 p, text,
-                size_pt=round(self._line_font_pt(line, pt_per_unit), 1),
-                bold=bool(line.get("bold")))
+                size_pt=self.FONT_SIZE_NORMAL,
+                bold=_is_header_text(line.get("text") or ""))
 
     def _add_table_absolute(self, doc, b, sx: float, sy: float,  # NOSONAR
                             pt_per_unit: float) -> None:
@@ -1175,11 +1275,12 @@ class DocumentExporter:
         """Fallback for blocks without position data — normal paragraphs."""
         if b.block_type in ("text", "caption"):
             for ln in b.text.split("\n"):
-                if ln.strip():
-                    p = doc.add_paragraph(ln.strip())
-                    for run in p.runs:
-                        run.font.name = self.FONT_NAME
-                        run.font.size = Pt(self.FONT_SIZE_NORMAL)
+                text = ln.strip()
+                if text:
+                    p = doc.add_paragraph()
+                    self._add_runs(
+                        p, text, size_pt=self.FONT_SIZE_NORMAL,
+                        bold=_is_header_text(text))
         elif b.block_type == "table" and b.table_html and BS4_AVAILABLE:
             soup = BeautifulSoup(b.table_html, HTML_PARSER)
             table_el = soup.find("table")
@@ -1232,6 +1333,9 @@ class DocumentExporter:
         looks wrapped (its right edge reaches the block's right side),
         the vertical gap is a normal line advance, and the new line is
         not strongly indented.
+
+        Thai soft-wrap: TrOCR band/chunk lines often end mid-word without
+        reaching 80% width — still join when both sides are Thai glyphs.
         """
         lines = b.lines or [{"text": ln, "bbox": (list(b.bbox) or None)}
                             for ln in b.text.split("\n") if ln.strip()]
@@ -1242,11 +1346,14 @@ class DocumentExporter:
         cur: List[Dict[str, Any]] = []
         prev = None
         for line in lines:
-            if not (line.get("text") or "").strip():
+            raw = (line.get("text") or "").strip()
+            if not raw:
                 continue
             lb = line.get("bbox")
             same_para = False
-            if cur and prev is not None and lb and prev.get("bbox"):
+            # New numbered list item → always a new paragraph
+            new_item = bool(re.match(r"^\d{1,2}[.)]", raw))
+            if cur and prev is not None and lb and prev.get("bbox") and not new_item:
                 pb = prev["bbox"]
                 ph = max(pb[3] - pb[1], 1e-6)
                 gap = lb[1] - pb[3]
@@ -1254,6 +1361,14 @@ class DocumentExporter:
                 same_para = (gap < ph * self._LINE_GAP_FACTOR
                              and prev_reach >= self._WRAP_RIGHT_REACH
                              and (lb[0] - bx0) / bw < 0.35)
+                # Thai mid-word continuation (band/chunk OCR)
+                pt = (prev.get("text") or "").strip()
+                if (not same_para and pt and gap < ph * 1.45
+                        and "\u0e00" <= pt[-1] <= "\u0e7f"
+                        and "\u0e00" <= raw[0] <= "\u0e7f"
+                        and not pt.endswith((".", ")", ":", ";", "ๆ", ","))
+                        and (lb[0] - bx0) / bw < 0.40):
+                    same_para = True
             if same_para:
                 cur.append(line)
             else:
@@ -1295,6 +1410,7 @@ class DocumentExporter:
                 br.add_run().add_break(WD_BREAK.PAGE)
             first = False
             page_blocks = pages[page_num]
+            page_blocks.sort(key=lambda b: (b.y_top, b.x_left))
             src_w = max((getattr(b, "page_width", 0) for b in page_blocks),
                         default=0)
             src_h = max((getattr(b, "page_height", 0) for b in page_blocks),
@@ -1313,6 +1429,7 @@ class DocumentExporter:
         fd, path = tempfile.mkstemp(suffix=DOCX_SUFFIX, prefix="ocr_")
         os.close(fd)
         doc.save(path)
+        self._embed_fonts_into_docx(path, self._font_files)
         logger.info("DOCX created via structured flow builder")
         return path
 
@@ -1328,10 +1445,9 @@ class DocumentExporter:
             text = self._thai_join([ln.get("text", "") for ln in para_lines])
             if not text:
                 continue
-            size = None
-            if pt_per_unit > 0 and first_line.get("bbox"):
-                size = round(self._line_font_pt(first_line, pt_per_unit), 1)
-            bold = bool(first_line.get("bold"))
+            size = self.FONT_SIZE_NORMAL
+            # Ignore OCR stroke-width "bold" — headers only
+            bold = _is_header_text(text)
 
             # TOC entry "หัวข้อ ..... 12" → real dot-leader tab stop
             toc = _TOC_LINE_RE.match(text)
@@ -1339,10 +1455,7 @@ class DocumentExporter:
                 self._add_toc_line(doc, toc.group("label").strip(),
                                    toc.group("num"), usable_w_in, size)
                 continue
-            # Numbered headings ("4.1 เครื่องมือ") read better in bold
-            heading = bool(_HEADING_RE.match(text)) and len(text) <= 60
-            if heading:
-                bold = True
+            heading = bold
 
             p = doc.add_paragraph()
             pf = p.paragraph_format
@@ -1362,10 +1475,9 @@ class DocumentExporter:
         """Inline (non-floating) editable Word table in reading order."""
         if not BS4_AVAILABLE or not b.table_html:
             if b.text.strip():
-                p = doc.add_paragraph(b.text)
-                for run in p.runs:
-                    run.font.name = self.FONT_NAME
-                    run.font.size = Pt(self.FONT_SIZE_TABLE)
+                p = doc.add_paragraph()
+                self._add_runs(
+                    p, b.text, size_pt=self.FONT_SIZE_TABLE, bold=False)
             return
         soup = BeautifulSoup(b.table_html, HTML_PARSER)
         table_el = soup.find("table")
@@ -1536,6 +1648,8 @@ class DocumentExporter:
             return f"<h2>{html.escape(stripped.lstrip('# '))}</h2>"
         if stripped.startswith("#"):
             return f"<h1>{html.escape(stripped.lstrip('# '))}</h1>"
+        if _is_header_text(stripped):
+            return f"<p><strong>{escaped}</strong></p>"
         return f"<p>{escaped}</p>"
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -1575,7 +1689,8 @@ class DocumentExporter:
             "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>",
             HTML_TITLE,
             HTML_STYLE_OPEN,
-            "body{font-family:Tahoma,Arial,sans-serif;max-width:900px;margin:auto;"
+            "body{font-family:'TH Sarabun New',Tahoma,Arial,sans-serif;"
+            "font-size:16pt;max-width:900px;margin:auto;"
             "padding:2rem;line-height:1.7;color:#1e293b}",
             "table{border-collapse:collapse;width:100%;margin:1rem 0}",
             "th,td{border:1px solid #cbd5e1;padding:8px 12px;text-align:left}",

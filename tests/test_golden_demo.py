@@ -22,7 +22,11 @@ from docx.oxml.ns import qn  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 PDF = ROOT / "tests" / "fixtures" / "testocrtor-demo.pdf"
-GOLD = ROOT / "tests" / "Expected-output-testocr-demon.docx"
+GOLD_CANDIDATES = [
+    ROOT / "tests" / "fixtures" / "Expected-output-testocr-demon.docx",
+    ROOT / "tests" / "Expected-output-testocr-demon.docx",
+]
+GOLD = next((p for p in GOLD_CANDIDATES if p.exists()), GOLD_CANDIDATES[0])
 
 _THAI_RE = re.compile(r"[\u0E00-\u0E7F]")
 _KEEP_RE = re.compile(r"[\u0E00-\u0E7F0-9a-zA-Z@.]+")
@@ -36,6 +40,9 @@ REQUIRED_NEEDLES = [
     "2.1",
     "2.4",
 ]
+
+SIM_MIN = 0.64
+JACC_MIN = 0.30
 
 
 def _norm(text: str) -> str:
@@ -61,12 +68,20 @@ def _docx_stats(path: Path) -> dict:
     with zipfile.ZipFile(path) as z:
         images = [n for n in z.namelist() if n.startswith("word/media/")]
     text = _docx_plain(path)
+    thai_font = False
+    for p in d.paragraphs:
+        for run in p.runs:
+            name = (run.font.name or "")
+            if "sarabun" in name.lower():
+                thai_font = True
     return {
         "tables": len(d.tables),
         "images": len(images),
         "frames": len(frames),
         "thai": len(_THAI_RE.findall(text)),
         "text": text,
+        "thai_font": thai_font,
+        "doc": d,
     }
 
 
@@ -79,9 +94,11 @@ def _docx_stats(path: Path) -> dict:
 def test_golden_demo_matches_expected(tmp_path):
     os.environ["LAYOUT_MODE"] = "flow"
     os.environ["DOCLING_REOCR"] = "1"
-    os.environ["DOCLING_SPARSE_RECOVERY"] = "text"
-    os.environ["TABLE_ENGINE"] = "opencv"
+    os.environ["DOCLING_SPARSE_RECOVERY"] = "0"
+    os.environ["TABLE_ENGINE"] = "docling"
     os.environ["DISABLE_TROCR_PRELOAD"] = "0"
+    os.environ["DOCX_THAI_FONT"] = "TH Sarabun New"
+    os.environ["SKIP_PADDLE_PRELOAD"] = "1"
 
     from src.pipeline import OCRPipeline
 
@@ -111,6 +128,7 @@ def test_golden_demo_matches_expected(tmp_path):
         f"images actual={actual['images']} gold={gold['images']}")
     assert 1800 <= actual["thai"] <= 3200, (
         f"thai chars out of band: {actual['thai']}")
+    assert actual["thai_font"], "Expected TH Sarabun New on Thai runs"
 
     gn, an = _norm(gold["text"]), _norm(actual["text"])
     sim = SequenceMatcher(None, gn, an).ratio()
@@ -120,6 +138,7 @@ def test_golden_demo_matches_expected(tmp_path):
             if (g_tok or a_tok) else 0.0)
     missing = [n for n in REQUIRED_NEEDLES if n not in actual["text"]]
     assert not missing, f"Missing required needles: {missing}"
-    assert sim >= 0.65 or jacc >= 0.22, (
+    assert sim >= SIM_MIN and jacc >= JACC_MIN, (
         f"Text similarity too low vs Expected "
-        f"(sim={sim:.3f}, jaccard={jacc:.3f})")
+        f"(sim={sim:.3f}, jaccard={jacc:.3f}; "
+        f"need sim>={SIM_MIN} and jaccard>={JACC_MIN})")

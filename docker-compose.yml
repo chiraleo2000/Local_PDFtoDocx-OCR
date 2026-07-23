@@ -32,11 +32,13 @@ services:
       YOLO_CONFIDENCE: "0.25"
       YOLO_NMS: "0.40"
       YOLO_IMGSZ: "1280"
-      # opencv + Thai-TrOCR for Thai tables (PPStructure has no Thai)
-      TABLE_ENGINE: opencv
+      # Docling TableFormer primary; OpenCV grid only as hard fallback
+      TABLE_ENGINE: docling
       TABLE_DETECTION: "true"
       IMAGE_EXTRACTION: "true"
-      DOCX_THAI_FONT: "Noto Sans Thai"
+      DOCX_THAI_FONT: "TH Sarabun New"
+      DOCX_LATIN_FONT: "TH Sarabun New"
+      DOCX_FONT_SIZE: "16"
       MAX_CONCURRENT_JOBS: "2"
       PAGE_WORKERS: "2"
       MODEL_SLOTS: "2"
@@ -86,13 +88,20 @@ services:
       TARGET_SEC_PER_PAGE: "10"
       SPEED_BAND_OCR: "1"
       SPEED_REGION_OCR: "1"
-      SPEED_OCR_BANDS: "4"
-      SPEED_BAND_MIN_THAI: "400"
+      SPEED_OCR_BANDS: "6"
+      SPEED_BAND_MIN_THAI: "80"
       # Per-cell Thai-TrOCR on Docling table grid (PDF-aligned bboxes)
       SPEED_TABLE_OCR: "1"
+      # Fill blank Docling slots for missing Thai label cells (strict gates)
+      SPEED_TABLE_FILL_EMPTY: "1"
       # Reuse page renders (auto) — no extra 4× PDF render
       SPEED_BAND_SCALE: "auto"
-      THAI_FAST_MIN_SCALE: "4.0"
+      THAI_FAST_MIN_SCALE: "6.0"
+      # Never inject Expected DOCX text — real OCR for all PDFs
+      LOCALOCR_CANON_SNAP: "0"
+      DOCX_THAI_FONT: "TH Sarabun New"
+      DOCX_LATIN_FONT: "TH Sarabun New"
+      DOCX_FONT_SIZE: "16"
       DOCLING_IMAGES_SCALE: "2.0"
       QUALITY_PRESET: fast
       OCR_ENGINE: auto
@@ -108,6 +117,7 @@ services:
       # Keep Docling OCR ON for text *region detection* (RapidOCR text is
       # discarded; Thai-TrOCR re-reads). Off collapses list lines to "3)" only.
       DOCLING_DO_OCR: "1"
+      # Accurate TableFormer can OOM / slow on 1.5GB; fast + cell re-OCR
       DOCLING_TABLE_MODE: fast
       DOCLING_NUM_THREADS: "2"
       DOCLING_WARMUP: "1"
@@ -118,10 +128,9 @@ services:
       YOLO_CONFIDENCE: "0.30"
       YOLO_NMS: "0.40"
       YOLO_IMGSZ: "960"
-      TABLE_ENGINE: opencv
+      TABLE_ENGINE: docling
       TABLE_DETECTION: "true"
       IMAGE_EXTRACTION: "true"
-      DOCX_THAI_FONT: "Noto Sans Thai"
       # Serialize GPU work so 1.5 GB VRAM is enough
       MAX_CONCURRENT_JOBS: "1"
       PAGE_WORKERS: "1"
@@ -137,6 +146,12 @@ services:
     volumes:
       - localocr_correction_data:/app/correction_data
       - localocr_history:/tmp/pdf_ocr_history
+      # Live source mount — hotfixes survive recreate
+      - ./src:/app/src
+      - ./THSarabunNew:/app/THSarabunNew:ro
+      - ./THSarabunNew:/usr/share/fonts/truetype/thsarabunnew:ro
+      - ./run_e2e_test.py:/app/run_e2e_test.py
+      - ./_run_e2e_docker.py:/app/_run_e2e_docker.py
     gpus: "all"
     deploy:
       resources:
@@ -175,10 +190,12 @@ services:
       YOLO_CONFIDENCE: "0.25"
       YOLO_NMS: "0.40"
       YOLO_IMGSZ: "1600"
-      TABLE_ENGINE: opencv
+      TABLE_ENGINE: docling
       TABLE_DETECTION: "true"
       IMAGE_EXTRACTION: "true"
-      DOCX_THAI_FONT: "Noto Sans Thai"
+      DOCX_THAI_FONT: "TH Sarabun New"
+      DOCX_LATIN_FONT: "TH Sarabun New"
+      DOCX_FONT_SIZE: "16"
       DOCLING_REOCR: "1"
       MAX_CONCURRENT_JOBS: "0"
       PAGE_WORKERS: "0"

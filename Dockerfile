@@ -37,9 +37,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     YOLO_CONFIDENCE=0.25 \
     YOLO_NMS=0.40 \
     TABLE_DETECTION=true \
-    TABLE_ENGINE=paddleocr \
+    TABLE_ENGINE=docling \
     IMAGE_EXTRACTION=true \
     IMAGE_MIN_AREA=4000 \
+    DOCX_THAI_FONT="TH Sarabun New" \
     QUALITY_PRESET=accurate \
     LAYOUT_MODE=absolute \
     ENHANCE_IMAGES=true \
@@ -64,6 +65,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tesseract-ocr \
         tesseract-ocr-eng \
         tesseract-ocr-tha \
+    && mkdir -p /usr/share/fonts/truetype/thsarabunnew \
+    && curl -fsSL -o /usr/share/fonts/truetype/thsarabunnew/THSarabunNew.ttf \
+        "https://cdn.jsdelivr.net/gh/fontuni/thsarabunnew@master/fonts/THSarabunNew.ttf" \
+    && curl -fsSL -o /usr/share/fonts/truetype/thsarabunnew/THSarabunNew-Bold.ttf \
+        "https://cdn.jsdelivr.net/gh/fontuni/thsarabunnew@master/fonts/THSarabunNew%20Bold.ttf" \
+    && fc-cache -f \
     && rm -rf /var/lib/apt/lists/* \
     && python -m pip install --upgrade pip setuptools wheel && \
     if [ "$ACCELERATOR" = "cuda" ] || [ "$ACCELERATOR" = "gpu" ]; then \
@@ -100,6 +107,9 @@ RUN python -m pip install -r requirements.txt dill && \
     fi
 
 COPY src/ ./src/
+COPY THSarabunNew/ ./THSarabunNew/
+COPY THSarabunNew/ /usr/share/fonts/truetype/thsarabunnew/
+RUN fc-cache -f || true
 COPY app.py run_e2e_test.py ./
 COPY .env.example ./.env.example
 COPY models/ ./models/

@@ -30,10 +30,14 @@ os.environ.setdefault("ENHANCE_BINARIZE", "0")
 os.environ.setdefault("YOLO_CONFIDENCE", "0.25")
 os.environ.setdefault("YOLO_NMS", "0.40")
 os.environ.setdefault("YOLO_IMGSZ", "1600")
-os.environ.setdefault("TABLE_ENGINE", "opencv")
+os.environ.setdefault("TABLE_ENGINE", "docling")
 os.environ.setdefault("DOCLING_REOCR", "1")
 os.environ.setdefault("DOCLING_SPARSE_RECOVERY", "text")
-os.environ.setdefault("DOCX_THAI_FONT", "Noto Sans Thai")
+os.environ.setdefault("DOCX_THAI_FONT", "TH Sarabun New")
+os.environ.setdefault("DOCX_LATIN_FONT", "TH Sarabun New")
+os.environ.setdefault("DOCX_FONT_SIZE", "16")
+os.environ.setdefault("LOCALOCR_CANON_SNAP", "0")
+os.environ.setdefault("SKIP_PADDLE_PRELOAD", "1")
 os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
@@ -158,15 +162,16 @@ MARGIN_OPTIONS = {
 _PAGE_ZERO = "Page 0 / 0"
 _LOCAL_USER = "local"
 
-# Preload OCR models (skip heavy Paddle when Docling handles OCR/tables).
+# Preload OCR models (skip Paddle for Thai/Both — Thai-TrOCR only).
 pipeline.ocr.primary_engine = os.getenv("OCR_ENGINE", "auto")
 pipeline.ocr._ensure_engines()
-_layout_backend = (os.getenv("LAYOUT_BACKEND") or "docling").strip().lower()
-_docling_reocr = (os.getenv("DOCLING_REOCR") or "1").strip() != "0"
+_langs = os.getenv("LANGUAGES", _DEFAULT_LANGUAGE_CODE)
+_is_thai_job = any(
+    p in (_langs or "").lower().replace(",", "+")
+    for p in ("tha", "th"))
 _skip_paddle_preload = (
-    _layout_backend == "docling"
-    and not _docling_reocr
-    and (os.getenv("SKIP_PADDLE_PRELOAD", "1").strip() != "0")
+    os.getenv("SKIP_PADDLE_PRELOAD", "1").strip() != "0"
+    and (_is_thai_job or (os.getenv("LAYOUT_BACKEND") or "docling").strip().lower() == "docling")
 )
 if (os.getenv("DISABLE_TROCR_PRELOAD") or "0").strip() != "1":
     _check_thai_trocr(preload=True)
@@ -174,7 +179,8 @@ else:
     logger.info("Thai-TrOCR preload skipped (DISABLE_TROCR_PRELOAD=1)")
 if _skip_paddle_preload:
     logger.info(
-        "PaddleOCR preload skipped — Docling+TableFormer handles OCR/tables")
+        "PaddleOCR preload skipped — Thai/Both use Thai-TrOCR only "
+        "(or Docling path); English-only loads Paddle on demand")
 elif pipeline.ocr.primary_engine == "auto":
     try:
         pipeline.ocr._get_paddle(os.getenv("LANGUAGES", _DEFAULT_LANGUAGE_CODE))
