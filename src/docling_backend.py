@@ -277,8 +277,11 @@ class DoclingBackend:
         tmp_path = None
         try:
             doc = fitz.open()
-            page = doc.new_page(width=400, height=600)
-            page.insert_text((72, 72), "warmup")
+            page = doc.new_page(width=595, height=842)
+            # Enough printable text so RapidOCR does not warn "empty result"
+            page.insert_text((72, 72), "LocalOCR Docling warmup", fontsize=14)
+            page.insert_text((72, 100), "Thai English sample 12.3", fontsize=12)
+            page.insert_text((72, 128), "1) first 2) second 3) third", fontsize=12)
             fd, tmp_path = tempfile.mkstemp(suffix=".pdf")
             os.close(fd)
             doc.save(tmp_path)

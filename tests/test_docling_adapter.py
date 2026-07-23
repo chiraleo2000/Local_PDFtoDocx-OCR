@@ -261,3 +261,38 @@ def test_ocr_text_block_refuses_latin_fallback():
         fallback_text="COMMSSUBLMACLUNGMUNEUSLUOBLUMLABEMUI")
     assert block.text.strip() == ""
     assert not block.lines
+
+
+def test_section_marker_rejects_chart_decimals():
+    from src.pipeline import _is_valid_section_marker
+    assert _is_valid_section_marker("2.1")
+    assert _is_valid_section_marker("11)")
+    assert not _is_valid_section_marker("0.78")
+    assert not _is_valid_section_marker("0.5")
+    assert not _is_valid_section_marker("99.99")
+
+
+def test_dedup_blocks_collapses_near_and_marker_dups():
+    from src.pipeline import ContentBlock, _dedup_blocks
+    a = ContentBlock(
+        block_type="text", page=0, y_top=10, x_left=0,
+        text="4) จัดทำมาตรฐานการผลิตสินค้าหม่อนไหม",
+        bbox=[0, 10, 400, 40], page_width=500, page_height=700)
+    b = ContentBlock(
+        block_type="text", page=0, y_top=12, x_left=0,
+        text="4) จัดทำมาตรฐานการผลิตสินค้าหม่อนไหมและผลิตภัณฑ์",
+        bbox=[0, 12, 420, 42], page_width=500, page_height=700)
+    c = ContentBlock(
+        block_type="text", page=0, y_top=200, x_left=0,
+        text="7) แผนภูมิการแบ่งส่วนราชการ",
+        bbox=[0, 200, 400, 230], page_width=500, page_height=700)
+    d = ContentBlock(
+        block_type="text", page=0, y_top=80, x_left=0,
+        text="7) ดำเนินการเกี่ยวกับฐานข้อมูล",
+        bbox=[0, 80, 400, 110], page_width=500, page_height=700)
+    out = _dedup_blocks([a, b, d, c])
+    texts = [x.text for x in out]
+    assert len([t for t in texts if t.startswith("4)")]) == 1
+    assert any("ผลิตภัณฑ์" in t for t in texts)  # richer 4) kept
+    assert any("แผนภูมิ" in t for t in texts)
+    assert any("ฐานข้อมูล" in t for t in texts)

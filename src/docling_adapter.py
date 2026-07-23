@@ -111,14 +111,24 @@ def _grid_to_table_html(grid) -> Tuple[str, str]:
             "\n".join(plain_rows))
 
 
-def _export_table_html(table_item) -> Tuple[str, str, List[float]]:  # NOSONAR
+def _export_table_html(table_item, doc=None) -> Tuple[str, str, List[float]]:  # NOSONAR
     """Return (html, plain_text, col_width_fractions) from a Docling table."""
     html = ""
     text = ""
     col_widths: List[float] = []
     try:
         if hasattr(table_item, "export_to_html"):
+            if doc is not None:
+                html = table_item.export_to_html(doc=doc) or ""
+            else:
+                # Prefer dataframe/grid path when doc is unavailable to avoid
+                # Docling's deprecated no-arg export_to_html() ERROR logs.
+                html = ""
+    except TypeError:
+        try:
             html = table_item.export_to_html() or ""
+        except Exception:  # noqa: BLE001
+            html = ""
     except Exception:  # noqa: BLE001
         html = ""
     try:
@@ -1532,7 +1542,7 @@ def _append_table_item(  # NOSONAR
         pw, ph, languages, blocks, fig_idx: int,
         docling_doc=None) -> int:
     """Append table (or figure fallback); return updated fig_idx."""
-    html, text, col_w = _export_table_html(item)
+    html, text, col_w = _export_table_html(item, doc=docling_doc)
     if not html and not text and page_img is None:
         logger.warning(
             "Docling table on page %d has empty structure", page_no)

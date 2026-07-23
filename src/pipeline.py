@@ -346,33 +346,101 @@ def _bbox_overlap_frac(a: List[float], b: List[float]) -> float:
 
 
 _DEDUP_WS_RE = re.compile(r"\s+")
+_LIST_MARK_KEY_RE = re.compile(r"^\s*(\d{1,2})\s*[.)]")
+_SECTION_MARK_KEY_RE = re.compile(r"^\s*(\d{1,2}\.\d{1,2})\b")
+
+
+def _text_norm_key(text: str) -> str:
+    return _DEDUP_WS_RE.sub("", text or "")
+
+
+def _marker_key(text: str) -> Optional[str]:
+    """List/section marker used to collapse recovery duplicates on a page."""
+    t = (text or "").strip()
+    m = _LIST_MARK_KEY_RE.match(t)
+    if m:
+        return f"L{m.group(1)}"
+    m = _SECTION_MARK_KEY_RE.match(t)
+    if m:
+        return f"S{m.group(1)}"
+    return None
+
+
+def _thai_richness(text: str) -> int:
+    return len(_THAI_CHAR_RE.findall(text or "")) + len((text or "").strip())
+
+
+def _is_near_duplicate_text(a: str, b: str) -> bool:
+    """True when two OCR strings are the same content with minor drift."""
+    ka, kb = _text_norm_key(a), _text_norm_key(b)
+    if not ka or not kb:
+        return False
+    if ka == kb:
+        return True
+    # Contained near-duplicates (band + marker recovery)
+    shorter, longer = (ka, kb) if len(ka) <= len(kb) else (kb, ka)
+    if len(shorter) >= 18 and shorter in longer and len(shorter) / len(longer) >= 0.55:
+        return True
+    if len(ka) < 16 or len(kb) < 16:
+        return False
+    from difflib import SequenceMatcher
+    return SequenceMatcher(None, ka[:140], kb[:140]).ratio() >= 0.86
 
 
 def _dedup_blocks(blocks: List["ContentBlock"]) -> List["ContentBlock"]:  # NOSONAR
-    """Drop text blocks whose text duplicates an overlapping earlier block.
+    """Drop text blocks that duplicate an earlier block (exact / near / marker).
 
-    Overlapping layout detections make the same paragraph get OCRed
-    twice; this de-duplicates the result (v2.5).
+    Overlapping layout detections and stacked recoveries (band + PDF-marker
+    OCR) often emit the same paragraph twice with slightly different wording.
     """
     out: List[ContentBlock] = []
+    removed = 0
     for b in blocks:
-        dup = False
-        if b.block_type in ("text", "caption") and b.text.strip():
-            key = _DEDUP_WS_RE.sub("", b.text)
-            for o in out:
-                if o.block_type not in ("text", "caption"):
-                    continue
-                if _DEDUP_WS_RE.sub("", o.text) != key:
-                    continue
-                if (not b.bbox or not o.bbox
-                        or _bbox_overlap_frac(b.bbox, o.bbox) > 0.30):
-                    dup = True
-                    break
-        if not dup:
+        if b.block_type not in ("text", "caption") or not (b.text or "").strip():
             out.append(b)
-    if len(out) != len(blocks):
-        logger.info("Removed %d duplicated text block(s)",
-                    len(blocks) - len(out))
+            continue
+        key = _text_norm_key(b.text)
+        mk = _marker_key(b.text)
+        dup_idx = -1
+        for i, o in enumerate(out):
+            if o.block_type not in ("text", "caption") or o.page != b.page:
+                continue
+            okey = _text_norm_key(o.text)
+            exact = okey == key
+            near = (not exact) and _is_near_duplicate_text(o.text, b.text)
+            same_marker = bool(mk and mk == _marker_key(o.text))
+            y_close = abs(float(b.y_top or 0) - float(o.y_top or 0)) < 48
+            overlap = False
+            if b.bbox and o.bbox:
+                overlap = _bbox_overlap_frac(b.bbox, o.bbox) > 0.12
+            elif exact or near:
+                overlap = True
+
+            if same_marker:
+                # Keep both duty "7) …" and caption "7) แผนภูมิ…"
+                o_cap = "แผนภูมิ" in (o.text or "")
+                b_cap = "แผนภูมิ" in (b.text or "")
+                if o_cap != b_cap:
+                    continue
+                if exact or near or y_close:
+                    dup_idx = i
+                    break
+                continue
+
+            if exact and (overlap or y_close or not b.bbox or not o.bbox):
+                dup_idx = i
+                break
+            if near and (overlap or y_close):
+                dup_idx = i
+                break
+        if dup_idx < 0:
+            out.append(b)
+            continue
+        if _thai_richness(b.text) > _thai_richness(out[dup_idx].text):
+            out[dup_idx] = b
+        removed += 1
+    if removed:
+        logger.info("Removed %d duplicated text block(s)", removed)
     return out
 
 
@@ -689,6 +757,20 @@ def _strip_ocr_band_for_markers(
     return extra, found
 
 
+def _is_valid_section_marker(token: str) -> bool:
+    """Accept list ``N)`` / section ``X.Y``; reject chart decimals like ``0.78``."""
+    t = (token or "").strip()
+    if re.fullmatch(r"\d{1,2}\)", t):
+        n = int(t[:-1])
+        return 1 <= n <= 30
+    m = re.fullmatch(r"(\d{1,2})\.(\d{1,2})", t)
+    if not m:
+        return False
+    a, b = int(m.group(1)), int(m.group(2))
+    # Sections are 1–20.1–20 — never leading-zero decimals from charts
+    return 1 <= a <= 20 and 1 <= b <= 20
+
+
 def _pdf_section_markers(pdf_path: Optional[str]) -> List[str]:
     """Markers (``2.1``, ``4)``, …) present in the PDF text layer — any PDF."""
     if not pdf_path:
@@ -702,8 +784,7 @@ def _pdf_section_markers(pdf_path: Optional[str]) -> List[str]:
                 if len(w) < 5:
                     continue
                 t = str(w[4]).strip()
-                if not (re.fullmatch(r"\d{1,2}\.\d{1,2}", t)
-                        or re.fullmatch(r"\d{1,2}\)", t)):
+                if not _is_valid_section_marker(t):
                     continue
                 if t in seen:
                     continue
@@ -713,6 +794,19 @@ def _pdf_section_markers(pdf_path: Optional[str]) -> List[str]:
     except Exception:  # noqa: BLE001
         return []
     return found
+
+
+def _missing_pdf_markers(
+        blocks: List["ContentBlock"], pdf_path: Optional[str],
+) -> List[str]:
+    """Return PDF section/list markers still absent from OCR text."""
+    markers = _pdf_section_markers(pdf_path)
+    if not markers:
+        return []
+    joined = _arabic_digits("\n".join(
+        (b.text or "") for b in blocks
+        if b.block_type in ("text", "caption", "table")))
+    return [m for m in markers if m not in joined]
 
 
 def _recover_missing_section_markers(
@@ -1726,7 +1820,7 @@ def _merge_complementary_blocks(  # NOSONAR
             added += 1
 
     if added:
-        logger.info("Sparse recovery merged %d complementary block(s)", added)
+        logger.info("Merged %d complementary block(s)", added)
         out = _dedup_blocks(out)
         out.sort(key=lambda x: (x.page, x.y_top, x.x_left))
     return out
@@ -2153,9 +2247,17 @@ class OCRPipeline:
                             if thai_job:
                                 all_blocks = _recover_section_headings(
                                     self.ocr, all_blocks, page_images, langs)
-                                all_blocks = _recover_missing_section_markers(
-                                    self.ocr, all_blocks, page_images, langs,
-                                    pdf_path=pdf_path)
+                                missing_marks = _missing_pdf_markers(
+                                    all_blocks, pdf_path)
+                                # Skip strip recovery when markers already present
+                                if missing_marks:
+                                    all_blocks = _recover_missing_section_markers(
+                                        self.ocr, all_blocks, page_images,
+                                        langs, pdf_path=pdf_path)
+                                else:
+                                    logger.info(
+                                        "Skip strip-OCR — PDF markers already "
+                                        "present in Docling text")
                             total_tables = sum(
                                 1 for b in all_blocks
                                 if b.block_type == "table")
@@ -2195,12 +2297,24 @@ class OCRPipeline:
                                     min_thai = int(
                                         os.getenv("SPEED_BAND_MIN_THAI", "120")
                                         or "120")
+                                    page_missing = [
+                                        m for m in _missing_pdf_markers(
+                                            pblocks, pdf_path)
+                                        if re.fullmatch(r"\d{1,2}\)", m)
+                                    ]
+                                    # Dense page + no missing list markers → skip
+                                    if (thai_now >= min_thai and text_n >= 6
+                                            and not page_missing):
+                                        recovered.extend(pblocks)
+                                        continue
                                     # Band-fill when flowing Thai is thin
                                     # (missing numbered lists / captions).
                                     if thai_now >= min_thai and text_n >= 8:
                                         recovered.extend(pblocks)
                                         continue
-                                    if thai_now >= min_thai and text_n >= 4 and thai_now >= 400:
+                                    if (thai_now >= min_thai and text_n >= 4
+                                            and thai_now >= 400
+                                            and len(page_missing) <= 1):
                                         recovered.extend(pblocks)
                                         continue
                                     if use_page_imgs:
@@ -2287,14 +2401,26 @@ class OCRPipeline:
                                 1 for b in all_blocks
                                 if b.block_type == "figure")
                         if thai_job:
-                            # Real OCR recoveries only — no Expected-text inject
-                            all_blocks = _add_missing_list_markers(
-                                self.ocr, all_blocks, page_images, langs,
-                                pdf_path=pdf_path)
+                            # Additive list OCR only for still-missing N) markers
+                            still_list = [
+                                m for m in _missing_pdf_markers(
+                                    all_blocks, pdf_path)
+                                if re.fullmatch(r"\d{1,2}\)", m)
+                            ]
+                            if still_list:
+                                all_blocks = _add_missing_list_markers(
+                                    self.ocr, all_blocks, page_images, langs,
+                                    pdf_path=pdf_path)
+                            else:
+                                logger.info(
+                                    "Skip additive PDF-marker OCR — list "
+                                    "markers already present")
                             all_blocks = _merge_thai_softwrap_blocks(
                                 all_blocks)
                             all_blocks = _polish_numbered_list_blocks(
                                 all_blocks)
+                            # Collapse band + marker recovery duplicates
+                            all_blocks = _dedup_blocks(all_blocks)
                             # Canon snap is a no-op unless LOCALOCR_CANON_SNAP=1
                             all_blocks = _apply_demo_canon_snap(
                                 all_blocks, page_images, pdf_path)

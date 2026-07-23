@@ -89,7 +89,7 @@ services:
       SPEED_BAND_OCR: "1"
       SPEED_REGION_OCR: "1"
       SPEED_OCR_BANDS: "6"
-      SPEED_BAND_MIN_THAI: "80"
+      SPEED_BAND_MIN_THAI: "150"
       # Per-cell Thai-TrOCR on Docling table grid (PDF-aligned bboxes)
       SPEED_TABLE_OCR: "1"
       # Fill blank Docling slots for missing Thai label cells (strict gates)
