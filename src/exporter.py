@@ -1459,8 +1459,8 @@ class DocumentExporter:
 
             p = doc.add_paragraph()
             pf = p.paragraph_format
-            pf.space_before = Pt(8 if heading else 0)
-            pf.space_after = Pt(4)
+            pf.space_before = Pt(4 if heading else 0)
+            pf.space_after = Pt(2)
             if b.bbox and first_line.get("bbox"):
                 align, indent_units = self._line_alignment(
                     first_line["bbox"], b.bbox)
@@ -1502,9 +1502,9 @@ class DocumentExporter:
                     break
                 col_idx = self._fill_table_cell(
                     tbl, ri, col_idx, cell_el, max_cols, len(rows_el))
-        spacer = doc.add_paragraph()
-        spacer.paragraph_format.space_before = Pt(0)
-        spacer.paragraph_format.space_after = Pt(4)
+        # One tight trailing gap (~1 line) — avoid an empty paragraph.
+        last = tbl.rows[-1].cells[0].paragraphs[-1]
+        last.paragraph_format.space_after = Pt(6)
 
     def _add_structured_figure(self, doc, b, src_w: float,
                                usable_w_in: float) -> None:
@@ -1523,6 +1523,9 @@ class DocumentExporter:
                                     usable_w_in))
         p = doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        pf = p.paragraph_format
+        pf.space_before = Pt(2)
+        pf.space_after = Pt(2)
         run = p.add_run()
         try:
             run.add_picture(BytesIO(img_bytes), width=Inches(width_in))

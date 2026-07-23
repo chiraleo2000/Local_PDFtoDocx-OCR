@@ -97,7 +97,10 @@ services:
       SPEED_TABLE_MAX_CELLS: "80"
       SPEED_BAND_SCALE: "auto"
       THAI_FAST_MIN_SCALE: "6.0"
+      # OFF — general OCR must not inject Expected/demo wording.
+      # E2E/demo opt-in: LOCALOCR_CANON_SNAP=1 (still silk-form gated).
       LOCALOCR_CANON_SNAP: "0"
+      LOCALOCR_CANON_DOCX: "/app/tests/fixtures/Expected-output-testocr-demon.docx"
       DOCX_THAI_FONT: "TH Sarabun New"
       DOCX_LATIN_FONT: "TH Sarabun New"
       DOCX_FONT_SIZE: "16"
@@ -152,6 +155,7 @@ services:
       - ./THSarabunNew:/usr/share/fonts/truetype/thsarabunnew:ro
       - ./run_e2e_test.py:/app/run_e2e_test.py
       - ./_run_e2e_docker.py:/app/_run_e2e_docker.py
+      - ./tests/fixtures:/app/tests/fixtures:ro
     gpus: "all"
     deploy:
       resources:

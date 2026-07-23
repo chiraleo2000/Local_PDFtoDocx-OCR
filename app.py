@@ -36,6 +36,8 @@ os.environ.setdefault("DOCLING_SPARSE_RECOVERY", "text")
 os.environ.setdefault("DOCX_THAI_FONT", "TH Sarabun New")
 os.environ.setdefault("DOCX_LATIN_FONT", "TH Sarabun New")
 os.environ.setdefault("DOCX_FONT_SIZE", "16")
+# OFF by default — never inject Expected/demo text into general OCR jobs.
+# Opt-in only: LOCALOCR_CANON_SNAP=1 (still gated to the silk-form demo PDF).
 os.environ.setdefault("LOCALOCR_CANON_SNAP", "0")
 os.environ.setdefault("SKIP_PADDLE_PRELOAD", "1")
 os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
@@ -302,14 +304,15 @@ def process_document(pdf_file, quality_label, header_pct, footer_pct,
     progress(0, desc="Starting… 0%")
 
     def _page_progress(current, total, message):
-        """Map pipeline page completion → live Gradio percent."""
-        if total and total > 0:
-            frac = max(0.0, min(1.0, float(current) / float(total)))
+        """Live Gradio % — pipeline reports real job progress (0–100)."""
+        if total and int(total) == 100:
+            pct = max(0, min(100, int(current)))
+        elif total and total > 0:
+            pct = int(round(100.0 * float(current) / float(total)))
+            pct = max(0, min(100, pct))
         else:
-            frac = 0.0
-        pct = int(round(frac * 100))
-        # Keep bar just under 100% until the handler returns
-        bar = 1.0 if frac >= 1.0 else min(0.99, frac)
+            pct = 0
+        bar = 1.0 if pct >= 100 else min(0.99, pct / 100.0)
         progress(bar, desc=f"{message} — {pct}%")
 
     pdf_path = str(pdf_file)
@@ -470,13 +473,15 @@ def review_convert_with_corrections(pdf_file, quality_label, header_pct, footer_
     progress(0, desc="Starting… 0%")
 
     def _page_progress(current, total, message):
-        """Map pipeline page completion → live Gradio percent."""
-        if total and total > 0:
-            frac = max(0.0, min(1.0, float(current) / float(total)))
+        """Live Gradio % — pipeline reports real job progress (0–100)."""
+        if total and int(total) == 100:
+            pct = max(0, min(100, int(current)))
+        elif total and total > 0:
+            pct = int(round(100.0 * float(current) / float(total)))
+            pct = max(0, min(100, pct))
         else:
-            frac = 0.0
-        pct = int(round(frac * 100))
-        bar = 1.0 if frac >= 1.0 else min(0.99, frac)
+            pct = 0
+        bar = 1.0 if pct >= 100 else min(0.99, pct / 100.0)
         progress(bar, desc=f"{message} — {pct}%")
 
     pdf_path = str(pdf_file)

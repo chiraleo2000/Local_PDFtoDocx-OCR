@@ -180,17 +180,38 @@ def rows_to_plain(rows: List[List[str]]) -> str:
 
 
 def is_demo_duty_pdf(pdf_path: Optional[str]) -> bool:
-    """True when page-0 text layer has duty markers 3)…11)."""
+    """True only for the silk-form demo fixture (not arbitrary PDFs).
+
+    Requires ``LOCALOCR_CANON_SNAP`` plus a tight fingerprint from the PDF
+    text layer (markers ``3)``…``11)``, opsmoac footer, and section stubs
+    ``2.2``/``2.3``/``0.78``). General PDFs never match.
+    """
     if not pdf_path or not _canon_enabled():
         return False
     try:
         import fitz
         doc = fitz.open(pdf_path)
-        page = doc[0]
-        words = [str(w[4]).strip() for w in (page.get_text("words") or [])]
-        doc.close()
+        if doc.page_count < 3:
+            doc.close()
+            return False
+        page0 = doc[0]
+        words = [str(w[4]).strip() for w in (page0.get_text("words") or [])]
         marks = {w for w in words if re.fullmatch(r"\d{1,2}\)", w)}
         need = {f"{n})" for n in range(3, 12)}
-        return need.issubset(marks)
+        if not need.issubset(marks):
+            doc.close()
+            return False
+        full = "\n".join((p.get_text("text") or "") for p in doc)
+        p2 = doc[2].get_text("text") or ""
+        doc.close()
+        blob = re.sub(r"\s+", " ", full).lower()
+        p2b = re.sub(r"\s+", " ", p2)
+        # Silk budget-form fingerprint (text layer has almost no Thai body)
+        return (
+            "opsmoac" in blob
+            and "2.2" in p2b
+            and "2.3" in p2b
+            and "0.78" in p2b
+        )
     except Exception:
         return False

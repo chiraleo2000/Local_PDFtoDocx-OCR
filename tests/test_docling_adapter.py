@@ -160,6 +160,32 @@ def test_polish_inventory_cleans_crumbs_and_headers():
     assert "ซอฟต์แวร์" in out_html
 
 
+def test_plausible_keeps_latin_product_names():
+    from src.docling_adapter import (
+        _plausible_table_cell, _looks_like_healthy_latin, _prefer_digit_seed,
+    )
+    assert _looks_like_healthy_latin("Microsoft Windows")
+    assert _looks_like_healthy_latin("ESET")
+    assert _plausible_table_cell("Microsoft Windows")
+    assert _plausible_table_cell("Next Generation Firewall")
+    assert _prefer_digit_seed("Microsoft Windows", "คล่องแคล่ว") == "Microsoft Windows"
+
+
+def test_polish_staff_table_fixes_header_crumb():
+    from src.docling_adapter import _polish_staff_table
+    html = (
+        "<table>"
+        "<tr><th>แขน</th><th>จำนวน(คน)</th></tr>"
+        "<tr><td>ข้าราชการ</td><td>364</td></tr>"
+        "<tr><td>0</td><td>349</td></tr>"
+        "<tr><td>รวมทั้งสิ้น</td><td>931</td></tr>"
+        "</table>"
+    )
+    out_html, _ = _polish_staff_table(html, "")
+    assert "ตำแหน่ง" in out_html
+    assert ">0<" not in out_html
+
+
 def test_pick_better_table_prefers_taller_grid():
     from src.docling_adapter import _pick_better_table
     # Collapsed 13-row Docling vs taller OpenCV-like plain

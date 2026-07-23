@@ -44,8 +44,8 @@ GOLD = next((p for p in GOLD_CANDIDATES if p.exists()), GOLD_CANDIDATES[0])
 OUT_DIR = ROOT / "e2e_output"
 
 # Strict calibration vs Expected DOCX — real OCR (no Expected-text inject).
-SIM_MIN = 0.64
-JACC_MIN = 0.30
+SIM_MIN = 0.85
+JACC_MIN = 0.50
 THAI_MIN = 1500
 FONT_TARGET = "TH Sarabun New"
 SIZE_TARGET_PT = 16.0

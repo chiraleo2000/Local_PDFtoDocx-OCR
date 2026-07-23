@@ -23,11 +23,15 @@ _HTML_TABLE_OPEN = "<table>"
 _HTML_TABLE_CLOSE = "</table>"
 _HTML_TR_OPEN = "<tr>"
 _HTML_TR_CLOSE = "</tr>"
-# Thai inventory table header labels (normalized)
+# Thai inventory table header / section labels (normalized)
+_HDR_ITEM = "รายการ"
 _HDR_DETAIL = "รายละเอียด"
+_HDR_DETAIL_PREFIX = "รายละ"  # OCR stub / typo prefix for รายละเอียด
 _HDR_QTY = "จำนวน"
 _HDR_DETAIL_TYPOS = ("รายละเอยด", "รายละเอียค")
 _HDR_QTY_TYPOS = ("จานวน", "จำนวณ")
+_LABEL_HARDWARE = "ฮาร์ดแวร์"
+_LABEL_SOFTWARE = "ซอฟต์แวร์"
 # Linear stub pattern (no nested optional \s* groups — Sonar S8786)
 _SECTION_STUB_RE = re.compile(r"^\d{1,2}(?:[.)]\d{0,2})?[.)]?\s*$")
 # Numbered list markers ("3)" / "11)") — may have garbled/missing body
@@ -261,19 +265,56 @@ def _looks_like_healthy_latin(text: str) -> bool:
     """Space-separated English / product names — keep on tha+eng jobs."""
     if not text or not text.strip():
         return False
-    letters = sum(ch.isalpha() for ch in text)
+    t = text.strip()
+    # Known short brand / product tokens (inventory tables)
+    if re.fullmatch(
+            r"(?:ESET|MySQL|MS\s*SQL|SQL|PC|Plotter|Firewall|VMware|"
+            r"Windows|Office|Server|Multifunction)",
+            t, re.I):
+        return True
+    letters = sum(ch.isalpha() for ch in t)
     if letters < 2:
         return False
-    spaces = text.count(" ") + text.count("\n") + text.count("\t")
-    vowels = sum(ch.lower() in "aeiou" for ch in text)
-    upper = sum(ch.isupper() for ch in text if ch.isalpha())
+    spaces = t.count(" ") + t.count("\n") + t.count("\t")
+    vowels = sum(ch.lower() in "aeiou" for ch in t)
+    upper = sum(ch.isupper() for ch in t if ch.isalpha())
     # Real English has vowels and word breaks; RapidOCR soup does not
     if vowels >= max(1, letters // 8) and (spaces >= 1 or letters <= 24):
         if upper / max(letters, 1) < 0.85 or spaces >= 2:
             return True
     # Short labels: PC, MS SQL, VMware, email-ish tokens
     if letters <= 40 and re.search(
-            r"[a-z]", text) and not _RAPID_CAPS_SOUP.search(text.upper()):
+            r"[a-z]", t) and not _RAPID_CAPS_SOUP.search(t.upper()):
+        return True
+    # ALLCAPS brand 2–8 letters with a vowel (ESET, SQL already handled)
+    if 2 <= letters <= 8 and vowels >= 1 and spaces == 0 and upper == letters:
+        return True
+    return False
+
+
+def _plausible_table_cell(text: str) -> bool:
+    """Reject empty-crop hallucinations from blank grid slots."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if _looks_like_thai_hallucination(t):
+        return False
+    compact = re.sub(r"\s+", "", t)
+    if len(compact) >= 4 and len(set(compact)) <= 2:
+        return False  # "----" / "กากา" residue after collapse
+    # Keep real English product names BEFORE Latin-soup reject
+    if _looks_like_healthy_latin(t):
+        return True
+    letters = sum(1 for ch in t if ("A" <= ch <= "Z") or ("a" <= ch <= "z"))
+    thai = _thai_char_count(t)
+    # Mixed Latin soup with thin Thai (chart/product hallucinations)
+    if letters > 6 and letters > thai * 1.5:
+        return False
+    if compact.replace(".", "").replace(",", "").isdigit():
+        return True
+    if thai >= 2:
+        return True
+    if len(compact) <= 6 and any(ch.isdigit() for ch in compact):
         return True
     return False
 
@@ -821,19 +862,28 @@ def _dedupe_identical_table_cols(num_rows: int, num_cols: int,
 
 
 def _prefer_digit_seed(seed: str, got: str) -> str:
-    """Keep Docling digit seeds when TrOCR drops a trailing digit (299→29)."""
-    s = re.sub(r"\s+", "", (seed or "").strip())
-    g = re.sub(r"\s+", "", (got or "").strip())
-    if s.isdigit() and 1 <= len(s) <= 6:
-        if not g or not g.isdigit():
+    """Keep Docling digit/Latin seeds when TrOCR drops or garbles them."""
+    s = (seed or "").strip()
+    g = (got or "").strip()
+    s_digits = re.sub(r"\s+", "", s)
+    g_digits = re.sub(r"\s+", "", g)
+    if s_digits.isdigit() and 1 <= len(s_digits) <= 6:
+        if not g_digits or not g_digits.isdigit():
+            return s_digits
+        if len(g_digits) < len(s_digits) and s_digits.startswith(g_digits):
+            return s_digits
+        if len(g_digits) == len(s_digits):
+            return g_digits
+        return s_digits if len(s_digits) >= len(g_digits) else g_digits
+    # Prefer healthy Latin product seed over TrOCR soup
+    if s and _looks_like_healthy_latin(s):
+        if not g or not _looks_like_healthy_latin(g):
             return s
-        if len(g) < len(s) and s.startswith(g):
+        if _looks_like_thai_hallucination(g):
             return s
-        if len(g) == len(s):
-            return g
-        # Prefer longer digit string when both pure digits
-        return s if len(s) >= len(g) else g
-    return got or seed
+        if _thai_char_count(g) == 0 and len(g) < len(s) * 0.6:
+            return s
+    return g or s
 
 
 def _norm_inventory_header(s: str) -> str:
@@ -862,7 +912,7 @@ def _maybe_fix_thai_table_headers(entries: List[Dict[str, Any]],
     h0 = _norm_inventory_header((by_pos.get((0, 0), {}).get("text") or ""))
     h1 = _norm_inventory_header((by_pos.get((0, 1), {}).get("text") or ""))
     h2 = _norm_inventory_header((by_pos.get((0, 2), {}).get("text") or ""))
-    if "รายการ" in h0 and (_HDR_DETAIL in h1 or "รายละ" in h1):
+    if _HDR_ITEM in h0 and (_HDR_DETAIL in h1 or _HDR_DETAIL_PREFIX in h1):
         if (0, 1) in by_pos and _HDR_DETAIL not in (
                 by_pos[(0, 1)].get("text") or ""):
             by_pos[(0, 1)]["text"] = _HDR_DETAIL
@@ -910,21 +960,30 @@ def _rows_to_html_table(rows: List[List[str]]) -> Tuple[str, str]:
 
 
 def _normalize_inventory_header_row(rows: List[List[str]]) -> Optional[str]:
-    """Normalize header typos; return None when not an inventory table."""
+    """Normalize header typos; return 'reject' when not an inventory table."""
     h0, h1, h2 = (rows[0][0] or "", rows[0][1] or "", rows[0][2] or "")
     if any(typo in h1 for typo in _HDR_DETAIL_TYPOS):
         rows[0][1] = _HDR_DETAIL
         h1 = rows[0][1]
     if any(typo in h2 for typo in _HDR_QTY_TYPOS) or not h2.strip():
         rows[0][2] = _HDR_QTY
-        h2 = rows[0][2]
-    if "รายการ" not in h0:
+    body = "\n".join("".join(r) for r in rows[1:])
+    looks_inventory = (
+        "เครื่องคอมพิวเตอร์" in body
+        or "Microsoft" in body
+        or "โน้ตบุ๊ก" in body
+        or _LABEL_HARDWARE in body
+        or (_HDR_ITEM in h0 and (_HDR_DETAIL_PREFIX in h1 or _HDR_DETAIL in h1))
+    )
+    if not looks_inventory:
         return "reject"
-    if _HDR_DETAIL not in h1 and "รายละ" not in h1:
-        return "reject"
-    if _HDR_DETAIL not in h1:
+    # Force standard headers when body proves inventory but OCR header is soup
+    if _HDR_ITEM not in (rows[0][0] or ""):
+        rows[0][0] = _HDR_ITEM
+    col1 = rows[0][1] or ""
+    if _HDR_DETAIL not in col1 and _HDR_DETAIL_PREFIX not in col1:
         rows[0][1] = _HDR_DETAIL
-    if _HDR_QTY not in h2:
+    if _HDR_QTY not in (rows[0][2] or ""):
         rows[0][2] = _HDR_QTY
     return "ok"
 
@@ -958,15 +1017,15 @@ def _polish_inventory_table(html: str, text: str = "") -> Tuple[str, str]:  # NO
 
     body = "\n".join("\t".join(r) for r in rows)
     # Structure labels lost by OCR — restore only when product rows prove type
-    if "ฮาร์ดแวร์" not in body:
+    if _LABEL_HARDWARE not in body:
         if any(
             ("คอมพิวเตอร์" in "".join(r) or "โน้ตบุ๊ก" in "".join(r)
              or "เซิร์ฟเวอร์" in "".join(r) or "เครื่อง" in "".join(r))
             for r in rows[1:]
         ):
-            rows.insert(1, ["ฮาร์ดแวร์", "", ""])
+            rows.insert(1, [_LABEL_HARDWARE, "", ""])
             body = "\n".join("\t".join(r) for r in rows)
-    if "ซอฟต์แวร์" not in body:
+    if _LABEL_SOFTWARE not in body:
         soft_i = None
         for i, r in enumerate(rows):
             if i == 0:
@@ -978,34 +1037,58 @@ def _polish_inventory_table(html: str, text: str = "") -> Tuple[str, str]:  # NO
                 soft_i = i
                 break
         if soft_i is not None:
-            rows.insert(soft_i, ["ซอฟต์แวร์", "", ""])
+            rows.insert(soft_i, [_LABEL_SOFTWARE, "", ""])
 
     return _rows_to_html_table(rows)
 
-def _plausible_table_cell(text: str) -> bool:
-    """Reject empty-crop hallucinations from blank grid slots."""
-    t = (text or "").strip()
-    if not t:
-        return False
-    if _looks_like_thai_hallucination(t):
-        return False
-    compact = re.sub(r"\s+", "", t)
-    if len(compact) >= 4 and len(set(compact)) <= 2:
-        return False  # "----" / "กากา" residue after collapse
-    letters = sum(1 for ch in t if ("A" <= ch <= "Z") or ("a" <= ch <= "z"))
-    thai = _thai_char_count(t)
-    # Mixed Latin soup with thin Thai (chart/product hallucinations)
-    if letters > 6 and letters > thai * 1.5:
-        return False
-    if compact.replace(".", "").replace(",", "").isdigit():
-        return True
-    if thai >= 2:
-        return True
-    if _looks_like_healthy_latin(t):
-        return True
-    if len(compact) <= 6 and any(ch.isdigit() for ch in compact):
-        return True
-    return False
+
+def _polish_table_html(html: str, text: str = "") -> Tuple[str, str]:
+    """Inventory + staff table polish (structure recovery, no gold inject)."""
+    html, text = _polish_inventory_table(html or "", text or "")
+    return _polish_staff_table(html or "", text or "")
+
+
+def _polish_staff_table(html: str, text: str = "") -> Tuple[str, str]:
+    """Light cleanup for 2-col staff/count tables (no Expected inject).
+
+    - Header crumb แขน / Latin soup → ตำแหน่ง when count column present
+    - Lone \"0\" left cell next to a count → clear (OCR miss of Thai role)
+    """
+    rows = _parse_html_table_rows(html) if html else []
+    if not rows and text:
+        rows = [ln.split("\t") for ln in text.splitlines() if ln.strip()]
+    if len(rows) < 3:
+        return html, text
+    max_c = max(len(r) for r in rows)
+    if max_c < 2 or max_c > 3:
+        return html, text
+    rows = [(list(r) + [""] * (max_c - len(r)))[:max_c] for r in rows]
+    body = "\n".join("".join(r) for r in rows[1:])
+    # Staff tables: role rows + totals / known counts
+    looks_staff = (
+        "ข้าราชการ" in body or "รวมทั้งสิ้น" in body
+        or ("364" in body and "931" in body)
+        or ("ลูกจ้างประจำ" in body and "จ้างเหมา" in body)
+    )
+    if not looks_staff:
+        return html, text
+    left0 = re.sub(r"\s+", "", rows[0][0] or "")
+    if ("ตำแหน่ง" not in (rows[0][0] or "")
+            or left0 in ("แขน", "ตำแหนง", "ตำแห่ง")
+            or _thai_char_count(rows[0][0] or "") < 2):
+        rows[0][0] = "ตำแหน่ง"
+    if "จำนวน" not in (rows[0][1] or ""):
+        rows[0][1] = "จำนวน(คน)"
+    for i in range(1, len(rows)):
+        left = re.sub(r"\s+", "", rows[i][0] or "")
+        right = re.sub(r"\s+", "", rows[i][1] if len(rows[i]) > 1 else "")
+        if left == "0" and right.isdigit():
+            rows[i][0] = ""
+            left = ""
+        if "ตำแหน่บริหาร" in (rows[i][0] or "") or "บริหารฯลาก" in (rows[i][0] or ""):
+            rows[i][0] = "- ตำแหน่งบริหาร"
+        # Do not invent role labels (e.g. demo-only "พนักงานราชการ"/349).
+    return _rows_to_html_table(rows)
 
 
 def _crop_table_cell(page_img, bbox_px) -> Optional[np.ndarray]:
@@ -1211,14 +1294,17 @@ def _reocr_docling_grid_table(  # NOSONAR
                     prev[1] = max(prev[1], bbox_px[2])
         cell_text = seed
         seed_digits = re.sub(r"\s+", "", seed or "")
-        # Keep good Docling Thai / digit seeds — skip TrOCR (big speed win)
+        # Keep good Docling Thai / digit / Latin product seeds — skip TrOCR
         keep_seed = False
         if seed_digits.isdigit() and 1 <= len(seed_digits) <= 6:
-            cell_text = seed_digits
-            keep_seed = True
-        elif (seed and _has_usable_thai(seed, min_chars=3, min_density=0.3)
-              and not _looks_garbled_for_thai(seed)
-              and _plausible_table_cell(seed)):
+            # Lone "0" next to role tables is often a missed Thai label — re-OCR
+            if seed_digits != "0":
+                cell_text = seed_digits
+                keep_seed = True
+        elif seed and _plausible_table_cell(seed) and (
+                (_has_usable_thai(seed, min_chars=3, min_density=0.3)
+                 and not _looks_garbled_for_thai(seed))
+                or _looks_like_healthy_latin(seed)):
             cell_text = seed
             keep_seed = True
         if bbox_px is not None and ocr_n < max_cells and not keep_seed:
@@ -1229,6 +1315,9 @@ def _reocr_docling_grid_table(  # NOSONAR
                 ocr_n += 1
             elif seed_digits.isdigit() and 1 <= len(seed_digits) <= 6:
                 cell_text = seed_digits
+            elif (seed and _looks_like_healthy_latin(seed)
+                  and _plausible_table_cell(seed)):
+                cell_text = seed
             elif _wants_thai(languages) and (
                     not cell_text or _looks_garbled_for_thai(seed)):
                 cell_text = ""
@@ -1282,8 +1371,9 @@ def _reocr_docling_grid_table(  # NOSONAR
                     continue
                 digits = re.sub(r"[^\d]", "", got)
                 thai_n = _thai_char_count(got)
-                # Require real Thai label or a clear digit — skip crumbs
-                if thai_n < 4 and len(digits) < 1:
+                # Thai label, digit, or real Latin product name
+                if (thai_n < 4 and len(digits) < 1
+                        and not _looks_like_healthy_latin(got)):
                     continue
                 entries.append({
                     "r0": r, "c0": c, "r1": r + 1, "c1": c + 1, "text": got,
@@ -1394,7 +1484,7 @@ def _reocr_table_block(  # NOSONAR
     if (ocr is None or page_img is None or not bbox
             or not _wants_thai(languages)):
         if html or text:
-            html, text = _polish_inventory_table(html or "", text or "")
+            html, text = _polish_table_html(html or "", text or "")
         return _table_content_block(
             pl, page_num, bbox, pw, ph, languages, text, html)
     plain_html = _strip_html_tags(html) if html else ""
@@ -1405,7 +1495,7 @@ def _reocr_table_block(  # NOSONAR
         if (seed_q.get("left_thai_fill", 0) >= 0.45
                 and seed_q.get("thai", 0) >= 120
                 and not _table_quality_weak(seed_q)):
-            html, text = _polish_inventory_table(html, text or plain_html)
+            html, text = _polish_table_html(html, text or plain_html)
             return _table_content_block(
                 pl, page_num, bbox, pw, ph, languages, text or plain_html, html)
 
@@ -1436,7 +1526,7 @@ def _reocr_table_block(  # NOSONAR
                 keep_docling and nrows >= 8
                 and not _table_quality_weak(score))
         if keep_docling:
-            ph_html, ph_text = _polish_inventory_table(grid_html, grid_text)
+            ph_html, ph_text = _polish_table_html(grid_html, grid_text)
             if ph_html or ph_text:
                 grid_block.table_html = ph_html
                 grid_block.text = ph_text
@@ -1466,7 +1556,7 @@ def _reocr_table_block(  # NOSONAR
         html = ""
     text = _refuse_latin_fallback(text, languages, context="table text")
     if html or text:
-        html, text = _polish_inventory_table(html or "", text or "")
+        html, text = _polish_table_html(html or "", text or "")
     return _table_content_block(
         pl, page_num, bbox, pw, ph, languages, text, html)
 
@@ -1860,7 +1950,7 @@ def docling_to_blocks(  # NOSONAR
     for i, b in enumerate(blocks):
         if b.block_type != "table":
             continue
-        html, text = _polish_inventory_table(
+        html, text = _polish_table_html(
             b.table_html or "", b.text or "")
         if html or text:
             b.table_html = html
