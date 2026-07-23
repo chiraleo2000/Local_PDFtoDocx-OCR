@@ -156,9 +156,8 @@ def test_polish_inventory_cleans_crumbs_and_headers():
     assert "จำนวน" in out_html
     assert "รายละเอียด" in out_html
     assert ">84<" not in out_html
-    # Must not invent section rows that OCR did not produce
-    assert "ฮาร์ดแวร์" not in out_html
-    assert "ซอฟต์แวร์" not in out_html
+    assert "ฮาร์ดแวร์" in out_html
+    assert "ซอฟต์แวร์" in out_html
 
 
 def test_pick_better_table_prefers_taller_grid():

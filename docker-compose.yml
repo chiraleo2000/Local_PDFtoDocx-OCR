@@ -83,21 +83,20 @@ services:
       SKIP_YOLO_LOAD: "1"
       SERVER_HOST: 0.0.0.0
       SERVER_PORT: "7870"
-      # Fast path: ~10s/page budget under 1.5GB VRAM
+      # Fast path: ~10s/page; SAME full recovery for small AND large PDFs
       SPEED_MODE: "1"
       TARGET_SEC_PER_PAGE: "10"
+      SPEED_LARGE_PDF_PAGES: "8"
       SPEED_BAND_OCR: "1"
       SPEED_REGION_OCR: "1"
-      SPEED_OCR_BANDS: "6"
-      SPEED_BAND_MIN_THAI: "150"
-      # Per-cell Thai-TrOCR on Docling table grid (PDF-aligned bboxes)
+      SPEED_OCR_BANDS: "3"
+      SPEED_BAND_MIN_THAI: "100"
       SPEED_TABLE_OCR: "1"
-      # Fill blank Docling slots for missing Thai label cells (strict gates)
+      # On for all doc sizes (demo accuracy path)
       SPEED_TABLE_FILL_EMPTY: "1"
-      # Reuse page renders (auto) — no extra 4× PDF render
+      SPEED_TABLE_MAX_CELLS: "80"
       SPEED_BAND_SCALE: "auto"
       THAI_FAST_MIN_SCALE: "6.0"
-      # Never inject Expected DOCX text — real OCR for all PDFs
       LOCALOCR_CANON_SNAP: "0"
       DOCX_THAI_FONT: "TH Sarabun New"
       DOCX_LATIN_FONT: "TH Sarabun New"

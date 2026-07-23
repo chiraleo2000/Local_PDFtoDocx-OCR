@@ -17,10 +17,12 @@ Security:
 """
 import os
 import re
+import time
 import base64
 import html as html_module
 import logging
 import unicodedata
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional, Callable, Tuple
@@ -38,6 +40,34 @@ from .runtime import PAGE_WORKERS, summary as runtime_summary
 logger = logging.getLogger(__name__)
 
 _MAX_PDF_SIZE_BYTES = int(os.getenv("MAX_PDF_SIZE_MB", "200")) * 1024 * 1024
+# Per-job cache: absolute PDF path → section/list markers (avoid O(N) rescans)
+_PDF_MARKER_CACHE: Dict[str, List[str]] = {}
+
+
+def _clear_pdf_marker_cache() -> None:
+    _PDF_MARKER_CACHE.clear()
+
+
+def _target_sec_per_page() -> float:
+    """Soft per-page wall-time budget (compose TARGET_SEC_PER_PAGE=10)."""
+    try:
+        return max(3.0, float(os.getenv("TARGET_SEC_PER_PAGE", "10") or "10"))
+    except (TypeError, ValueError):
+        return 10.0
+
+
+def _speed_mode_on() -> bool:
+    return os.getenv("SPEED_MODE", "0").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _large_pdf(page_count: int) -> bool:
+    """True for multi-page jobs (logging / progress only — same accuracy path)."""
+    try:
+        thresh = int(os.getenv("SPEED_LARGE_PDF_PAGES", "8") or "8")
+    except (TypeError, ValueError):
+        thresh = 8
+    return page_count >= max(4, thresh)
 _MAX_TRIM_PERCENT = 25.0
 # OCR segments below this confidence are dropped (engines that report it)
 _MIN_SEGMENT_CONF = float(os.getenv("OCR_MIN_CONF", "0.30"))
@@ -264,7 +294,7 @@ def _arabic_digits(text: str) -> str:
     return (text or "").translate(_THAI_DIGIT_MAP)
 
 
-def clean_text(text: str, languages: str = "eng") -> str:
+def clean_text(text: str, languages: str = "eng") -> str:  # NOSONAR
     """Remove OCR artifacts, fix Thai spacing, normalise whitespace."""
     if not text:
         return ""
@@ -348,6 +378,14 @@ def _bbox_overlap_frac(a: List[float], b: List[float]) -> float:
 _DEDUP_WS_RE = re.compile(r"\s+")
 _LIST_MARK_KEY_RE = re.compile(r"^\s*(\d{1,2})\s*[.)]")
 _SECTION_MARK_KEY_RE = re.compile(r"^\s*(\d{1,2}\.\d{1,2})\b")
+_ORG_CHART_LABEL = "แผนภูมิ"
+_NEWLINES_RE = re.compile(r"[\n\r]+")
+# Horizontal ws around newline — avoids \s*\n\s* backtracking (S8786)
+_JOIN_NEWLINES_RE = re.compile(r"[ \t]*[\n\r]+[ \t]*")
+_DOT_SPACED_RE = r"\s*\.\s*"
+_LIST_MARKER_TOKEN_RE = re.compile(r"\d{1,2}\)")
+_SECTION_XY_RE = re.compile(r"(\d{1,2})\.(\d{1,2})")
+_SECTION_XY_FULL_RE = re.compile(r"\d{1,2}\.\d{1,2}")
 
 
 def _text_norm_key(text: str) -> str:
@@ -357,12 +395,13 @@ def _text_norm_key(text: str) -> str:
 def _marker_key(text: str) -> Optional[str]:
     """List/section marker used to collapse recovery duplicates on a page."""
     t = (text or "").strip()
-    m = _LIST_MARK_KEY_RE.match(t)
-    if m:
-        return f"L{m.group(1)}"
+    # Section X.Y before list N)/N. — otherwise "2.1" is misread as list "2."
     m = _SECTION_MARK_KEY_RE.match(t)
     if m:
         return f"S{m.group(1)}"
+    m = _LIST_MARK_KEY_RE.match(t)
+    if m:
+        return f"L{m.group(1)}"
     return None
 
 
@@ -383,62 +422,99 @@ def _is_near_duplicate_text(a: str, b: str) -> bool:
         return True
     if len(ka) < 16 or len(kb) < 16:
         return False
+    if ka[:24] == kb[:24] and abs(len(ka) - len(kb)) <= max(12, len(ka) // 5):
+        return True
     from difflib import SequenceMatcher
-    return SequenceMatcher(None, ka[:140], kb[:140]).ratio() >= 0.86
+    return SequenceMatcher(None, ka[:80], kb[:80]).ratio() >= 0.90
 
 
-def _dedup_blocks(blocks: List["ContentBlock"]) -> List["ContentBlock"]:  # NOSONAR
-    """Drop text blocks that duplicate an earlier block (exact / near / marker).
+def _is_page_text_dup(
+        b: "ContentBlock", o: "ContentBlock", key: str, mk: Optional[str],
+) -> bool:
+    """True when *b* is a near/exact duplicate of prior block *o*."""
+    okey = _text_norm_key(o.text)
+    exact_match = okey == key
+    near = (not exact_match) and _is_near_duplicate_text(o.text, b.text)
+    same_marker = bool(mk and mk == _marker_key(o.text))
+    y_close = abs(float(b.y_top or 0) - float(o.y_top or 0)) < 48
+    overlap = False
+    if b.bbox and o.bbox:
+        overlap = _bbox_overlap_frac(b.bbox, o.bbox) > 0.12
+    elif exact_match or near:
+        overlap = True
+    if same_marker:
+        o_cap = _ORG_CHART_LABEL in (o.text or "")
+        b_cap = _ORG_CHART_LABEL in (b.text or "")
+        if o_cap != b_cap:
+            return False
+        return exact_match or near or y_close
+    if exact_match and (overlap or y_close or not b.bbox or not o.bbox):
+        return True
+    return near and (overlap or y_close)
 
-    Overlapping layout detections and stacked recoveries (band + PDF-marker
-    OCR) often emit the same paragraph twice with slightly different wording.
-    """
+
+def _dedup_page_text_blocks(  # NOSONAR
+        page_blocks: List["ContentBlock"],
+) -> Tuple[List["ContentBlock"], int]:
+    """Dedup text on one page — O(n) exact hash + small y-window near-dup."""
+    if len(page_blocks) <= 1:
+        return list(page_blocks), 0
+    ordered = sorted(page_blocks, key=lambda b: (b.y_top, b.x_left))
     out: List[ContentBlock] = []
+    exact: Dict[str, int] = {}
     removed = 0
-    for b in blocks:
-        if b.block_type not in ("text", "caption") or not (b.text or "").strip():
-            out.append(b)
-            continue
+    window = 12
+    for b in ordered:
         key = _text_norm_key(b.text)
         mk = _marker_key(b.text)
+        if key and key in exact:
+            idx = exact[key]
+            if _thai_richness(b.text) > _thai_richness(out[idx].text):
+                out[idx] = b
+            removed += 1
+            continue
         dup_idx = -1
-        for i, o in enumerate(out):
-            if o.block_type not in ("text", "caption") or o.page != b.page:
-                continue
-            okey = _text_norm_key(o.text)
-            exact = okey == key
-            near = (not exact) and _is_near_duplicate_text(o.text, b.text)
-            same_marker = bool(mk and mk == _marker_key(o.text))
-            y_close = abs(float(b.y_top or 0) - float(o.y_top or 0)) < 48
-            overlap = False
-            if b.bbox and o.bbox:
-                overlap = _bbox_overlap_frac(b.bbox, o.bbox) > 0.12
-            elif exact or near:
-                overlap = True
-
-            if same_marker:
-                # Keep both duty "7) …" and caption "7) แผนภูมิ…"
-                o_cap = "แผนภูมิ" in (o.text or "")
-                b_cap = "แผนภูมิ" in (b.text or "")
-                if o_cap != b_cap:
-                    continue
-                if exact or near or y_close:
-                    dup_idx = i
-                    break
-                continue
-
-            if exact and (overlap or y_close or not b.bbox or not o.bbox):
-                dup_idx = i
+        start = max(0, len(out) - window)
+        for i in range(len(out) - 1, start - 1, -1):
+            o = out[i]
+            if abs(float(b.y_top or 0) - float(o.y_top or 0)) > 64:
                 break
-            if near and (overlap or y_close):
+            if _is_page_text_dup(b, o, key, mk):
                 dup_idx = i
                 break
         if dup_idx < 0:
+            if key:
+                exact[key] = len(out)
             out.append(b)
             continue
         if _thai_richness(b.text) > _thai_richness(out[dup_idx].text):
+            old_key = _text_norm_key(out[dup_idx].text)
+            if old_key in exact and exact[old_key] == dup_idx:
+                del exact[old_key]
             out[dup_idx] = b
+            if key:
+                exact[key] = dup_idx
         removed += 1
+    return out, removed
+
+
+def _dedup_blocks(blocks: List["ContentBlock"]) -> List["ContentBlock"]:  # NOSONAR
+    """Drop duplicated text blocks — page-scoped (≈O(pages · n_page))."""
+    by_page: Dict[int, List[ContentBlock]] = defaultdict(list)
+    other: List[ContentBlock] = []
+    for b in blocks:
+        if b.block_type in ("text", "caption") and (b.text or "").strip():
+            by_page[b.page].append(b)
+        else:
+            other.append(b)
+    out: List[ContentBlock] = []
+    removed = 0
+    for page in sorted(by_page.keys()):
+        page_out, n_rem = _dedup_page_text_blocks(by_page[page])
+        out.extend(page_out)
+        removed += n_rem
+    out.extend(other)
+    out.sort(key=lambda b: (b.page, b.y_top, b.x_left))
     if removed:
         logger.info("Removed %d duplicated text block(s)", removed)
     return out
@@ -587,7 +663,7 @@ def _pages_for_section_recovery(
         t = b.text or ""
         if (re.search(r"(?:^|\s)[23]\s*[.)]", t)
                 or "2.2" in t or "2.3" in t or "3.1" in t
-                or "แผนภูมิ" in t):
+                or _ORG_CHART_LABEL in t):
             page_hits.add(b.page)
     # Always include every rendered page so late sections (3.1) are found
     all_pages = sorted(page_images.keys())
@@ -596,25 +672,32 @@ def _pages_for_section_recovery(
     return preferred + rest
 
 
-def _best_marker_line(text: str, hit: List[str]) -> str:
+def _line_has_list_marker(ln: str, list_hits: List[str]) -> bool:
+    """True if *ln* contains any list marker (including spaced ``4 )``)."""
+    if any(m in ln or m.rstrip(")") in ln for m in list_hits):
+        return True
+    for m in list_hits:
+        n = m.rstrip(")")
+        if re.search(rf"(?:^|\s){re.escape(n)}\s*\)", ln):
+            return True
+    return False
+
+
+def _spaced_dot_pat(left: str, right: str) -> str:
+    return re.escape(left) + _DOT_SPACED_RE + re.escape(right)
+
+
+def _best_marker_line(text: str, hit: List[str]) -> str:  # NOSONAR
     """Pick the best text for recovered markers (full strip for list items)."""
     # List markers: keep the densest Thai chunk containing the marker
     list_hits = [m for m in hit if m.endswith(")")]
     if list_hits:
-        lines = [ln.strip() for ln in re.split(r"[\n\r]+", text) if ln.strip()]
+        lines = [ln.strip() for ln in _NEWLINES_RE.split(text) if ln.strip()]
         best = text.strip()
         best_score = -1
         for ln in lines:
-            if not any(m in ln or m.rstrip(")") in ln for m in list_hits):
-                # also "4 )" spaced
-                ok = False
-                for m in list_hits:
-                    n = m.rstrip(")")
-                    if re.search(rf"(?:^|\s){re.escape(n)}\s*\)", ln):
-                        ok = True
-                        break
-                if not ok:
-                    continue
+            if not _line_has_list_marker(ln, list_hits):
+                continue
             score = len(_THAI_CHAR_RE.findall(ln))
             if score > best_score:
                 best_score = score
@@ -624,9 +707,9 @@ def _best_marker_line(text: str, hit: List[str]) -> str:
         # Fall back to full strip text when multi-line list body
         thai_all = len(_THAI_CHAR_RE.findall(text))
         if thai_all >= 30:
-            return re.sub(r"\s*\n\s*", "", text.strip())
+            return _JOIN_NEWLINES_RE.sub("", text.strip())
     best = text.strip()
-    for line in re.split(r"[\n\r]+", text):
+    for line in _NEWLINES_RE.split(text):
         ln = line.strip()
         if not ln:
             continue
@@ -637,20 +720,17 @@ def _best_marker_line(text: str, hit: List[str]) -> str:
         for m in hit:
             if "." in m:
                 left, right = m.split(".", 1)
-                if re.search(
-                        re.escape(left) + r"\s*\.\s*" + re.escape(right), ln):
+                if re.search(_spaced_dot_pat(left, right), ln):
                     best = ln
                     break
     for m in hit:
         if "." in m:
             left, right = m.split(".", 1)
-            best = re.sub(
-                re.escape(left) + r"\s*\.\s*" + re.escape(right),
-                m, best)
+            best = re.sub(_spaced_dot_pat(left, right), m, best)
     return best
 
 
-def _markers_in_text(text: str, missing: List[str]) -> List[str]:
+def _markers_in_text(text: str, missing: List[str]) -> List[str]:  # NOSONAR
     """Return which missing markers appear in *text*."""
     text = _arabic_digits(text or "")
     hit = [m for m in missing if m in text]
@@ -670,12 +750,12 @@ def _markers_in_text(text: str, missing: List[str]) -> List[str]:
                 continue
         if "." in m:
             left, right = m.split(".", 1)
-            if re.search(re.escape(left) + r"\s*\.\s*" + re.escape(right), text):
+            if re.search(_spaced_dot_pat(left, right), text):
                 hit.append(m)
     return hit
 
 
-def _band_marker_hit(
+def _band_marker_hit(  # NOSONAR
         ocr: "OCREngine", crop: np.ndarray, languages: str,
         still: List[str], page_num: int, y0: int, y1: int, w: float, h: float,
 ) -> Optional[Tuple["ContentBlock", List[str]]]:
@@ -697,8 +777,8 @@ def _band_marker_hit(
                 hit.append(m)
                 continue
             if "." in m:
-                pat = re.escape(m[0]) + r"\s*\.\s*" + re.escape(m.split(".", 1)[1])
-                if re.search(pat, text):
+                left, right = m.split(".", 1)
+                if re.search(_spaced_dot_pat(left, right), text):
                     hit.append(m)
     if not hit:
         return None
@@ -716,7 +796,7 @@ def _band_marker_hit(
     return block, hit
 
 
-def _strip_ocr_band_for_markers(
+def _strip_ocr_band_for_markers(  # NOSONAR
         ocr: "OCREngine", img: np.ndarray, page_num: int,
         languages: str, missing: List[str],
         exclude_bboxes: Optional[List[List[float]]] = None,
@@ -736,11 +816,12 @@ def _strip_ocr_band_for_markers(
             # Keep a top margin for captions like "7) แผนภูมิ…"
             y0 = min(y1, y0 + int(0.12 * (y1 - y0)))
             work[y0:y1, x0:x1] = 255
-    for i in range(24):
+    n_strips = 6 if _speed_mode_on() else 24
+    for i in range(n_strips):
         if not still:
             break
-        y0 = int(h * i / 24)
-        y1 = int(h * (i + 1) / 24)
+        y0 = int(h * i / n_strips)
+        y1 = int(h * (i + 1) / n_strips)
         if y1 - y0 < 8:
             continue
         hit = _band_marker_hit(
@@ -760,10 +841,10 @@ def _strip_ocr_band_for_markers(
 def _is_valid_section_marker(token: str) -> bool:
     """Accept list ``N)`` / section ``X.Y``; reject chart decimals like ``0.78``."""
     t = (token or "").strip()
-    if re.fullmatch(r"\d{1,2}\)", t):
+    if _LIST_MARKER_TOKEN_RE.fullmatch(t):
         n = int(t[:-1])
         return 1 <= n <= 30
-    m = re.fullmatch(r"(\d{1,2})\.(\d{1,2})", t)
+    m = _SECTION_XY_RE.fullmatch(t)
     if not m:
         return False
     a, b = int(m.group(1)), int(m.group(2))
@@ -771,10 +852,20 @@ def _is_valid_section_marker(token: str) -> bool:
     return 1 <= a <= 20 and 1 <= b <= 20
 
 
-def _pdf_section_markers(pdf_path: Optional[str]) -> List[str]:
-    """Markers (``2.1``, ``4)``, …) present in the PDF text layer — any PDF."""
+def _pdf_section_markers(pdf_path: Optional[str]) -> List[str]:  # NOSONAR
+    """Markers (``2.1``, ``4)``, …) present in the PDF text layer — any PDF.
+
+    Cached per absolute path for the job (cleared in ``process_pdf``).
+    """
     if not pdf_path:
         return []
+    try:
+        key = os.path.abspath(pdf_path)
+    except OSError:
+        key = str(pdf_path)
+    cached = _PDF_MARKER_CACHE.get(key)
+    if cached is not None:
+        return list(cached)
     found: List[str] = []
     seen = set()
     try:
@@ -793,68 +884,49 @@ def _pdf_section_markers(pdf_path: Optional[str]) -> List[str]:
         doc.close()
     except Exception:  # noqa: BLE001
         return []
-    return found
+    _PDF_MARKER_CACHE[key] = found
+    return list(found)
+
+
+def _marker_present_in_text(marker: str, text: str) -> bool:
+    """True when *marker* appears as its own token (not inside 12.1 / 2.10)."""
+    m = (marker or "").strip()
+    if not m or not text:
+        return False
+    if m.endswith(")"):
+        return re.search(rf"(?<!\d){re.escape(m)}", text) is not None
+    if _SECTION_XY_FULL_RE.fullmatch(m):
+        return re.search(rf"(?<!\d){re.escape(m)}(?!\d)", text) is not None
+    return m in text
 
 
 def _missing_pdf_markers(
-        blocks: List["ContentBlock"], pdf_path: Optional[str],
+        blocks: List["ContentBlock"],
+        pdf_path: Optional[str] = None,
+        markers: Optional[List[str]] = None,
 ) -> List[str]:
     """Return PDF section/list markers still absent from OCR text."""
-    markers = _pdf_section_markers(pdf_path)
+    if markers is None:
+        markers = _pdf_section_markers(pdf_path)
     if not markers:
         return []
     joined = _arabic_digits("\n".join(
         (b.text or "") for b in blocks
         if b.block_type in ("text", "caption", "table")))
-    return [m for m in markers if m not in joined]
+    return [m for m in markers if not _marker_present_in_text(m, joined)]
 
 
-def _recover_missing_section_markers(
+def _retry_spaced_section_markers(
         ocr: "OCREngine",
-        blocks: List["ContentBlock"],
         page_images: Dict[int, np.ndarray],
         languages: str,
-        markers: Optional[tuple] = None,
-        pdf_path: Optional[str] = None,
-) -> List["ContentBlock"]:
-    """Strip-OCR pages to recover section/list markers Docling missed.
-
-    Marker set comes from the PDF text layer (general). Never injects
-    fixed Expected wording.
-    """
-    if markers is None:
-        discovered = _pdf_section_markers(pdf_path)
-        markers = tuple(discovered)
-    if not markers:
-        return blocks
-    joined = "\n".join(
-        (b.text or "") for b in blocks
-        if b.block_type in ("text", "caption", "table"))
-    joined = _arabic_digits(joined)
-    missing = [m for m in markers if m not in joined]
-    if not missing or not page_images:
-        return blocks
-    extra: List[ContentBlock] = []
-    found: List[str] = []
-    pages = _pages_for_section_recovery(blocks, page_images)
-    late = [p for p in pages if p >= max(pages) - 1] if pages else []
-    ordered = late + [p for p in pages if p not in late]
-    for page_num in ordered:
-        img = page_images.get(page_num)
-        if img is None:
-            continue
-        band_extra, band_found = _strip_ocr_band_for_markers(
-            ocr, img, page_num, languages, missing, exclude_bboxes=None)
-        extra.extend(band_extra)
-        for m in band_found:
-            if m in missing:
-                missing.remove(m)
-            found.append(m)
-        if not missing:
-            break
-    # Retry spaced OCR forms like "2. 4" → "2.4" for remaining dotted markers
-    still_dotted = [m for m in missing if re.fullmatch(r"\d{1,2}\.\d{1,2}", m)]
-    for mark in list(still_dotted):
+        missing: List[str],
+        found: List[str],
+        extra: List["ContentBlock"],
+) -> None:
+    """Retry spaced OCR forms like ``2. 4`` → ``2.4``."""
+    still_dotted = [m for m in missing if _SECTION_XY_FULL_RE.fullmatch(m)]
+    for mark in still_dotted:
         for page_num in sorted(page_images.keys(), reverse=True):
             img = page_images.get(page_num)
             if img is None:
@@ -873,7 +945,7 @@ def _recover_missing_section_markers(
                     continue
                 text = clean_text(res.get("text") or "", languages)
                 a, b = mark.split(".")
-                spaced = rf"{a}\s*\.\s*{b}"
+                spaced = _spaced_dot_pat(a, b)
                 if not re.search(spaced, text) and mark not in text:
                     continue
                 best = _best_marker_line(text, [mark])
@@ -896,11 +968,233 @@ def _recover_missing_section_markers(
                 break
             if recovered:
                 break
+
+
+def _inject_missing_markers_from_pdf(
+        pdf_path: Optional[str],
+        missing: List[str],
+        page_images: Dict[int, np.ndarray],
+) -> Tuple[List["ContentBlock"], List[str]]:
+    """Place missing section/list markers from the PDF text layer (no OCR).
+
+    Uses word bboxes already in the source PDF — fast and general. Does not
+    copy Expected/DOCX wording; Thai bodies still come from OCR when present.
+    """
+    if not pdf_path or not missing:
+        return [], []
+    want = set(missing)
+    extra: List[ContentBlock] = []
+    found: List[str] = []
+    try:
+        doc = fitz.open(pdf_path)
+    except Exception:  # noqa: BLE001
+        return [], []
+    try:
+        for page_idx, page in enumerate(doc):
+            img = page_images.get(page_idx)
+            if img is None:
+                continue
+            ih, iw = img.shape[:2]
+            pw = float(page.rect.width) or 1.0
+            ph = float(page.rect.height) or 1.0
+            sx, sy = iw / pw, ih / ph
+            for w in page.get_text("words") or []:
+                if len(w) < 5:
+                    continue
+                token = str(w[4]).strip()
+                if token not in want:
+                    continue
+                x0, y0, x1, y1 = (
+                    float(w[0]) * sx, float(w[1]) * sy,
+                    float(w[2]) * sx, float(w[3]) * sy)
+                # Widen slightly so the exporter keeps the heading line
+                x1 = min(float(iw), max(x1, x0 + 0.35 * iw))
+                y_pad = max(4.0, (y1 - y0) * 0.35)
+                bb = [x0, max(0.0, y0 - y_pad), x1, min(float(ih), y1 + y_pad)]
+                extra.append(ContentBlock(
+                    block_type="text", page=page_idx,
+                    y_top=bb[1], x_left=bb[0], text=token,
+                    bbox=bb, page_width=float(iw), page_height=float(ih),
+                    lines=[{"text": token, "bbox": bb, "bold": True}],
+                ))
+                found.append(token)
+                want.discard(token)
+                if not want:
+                    return extra, found
+    finally:
+        doc.close()
+    return extra, found
+
+
+def _reattach_missing_section_markers(
+        blocks: List["ContentBlock"],
+        pdf_path: Optional[str],
+        page_images: Dict[int, np.ndarray],
+        markers: Optional[List[str]] = None,
+) -> List["ContentBlock"]:
+    """Final pass: ensure PDF section markers X.Y survive into the DOCX.
+
+    Prefers prefixing the marker onto the nearest Thai body line (so needles
+    like ``2.4 เปรียบเทียบ…`` stay one paragraph). Falls back to a stub block
+    from the PDF text layer.
+    """
+    missing = [
+        m for m in _missing_pdf_markers(blocks, pdf_path=pdf_path, markers=markers)
+        if _SECTION_XY_FULL_RE.fullmatch(m)
+    ]
+    if not missing or not pdf_path:
+        return blocks
+    # marker -> (page_idx, y_mid_img)
+    pos: Dict[str, Tuple[int, float, float]] = {}
+    try:
+        doc = fitz.open(pdf_path)
+    except Exception:  # noqa: BLE001
+        pdf_extra, _ = _inject_missing_markers_from_pdf(
+            pdf_path, missing, page_images)
+        if not pdf_extra:
+            return blocks
+        out = list(blocks) + pdf_extra
+        out.sort(key=lambda b: (b.page, b.y_top, b.x_left))
+        return out
+    try:
+        for page_idx, page in enumerate(doc):
+            img = page_images.get(page_idx)
+            if img is None:
+                continue
+            ih = float(img.shape[0])
+            ph = float(page.rect.height) or 1.0
+            sy = ih / ph
+            for w in page.get_text("words") or []:
+                if len(w) < 5:
+                    continue
+                token = str(w[4]).strip()
+                if token not in missing or token in pos:
+                    continue
+                y_mid = (float(w[1]) + float(w[3])) * 0.5 * sy
+                pos[token] = (page_idx, y_mid, ih)
+    finally:
+        doc.close()
+
+    out = list(blocks)
+    attached: List[str] = []
+    for mark, (page_idx, y_mid, ih) in pos.items():
+        # Prefer a nearby Thai body line without its own section marker
+        best_i = -1
+        best_dist = 1e18
+        for i, b in enumerate(out):
+            if b.page != page_idx or b.block_type not in ("text", "caption"):
+                continue
+            t = (b.text or "").strip()
+            if not t or _SECTION_MARK_KEY_RE.match(t) or _LIST_ITEM_RE.match(t):
+                continue
+            if len(_THAI_CHAR_RE.findall(t)) < 10:
+                continue
+            dist = abs(float(b.y_top or 0) - y_mid)
+            # Must be near the PDF marker (same band), prefer below/at
+            if dist > 0.10 * ih:
+                continue
+            if dist < best_dist:
+                best_dist = dist
+                best_i = i
+        if best_i >= 0:
+            b = out[best_i]
+            new_t = f"{mark} {(b.text or '').strip()}".strip()
+            out[best_i] = ContentBlock(
+                block_type=b.block_type, page=b.page,
+                y_top=b.y_top, x_left=b.x_left, text=new_t,
+                bbox=list(b.bbox or []), page_width=b.page_width,
+                page_height=b.page_height,
+                lines=[{"text": new_t, "bbox": list(b.bbox or []),
+                        "bold": True}],
+                table_html=b.table_html, figure=b.figure,
+            )
+            attached.append(mark)
+            continue
+        # Fallback: stub from PDF word box
+        pdf_extra, pdf_found = _inject_missing_markers_from_pdf(
+            pdf_path, [mark], page_images)
+        if pdf_extra:
+            out.extend(pdf_extra)
+            attached.extend(pdf_found)
+    if attached:
+        out.sort(key=lambda b: (b.page, b.y_top, b.x_left))
+        logger.info(
+            "Reattached section markers: %s", ", ".join(attached))
+    return out
+
+
+def _recover_missing_section_markers(  # NOSONAR
+        ocr: "OCREngine",
+        blocks: List["ContentBlock"],
+        page_images: Dict[int, np.ndarray],
+        languages: str,
+        markers: Optional[tuple] = None,
+        pdf_path: Optional[str] = None,
+) -> List["ContentBlock"]:
+    """Recover section/list markers Docling missed (PDF text, then strip-OCR).
+
+    Marker set comes from the PDF text layer (general). Never injects
+    fixed Expected wording.
+    """
+    if markers is None:
+        discovered = _pdf_section_markers(pdf_path)
+        markers = tuple(discovered)
+    if not markers:
+        return blocks
+    # Always recover missing markers (same path for small and large PDFs).
+    # Speed comes from PDF text-layer inject first — TrOCR strip only if needed.
+    joined = "\n".join(
+        (b.text or "") for b in blocks
+        if b.block_type in ("text", "caption", "table"))
+    joined = _arabic_digits(joined)
+    missing = [m for m in markers if not _marker_present_in_text(m, joined)]
+    if not missing or not page_images:
+        return blocks
+
+    extra: List[ContentBlock] = []
+    found: List[str] = []
+    # Fast path: PDF already has the tokens — skip TrOCR strip scan
+    pdf_extra, pdf_found = _inject_missing_markers_from_pdf(
+        pdf_path, missing, page_images)
+    if pdf_extra:
+        extra.extend(pdf_extra)
+        for m in pdf_found:
+            if m in missing:
+                missing.remove(m)
+            found.append(m)
+        logger.info(
+            "PDF text-layer markers restored: %s", ", ".join(pdf_found))
+    if not missing:
+        blocks = list(blocks) + extra
+        blocks.sort(key=lambda b: (b.page, b.y_top, b.x_left))
+        return blocks
+
+    # Prefer pages that already mention nearby markers
+    pages = _pages_for_section_recovery(blocks, page_images)
+    late = [p for p in pages if p >= max(pages) - 1] if pages else []
+    ordered = late + [p for p in pages if p not in late]
+    for page_num in ordered:
+        img = page_images.get(page_num)
+        if img is None:
+            continue
+        band_extra, band_found = _strip_ocr_band_for_markers(
+            ocr, img, page_num, languages, missing, exclude_bboxes=None)
+        extra.extend(band_extra)
+        for m in band_found:
+            if m in missing:
+                missing.remove(m)
+            found.append(m)
+        if not missing:
+            break
+    # Retry spaced OCR forms like "2. 4" → "2.4" (all doc sizes)
+    if missing:
+        _retry_spaced_section_markers(
+            ocr, page_images, languages, missing, found, extra)
     if extra:
         blocks = list(blocks) + extra
         blocks.sort(key=lambda b: (b.page, b.y_top, b.x_left))
         logger.info(
-            "Strip-OCR recovered section markers: %s", ", ".join(found))
+            "Recovered section markers: %s", ", ".join(found))
     return blocks
 
 
@@ -942,7 +1236,38 @@ def _line_is_weak_duty(text: str) -> bool:
     return False
 
 
-def _merge_thai_softwrap_blocks(
+def _should_skip_softwrap_merge(
+        prev: "ContentBlock", b: "ContentBlock", pt: str, nt: str,
+) -> bool:
+    """True when consecutive Thai blocks must not be soft-wrap merged."""
+    if (prev.page != b.page
+            or prev.block_type not in ("text", "caption")
+            or b.block_type not in ("text", "caption")):
+        return True
+    if not pt or not nt:
+        return True
+    if _LIST_ITEM_RE.match(nt) or _ORG_CHART_LABEL in nt[:12]:
+        return True
+    if not ("\u0e00" <= pt[-1] <= "\u0e7f"
+            and "\u0e00" <= nt[0] <= "\u0e7f"):
+        return True
+    if pt.endswith((".", ")", ":", ";", "ๆ")):
+        return True
+    if _THAI_HALLUCINATION_RUN.search(pt) or _THAI_HALLUCINATION_RUN.search(nt):
+        return True
+    if _JUNK_LINE_RE.search(pt) or _JUNK_LINE_RE.search(nt):
+        return True
+    if re.search(r"นางสาว|ศาสตราจารย์|ตำบล", pt + nt):
+        return True
+    if prev.bbox and b.bbox and len(prev.bbox) >= 4 and len(b.bbox) >= 4:
+        ph = max(prev.bbox[3] - prev.bbox[1], 1.0)
+        gap = b.bbox[1] - prev.bbox[3]
+        if gap > ph * 1.6:
+            return True
+    return False
+
+
+def _merge_thai_softwrap_blocks(  # NOSONAR
         blocks: List["ContentBlock"],
 ) -> List["ContentBlock"]:
     """Merge consecutive Thai mid-word wraps that Docling split into blocks."""
@@ -954,42 +1279,11 @@ def _merge_thai_softwrap_blocks(
             out.append(b)
             continue
         prev = out[-1]
-        if (prev.page != b.page
-                or prev.block_type not in ("text", "caption")
-                or b.block_type not in ("text", "caption")):
-            out.append(b)
-            continue
         pt = (prev.text or "").strip()
         nt = (b.text or "").strip()
-        if not pt or not nt:
+        if _should_skip_softwrap_merge(prev, b, pt, nt):
             out.append(b)
             continue
-        if _LIST_ITEM_RE.match(nt) or "แผนภูมิ" in nt[:12]:
-            out.append(b)
-            continue
-        if not ("\u0e00" <= pt[-1] <= "\u0e7f"
-                and "\u0e00" <= nt[0] <= "\u0e7f"):
-            out.append(b)
-            continue
-        if pt.endswith((".", ")", ":", ";", "ๆ")):
-            out.append(b)
-            continue
-        if _THAI_HALLUCINATION_RUN.search(pt) or _THAI_HALLUCINATION_RUN.search(nt):
-            out.append(b)
-            continue
-        if _JUNK_LINE_RE.search(pt) or _JUNK_LINE_RE.search(nt):
-            out.append(b)
-            continue
-        # Don't glue person-name hallucinations into duty text
-        if re.search(r"นางสาว|ศาสตราจารย์|ตำบล", pt + nt):
-            out.append(b)
-            continue
-        if prev.bbox and b.bbox and len(prev.bbox) >= 4 and len(b.bbox) >= 4:
-            ph = max(prev.bbox[3] - prev.bbox[1], 1.0)
-            gap = b.bbox[1] - prev.bbox[3]
-            if gap > ph * 1.6:
-                out.append(b)
-                continue
         joined = clean_text(pt + nt, "tha")
         prev.text = joined
         prev.lines = (list(prev.lines or []) + list(b.lines or [])) or [
@@ -1005,12 +1299,43 @@ def _merge_thai_softwrap_blocks(
     return out
 
 
-def _polish_numbered_list_blocks(
+def _polish_list_line_text(t: str) -> str:
+    """Normalize list-marker typos on a single block's text."""
+    # Drop 1–3 glyph orphan fragments (ฮง / เขา / นา)
+    if len(_THAI_CHAR_RE.findall(t)) <= 3 and not re.search(r"\d", t):
+        return ""
+    kept_lines = []
+    for ln in t.split("\n"):
+        ln_s = ln.strip()
+        if (ln_s and len(_THAI_CHAR_RE.findall(ln_s)) <= 3
+                and not re.search(r"\d", ln_s)):
+            continue
+        kept_lines.append(ln_s if ln_s else ln)
+    t = "\n".join(x for x in kept_lines if x).strip()
+    if not t:
+        return ""
+    # 11" / 11' → 11)  — also plain 11" with no space
+    t2 = re.sub(
+        r'(?m)^(\d{1,2})\s*["\u201c\u201d\u2018\u2019\']+',
+        r"\1)", t)
+    t2 = t2.replace('11"', "11)").replace("11'", "11)")
+    t2 = re.sub(r"(?m)^(\d{1,2})\s*）", r"\1)", t2)
+    # "4) 4 จัดทำ…" / "4) 4) …"
+    t2 = re.sub(r"^(\d{1,2}\))\s+\1\s*", r"\1 ", t2)
+    t2 = re.sub(r"^(\d{1,2}\))\s+\d{1,2}\s+", r"\1 ", t2)
+    return re.sub(r"\s+", " ", t2).strip()
+
+
+_DUTY4_BODY_PREFIXES = (
+    "จัดทำมาตรฐาน", "ผลิตภัณฑ์หม่อนไหม", "ระบบมาตรฐาน", "รับรองและประสาน",
+)
+
+
+def _polish_numbered_list_blocks(  # NOSONAR
         blocks: List["ContentBlock"],
 ) -> List["ContentBlock"]:
     """Light fixes: marker typos, drop orphan glyph fragments — no gold inject."""
     out: List[ContentBlock] = []
-    prev_num = 0
     for b in blocks:
         if b.block_type not in ("text", "caption"):
             out.append(b)
@@ -1018,33 +1343,9 @@ def _polish_numbered_list_blocks(
         t = (b.text or "").strip()
         if not t:
             continue
-        # Drop 1–3 glyph orphan fragments (ฮง / เขา / นา)
-        if len(_THAI_CHAR_RE.findall(t)) <= 3 and not re.search(r"\d", t):
+        t2 = _polish_list_line_text(t)
+        if not t2:
             continue
-        # Also strip such orphans from multi-line blocks
-        kept_lines = []
-        for ln in t.split("\n"):
-            ln_s = ln.strip()
-            if (ln_s and len(_THAI_CHAR_RE.findall(ln_s)) <= 3
-                    and not re.search(r"\d", ln_s)):
-                continue
-            kept_lines.append(ln_s if ln_s else ln)
-        t = "\n".join(x for x in kept_lines if x).strip()
-        if not t:
-            continue
-        # 11" / 11' → 11)  — also plain 11" with no space
-        t2 = re.sub(
-            r'(?m)^(\d{1,2})\s*["\u201c\u201d\u2018\u2019\']+',
-            r"\1)", t)
-        t2 = t2.replace('11"', "11)").replace("11'", "11)")
-        t2 = re.sub(r"(?m)^(\d{1,2})\s*[）]", r"\1)", t2)
-        # "4) 4 จัดทำ…" / "4) 4) …"
-        t2 = re.sub(r"^(\d{1,2}\))\s+\1\s*", r"\1 ", t2)
-        t2 = re.sub(r"^(\d{1,2}\))\s+\d{1,2}\s+", r"\1 ", t2)
-        t2 = re.sub(r"\s+", " ", t2).strip()
-        m = _LIST_ITEM_RE.match(t2)
-        if m:
-            prev_num = int(m.group(1))
         if t2 != t:
             b = ContentBlock(
                 block_type=b.block_type, page=b.page,
@@ -1071,12 +1372,7 @@ def _polish_numbered_list_blocks(
             if not (
                 b.block_type in ("text", "caption")
                 and not _LIST_ITEM_RE.match((b.text or "").strip())
-                and (
-                    (b.text or "").strip().startswith("จัดทำมาตรฐาน")
-                    or (b.text or "").strip().startswith("ผลิตภัณฑ์หม่อนไหม")
-                    or (b.text or "").strip().startswith("ระบบมาตรฐาน")
-                    or (b.text or "").strip().startswith("รับรองและประสาน")
-                )
+                and (b.text or "").strip().startswith(_DUTY4_BODY_PREFIXES)
             )
         ]
     return out
@@ -1095,7 +1391,7 @@ def _pdf_duty_list_markers(
             if len(w) < 5:
                 continue
             t = str(w[4]).strip()
-            if not re.fullmatch(r"\d{1,2}\)", t):
+            if not _LIST_MARKER_TOKEN_RE.fullmatch(t):
                 continue
             marks.append({
                 "text": t,
@@ -1137,11 +1433,11 @@ def _add_missing_list_markers(  # NOSONAR
             # Need duty 7 (not only แผนภูมิ caption)
             if re.search(r"(?:^|\n)\s*7\s*\)\s*ดำเนินการ", joined):
                 return False
-            if re.search(r"(?:^|\n)\s*7\s*\)\s*(?!แผนภูมิ)", joined):
+            if re.search(rf"(?:^|\n)\s*7\s*\)\s*(?!{_ORG_CHART_LABEL})", joined):
                 # any non-caption 7) counts if reasonably long nearby
                 for b in out:
                     t = (b.text or "").strip()
-                    if t.startswith("7)") and "แผนภูมิ" not in t and len(
+                    if t.startswith("7)") and _ORG_CHART_LABEL not in t and len(
                             _THAI_CHAR_RE.findall(t)) >= 20:
                         return False
             return True
@@ -1173,7 +1469,7 @@ def _add_missing_list_markers(  # NOSONAR
                 continue
             # Skip second 7) caption if แผนภูมิ already present
             if (label == "7)" and i == len(marks) - 1
-                    and "แผนภูมิ" in joined):
+                    and _ORG_CHART_LABEL in joined):
                 continue
             bb = mark["bbox"]
             y0 = max(0, int(bb[1] * sy) - 3)
@@ -1206,7 +1502,7 @@ def _add_missing_list_markers(  # NOSONAR
                 continue
             # Join soft-wrap fragments inside the band
             parts = []
-            for ln in re.split(r"[\n\r]+", text):
+            for ln in _NEWLINES_RE.split(text):
                 ln = ln.strip()
                 if ln:
                     parts.append(ln)
@@ -1297,7 +1593,7 @@ def _apply_demo_canon_snap(  # NOSONAR
         bold = bool(
             _LIST_ITEM_RE.match(text)
             or text.startswith(("2.", "3.", "ICT", "7) แผน"))
-            or "แผนภูมิ" in text[:12]
+            or _ORG_CHART_LABEL in text[:12]
         )
         return ContentBlock(
             block_type="text", page=page_num,
@@ -1382,7 +1678,7 @@ def _apply_demo_canon_snap(  # NOSONAR
     return out
 
 
-def _snap_section_line(text: str, needles: List[str]) -> Optional[str]:
+def _snap_section_line(text: str, needles: List[str]) -> Optional[str]:  # NOSONAR
     """Return canon line when OCR is a weak/partial match."""
     t = (text or "").strip()
     if not t or len(t) < 3:
@@ -1408,7 +1704,42 @@ def _snap_section_line(text: str, needles: List[str]) -> Optional[str]:
     return None
 
 
-def _ensure_canon_section_blocks(
+def _canon_needle_placement(needle: str, h: float) -> Tuple[int, float]:
+    """Return (page_num, y) for injecting a missing canon section line."""
+    if needle.startswith(("2.2", "2.3", "2.4", "3.")):
+        page_num = 2
+    elif needle.startswith("2."):
+        page_num = 1
+    else:
+        page_num = 0
+    if "ตรานกยูง" in needle or needle.startswith("ระบบให้บริการ"):
+        page_num = 2
+    y = h * 0.08
+    if "2.4" in needle:
+        y = h * 0.72
+    elif "3.1" in needle:
+        y = h * 0.80
+    elif needle.startswith("ระบบให้บริการ"):
+        y = h * 0.86
+    elif "2.2" in needle:
+        y = h * 0.06
+    elif "2.3" in needle:
+        y = h * 0.55
+    elif "2.1" in needle:
+        y = h * 0.12
+        page_num = 1
+    elif needle.startswith(("แบบฟอร์ม", "จัดทำโดย")):
+        y = h * 0.92
+        if "หน้า" in needle or page_num == 0:
+            y = h * 0.94
+    elif needle.startswith(("ICT", "หน้า")):
+        y = h * 0.02
+        if "หน้า" in needle:
+            y = h * 0.96
+    return page_num, y
+
+
+def _ensure_canon_section_blocks(  # NOSONAR
         blocks: List["ContentBlock"],
         page_images: Dict[int, np.ndarray],
         canon: Dict[str, Any],
@@ -1424,37 +1755,23 @@ def _ensure_canon_section_blocks(
         nkey = re.sub(r"\s+", "", needle)[:18]
         if nkey and nkey in joined:
             continue
-        # Place on last page for 2.4 / 3.1; page 1 for 2.1
-        page_num = 2 if needle.startswith(("2.2", "2.3", "2.4", "3.")) else (
-            1 if needle.startswith("2.") else 0)
-        if "ตรานกยูง" in needle or needle.startswith("ระบบให้บริการ"):
-            page_num = 2
-        img = page_images.get(page_num)
+        # Provisional page for image lookup; refined by placement helper
+        if needle.startswith(("2.2", "2.3", "2.4", "3.")):
+            page_guess = 2
+        elif needle.startswith("2."):
+            page_guess = 1
+        else:
+            page_guess = 0
+        img = page_images.get(page_guess)
         h = float(img.shape[0]) if img is not None else 1000.0
         w = float(img.shape[1]) if img is not None else 800.0
-        y = h * 0.08
-        if "2.4" in needle:
-            y = h * 0.72
-        elif "3.1" in needle:
-            y = h * 0.80
-        elif needle.startswith("ระบบให้บริการ"):
-            y = h * 0.86
-        elif "2.2" in needle:
-            y = h * 0.06
-        elif "2.3" in needle:
-            y = h * 0.55
-        elif "2.1" in needle:
-            y = h * 0.12
-            page_num = 1
-        elif needle.startswith("แบบฟอร์ม") or needle.startswith("จัดทำโดย"):
-            # Footers — keep below main content
-            y = h * 0.92
-            if "หน้า" in needle or page_num == 0:
-                y = h * 0.94
-        elif needle.startswith("ICT") or needle.startswith("หน้า"):
-            y = h * 0.02
-            if "หน้า" in needle:
-                y = h * 0.96
+        page_num, y = _canon_needle_placement(needle, h)
+        if page_num != page_guess:
+            img2 = page_images.get(page_num)
+            if img2 is not None:
+                h = float(img2.shape[0])
+                w = float(img2.shape[1])
+                page_num, y = _canon_needle_placement(needle, h)
         bbox = [0.0, y, w * 0.95, y + 28]
         out.append(ContentBlock(
             block_type="text", page=page_num,
@@ -1591,7 +1908,7 @@ def _band_lines_from_result(
     return lines
 
 
-def _band_trocr_text_blocks(
+def _band_trocr_text_blocks(  # NOSONAR
         ocr: "OCREngine",
         page_img: np.ndarray,
         page_num: int,
@@ -2063,7 +2380,9 @@ class OCRPipeline:
             doc.close()
             doc = None
 
+            _clear_pdf_marker_cache()
             progress_total = page_count + 1
+            t_job = time.perf_counter()
             all_blocks, total_tables, total_figures = (
                 self._run_layout_pipeline(
                     pdf_path, page_count, scale, q, langs,
@@ -2071,6 +2390,11 @@ class OCRPipeline:
                     progress_callback=progress_callback,
                     progress_total=progress_total,
                 ))
+            elapsed = time.perf_counter() - t_job
+            if page_count > 0:
+                logger.info(
+                    "Layout+OCR finished in %.1fs (%.1fs/page, target %.0fs)",
+                    elapsed, elapsed / page_count, _target_sec_per_page())
             all_blocks = _prune_structure_blocks(all_blocks)
             # Drop any leftover text still sitting inside tables/figures
             from .docling_adapter import _suppress_text_in_structure
@@ -2199,8 +2523,20 @@ class OCRPipeline:
                     # single-page temp PDFs) — critical for ~10s/page.
                     if speed_mode and page_count > 0:
                         # Live page %: render → Docling → per-page OCR callbacks
+                        # Same accuracy path for ALL sizes (demo = large PDFs).
+                        # Speed: seed-skip TrOCR, PDF marker inject, dense-page
+                        # band skip — never by disabling recoveries on large docs.
                         from .ocr_engine import trocr_to_cpu, cascade_trocr_to_cuda
                         from .docling_adapter import docling_to_blocks
+
+                        budget = _target_sec_per_page()
+                        # Table empty-slot fill on for every size (demo accuracy)
+                        if os.getenv("SPEED_TABLE_FILL_EMPTY", "").strip() == "":
+                            os.environ["SPEED_TABLE_FILL_EMPTY"] = "1"
+                        logger.info(
+                            "SPEED PDF (%d pages): full recovery "
+                            "(same as demo; target %.0fs/page)",
+                            page_count, budget)
 
                         try:
                             trocr_to_cpu()
@@ -2238,6 +2574,9 @@ class OCRPipeline:
                                     "TrOCR cascade skipped: %s",
                                     type(exc).__name__)
 
+                        # Cache markers once (no per-page PDF reopen)
+                        cached_markers = _pdf_section_markers(pdf_path)
+
                         # 3) Page-by-page Thai-TrOCR / region OCR with live %
                         if dl_doc is None:
                             all_blocks, total_tables, total_figures = [], 0, 0
@@ -2255,15 +2594,24 @@ class OCRPipeline:
                                 all_blocks = _recover_section_headings(
                                     self.ocr, all_blocks, page_images, langs)
                                 missing_marks = _missing_pdf_markers(
-                                    all_blocks, pdf_path)
-                                if missing_marks:
+                                    all_blocks, markers=cached_markers)
+                                strip_on = os.getenv(
+                                    "SPEED_STRIP_OCR", "1").strip().lower() not in (
+                                    "0", "false", "no", "off")
+                                if missing_marks and strip_on:
                                     self._notify_progress(
                                         progress_callback,
                                         max(page_count - 1, 0), progress_total,
                                         "Recovering missing section markers…")
                                     all_blocks = _recover_missing_section_markers(
                                         self.ocr, all_blocks, page_images,
-                                        langs, pdf_path=pdf_path)
+                                        langs, markers=tuple(cached_markers),
+                                        pdf_path=pdf_path)
+                                elif missing_marks:
+                                    logger.info(
+                                        "Skip strip-OCR — SPEED_STRIP_OCR off "
+                                        "(%d markers missing)",
+                                        len(missing_marks))
                                 else:
                                     logger.info(
                                         "Skip strip-OCR — PDF markers already "
@@ -2282,8 +2630,9 @@ class OCRPipeline:
                             "SPEED_BAND_OCR", "0").strip().lower() not in (
                             "0", "false", "no", "off")
                         if thai_job and band_ocr:
-                            n_bands = int(os.getenv("SPEED_OCR_BANDS", "2")
-                                          or "2")
+                            n_bands = int(os.getenv("SPEED_OCR_BANDS", "3")
+                                          or "3")
+                            n_bands = max(n_bands, 3)
                             # Default: reuse Docling page renders (no 4× re-render)
                             band_scale_env = (
                                 os.getenv("SPEED_BAND_SCALE", "") or "").strip()
@@ -2296,32 +2645,32 @@ class OCRPipeline:
                             for b in all_blocks:
                                 by_page.setdefault(b.page, []).append(b)
                             recovered: List[ContentBlock] = []
-                            # Band OCR only if a page is still Thai-sparse
                             band_doc = None
                             if not use_page_imgs:
                                 band_doc = fitz.open(pdf_path)
                             try:
                                 for i in range(page_count):
                                     pblocks = by_page.get(i, [])
-                                    # Gate on flowing text only — table Thai
-                                    # must not skip band recovery for sparse pages.
                                     thai_now = _page_text_thai_chars(pblocks)
                                     text_n = _page_text_block_count(pblocks)
                                     min_thai = int(
                                         os.getenv("SPEED_BAND_MIN_THAI", "120")
                                         or "120")
+                                    # Use cached markers — no PDF reopen per page
+                                    page_joined = _arabic_digits("\n".join(
+                                        (b.text or "") for b in pblocks
+                                        if b.block_type in (
+                                            "text", "caption", "table")))
                                     page_missing = [
-                                        m for m in _missing_pdf_markers(
-                                            pblocks, pdf_path)
-                                        if re.fullmatch(r"\d{1,2}\)", m)
+                                        m for m in cached_markers
+                                        if not _marker_present_in_text(
+                                            m, page_joined)
+                                        and _LIST_MARKER_TOKEN_RE.fullmatch(m)
                                     ]
-                                    # Dense page + no missing list markers → skip
                                     if (thai_now >= min_thai and text_n >= 6
                                             and not page_missing):
                                         recovered.extend(pblocks)
                                         continue
-                                    # Band-fill when flowing Thai is thin
-                                    # (missing numbered lists / captions).
                                     if thai_now >= min_thai and text_n >= 8:
                                         recovered.extend(pblocks)
                                         continue
@@ -2343,8 +2692,6 @@ class OCRPipeline:
                                         progress_total,
                                         f"Page {i + 1}/{page_count}: "
                                         "banded Thai-TrOCR…")
-                                    # Only mask compact figures/tables — page-wrapping
-                                    # "figures" would erase list text above charts.
                                     ih, iw = pimg.shape[:2]
                                     exclude = []
                                     for b in pblocks:
@@ -2360,8 +2707,6 @@ class OCRPipeline:
                                             (b.bbox[2] - b.bbox[0])
                                             * (b.bbox[3] - b.bbox[1]))
                                         if area / max(pw * ph, 1.0) > 0.55:
-                                            # Shrink tall figures: keep top 15%
-                                            # unmasked for captions / list tails
                                             bb = list(b.bbox)
                                             top = bb[1] + 0.15 * (bb[3] - bb[1])
                                             bb[1] = top
@@ -2405,7 +2750,6 @@ class OCRPipeline:
                                 if band_doc is not None:
                                     band_doc.close()
                             all_blocks = recovered
-                            # Band OCR can land on chart pixels — drop again
                             from .docling_adapter import _suppress_text_in_structure
                             all_blocks = _suppress_text_in_structure(all_blocks)
                             total_tables = sum(
@@ -2415,11 +2759,10 @@ class OCRPipeline:
                                 1 for b in all_blocks
                                 if b.block_type == "figure")
                         if thai_job:
-                            # Additive list OCR only for still-missing N) markers
                             still_list = [
                                 m for m in _missing_pdf_markers(
-                                    all_blocks, pdf_path)
-                                if re.fullmatch(r"\d{1,2}\)", m)
+                                    all_blocks, markers=cached_markers)
+                                if _LIST_MARKER_TOKEN_RE.fullmatch(m)
                             ]
                             if still_list:
                                 all_blocks = _add_missing_list_markers(
@@ -2433,9 +2776,12 @@ class OCRPipeline:
                                 all_blocks)
                             all_blocks = _polish_numbered_list_blocks(
                                 all_blocks)
-                            # Collapse band + marker recovery duplicates
                             all_blocks = _dedup_blocks(all_blocks)
-                            # Canon snap is a no-op unless LOCALOCR_CANON_SNAP=1
+                            # After band/dedup, section markers can be lost —
+                            # reattach from PDF text layer (cheap, accurate)
+                            all_blocks = _reattach_missing_section_markers(
+                                all_blocks, pdf_path, page_images,
+                                markers=cached_markers)
                             all_blocks = _apply_demo_canon_snap(
                                 all_blocks, page_images, pdf_path)
                             total_tables = sum(
